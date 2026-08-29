@@ -33,6 +33,12 @@ def _make_openai(**kw):
     return OpenAICompatibleProvider(**kw)
 
 
+def _make_deepseek(**kw):
+    from .deepseek import DeepSeekProvider
+
+    return DeepSeekProvider(**kw)
+
+
 def _make_fake(**kw):
     from .fake import FakeProvider
 
@@ -40,4 +46,5 @@ def _make_fake(**kw):
 
 
 register_provider("openai", _make_openai)
+register_provider("deepseek", _make_deepseek)
 register_provider("fake", _make_fake)

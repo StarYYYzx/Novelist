@@ -66,13 +66,15 @@ def init(ctx: click.Context, directory: str | None, title: str | None) -> None:
 @click.option("--to", "to_stage", default="正文", help="跑流水线到指定工序")
 @click.pass_context
 def run(ctx: click.Context, directory: str | None, to_stage: str) -> None:
-    """跑流水线到指定工序（docs/07 §6.1）。"""
+    """跑流水线到指定工序（docs/07 §6.1）。严格串行逐章；审查阶段触发一致性检查。"""
+    from novelist.core.pipeline import PipelineStateMachine, PipelineStateError, PIPELINE_STAGES
+    from novelist.consistency import run_consistency
+
     ws: Workspace = ctx.obj["workspace"]
     if directory:
         ws = Workspace(root=directory)
     ck = Checkpoint(ws)
     try:
-        # 找到唯一项目（demo 语义：扫描根下 project.json 的项目）
         root = ws._abs("")
         project_id = _locate_project(root)
         project = ck.restore(project_id)
@@ -80,7 +82,57 @@ def run(ctx: click.Context, directory: str | None, to_stage: str) -> None:
         raise click.ClickException(str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise click.ClickException(f"run: {e}") from e
-    click.echo(f"run {project.get('id')} -> {to_stage} (current stage: {project.get('pipeline_state')})")
+
+    try:
+        st = PipelineStateMachine()
+        cur = project.get("pipeline_state") or "立项"
+        want = to_stage if to_stage in PIPELINE_STAGES else "正文"
+        # 先推进到当前已存阶段（若存在），再从当前推进到目标
+        if cur != st.current:
+            _advance_to(st, cur)
+        if want != st.current:
+            _advance_to(st, want)
+    except PipelineStateError:
+        raise click.ClickException(
+            f"cannot advance {project.get('pipeline_state')} -> {to_stage}（串行推进，仅允许前进）"
+        ) from None
+
+    # 审查及以上：执行一致性规则检查并报告
+    alerts = []
+    if _stage_ord(want) >= _stage_ord("审查"):
+        alerts = run_consistency(ws, project_id)
+
+    project["pipeline_state"] = st.current
+    try:
+        ck.save(project_id, project)
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"run save: {e}") from e
+
+    click.echo(f"run {project.get('id')} -> {st.current}")
+    if alerts:
+        n_block = sum(1 for a in alerts if a.level == "block")
+        click.echo(f"  consistency: {len(alerts)} alert(s), {n_block} block")
+        for a in alerts[:5]:
+            click.echo(f"    [{a.level}/{a.rule_id}] {a.object_ref}: {a.detail}")
+    else:
+        click.echo("  consistency: ok")
+
+
+def _stage_ord(name: str) -> int:
+    from novelist.core.pipeline import PIPELINE_STAGES
+
+    if name in PIPELINE_STAGES:
+        return PIPELINE_STAGES.index(name)
+    return -1
+
+
+def _advance_to(st, target: str) -> None:
+    """逐步把状态机推进到 target（每次前进一步，直至目标）。"""
+    while st.current != target:
+        stages = st.stages
+        i = stages.index(st.current)
+        nxt = stages[i + 1]
+        st.advance(nxt)
 
 
 @cli.command()
@@ -146,6 +198,10 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
                 {"final": "done"},
             ]
         )
+    if provider == "deepseek":
+        from novelist.providers.deepseek import DeepSeekProvider
+
+        return DeepSeekProvider(model="deepseek-chat")
     # openai 等真实 provider（需 key/base_url，见 providers.openai）
     from novelist.providers.openai import OpenAICompatibleProvider
 

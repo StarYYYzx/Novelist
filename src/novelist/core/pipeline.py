@@ -24,6 +24,10 @@ class PipelineStateMachine:
         self._current = self._stages[0]
 
     @property
+    def stages(self) -> list[str]:
+        return list(self._stages)
+
+    @property
     def current(self) -> str:
         return self._current
 

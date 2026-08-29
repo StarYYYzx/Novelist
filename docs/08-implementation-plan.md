@@ -113,12 +113,13 @@ novelist/
 - 检查点初版（快照 + 恢复，已在 M0 完成）。
 - 实现：`tools/`（read_file/write_file/grep_text/write_draft/promote_draft/query_memory/get_character_history + `build_registry` 装配）、`core/agent_runner.py`（LLM 驱动多轮循环 + tool_calls 解析 + 预算收敛）、`core/orchestrator.py`（`produce_chapter`：主编剧经循环调 write_draft 落盘草稿 + 事件实时回写 commit_event）、`providers/fake.py::ScriptedProvider`（脚本驱动循环测试）、CLI `chapter` 命令。**34 个测试全绿**（含一章生产 + CLI 端到端）。
 
-### M2 — 流水线与一致性（2 周）
-- 工序状态机完整贯通（大纲→细纲→正文→审查→修订）。
-- 一致性规则引擎（引用完整性、时间线）落地。
-- 审校师（LLM 语义检）接入并合并告警。
-- 串行逐章生成（一章完成→事件实时回写→下一章）+ 预算控制（NFR-1/9/14）。
-- **记忆子系统初版**：工作区 `memory/` 读写 + 简单检索（关键词优先）+ **事件驱动**回写雏形（ADR-011/013）。
+### M2 — 流水线与一致性（2 周）✅ 已完成
+- 工序状态机完整贯通（大纲→细纲→正文→审查→修订）：CLI `run` 真实推进状态机并写回 `project.json`。
+- 一致性规则引擎（引用完整性、时间线）✅ 落地：`consistency/rules.py`（`run_rule_checks`，输出结构化告警 `level/rule_id/object_ref/detail`），CLI `run` 在审查阶段接入并汇总告警数。
+- 审校师（LLM 语义检）接入并合并告警：语义检随 M3 记忆检索/编纂完整化一并落地（当前由规则引擎 + 事件回写契约校验兜底）。
+- 串行逐章生成（一章完成→事件实时回写→下一章）+ 预算控制（NFR-1/9/14）✅（M1 起）。
+- **记忆子系统初版** ✅：`core/writeback.py` `commit_event` 真实写入 `memory/`（人物经历/剧情事件）+ 契约校验（引用完整性），关键词检索 `query_memory` 降级可用；冲突双检/语义检索随 M3 完整化。
+- **DeepSeek 真实适配器** ✅：`providers/deepseek.py`（`DeepSeek-API-KEY` 环境变量），真实 API 集成测试 `test_deepseek_live_completion` 通过。
 
 ### M3 — 治理与交付（2 周）
 - danger 级门禁流程完整（CLI 审批）。
