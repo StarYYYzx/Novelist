@@ -71,11 +71,26 @@ def ok(data: Any = None, usage: dict | None = None) -> ToolResult:
 
 
 class ToolRegistry:
-    """工具注册表（docs/05/07）。"""
+    """工具注册表（docs/05/07）。
 
-    def __init__(self, gate: "PermissionGate | None" = None) -> None:
+    - 门禁 `gate`：判定 safe/sensitive/danger 处置。
+    - 审批 `approvals`（可选 ApprovalQueue）：`ask` 处置时入队并阻塞等待人工决策
+      （docs/07 §3.3 wait + fallback deny-if-timeout）。
+    - `decision_fn`（可选，优先于队列）：`ask` 时由外部回调即时决策
+      （如 CLI 交互 input），回调签名 `(ApprovalRequest) -> "allow"|"deny"`。
+      两者皆无时 `ask` 直接抛 DeniedError。
+    """
+
+    def __init__(
+        self,
+        gate: "PermissionGate | None" = None,
+        approvals: "ApprovalQueue | None" = None,
+        decision_fn: "Callable[[ApprovalRequest], str] | None" = None,
+    ) -> None:
         self._tools: dict[str, Tool] = {}
         self._gate = gate or PermissionGate()
+        self._approvals = approvals
+        self._decision_fn = decision_fn
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -86,7 +101,14 @@ class ToolRegistry:
     def list_defs(self, profile: str | None = None) -> list[dict]:
         return [t.to_def() for t in self._tools.values()]
 
-    def invoke(self, session: SessionInfo, name: str, params: dict, budget: Budget | None = None) -> ToolResult:
+    def invoke(
+        self,
+        session: SessionInfo,
+        name: str,
+        params: dict,
+        budget: Budget | None = None,
+        approval_timeout: float = 120.0,
+    ) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(status="error", code=NOT_FOUND, data={"name": name})
@@ -94,7 +116,17 @@ class ToolRegistry:
         if decision == APPROVAL_DENY:
             return ToolResult(status="denied", code=DENIED, data={"tool": name})
         if decision == APPROVAL_ASK:
-            raise DeniedError(f"tool '{name}' requires approval (ask)")  # 进一步接入人机审批系统
+            req = self._approvals.submit(
+                tool=tool.name, params=params, session=session, reason=f"tool {tool.name} requires approval"
+            ) if self._approvals is not None else None
+            if self._decision_fn is not None:
+                verdict = self._decision_fn(req)  # 回调自行处理 req（可为 None）
+            elif req is not None:
+                verdict = self._approvals.wait_for_decision(req.id, timeout=approval_timeout)
+            else:
+                raise DeniedError(f"tool '{name}' requires approval (ask)")
+            if verdict != "allow":
+                return ToolResult(status="denied", code=DENIED, data={"tool": name, "approval": req.id if req else None})
         try:
             data = tool.invoke(session, params, budget)
             return ok(data=data)
@@ -105,13 +137,40 @@ class ToolRegistry:
 
 
 class PermissionGate:
-    """门禁判定（docs/07 §3.3 / §3.4）。此处提供内存版构造；策略文件解析见 config。"""
+    """门禁判定（docs/07 §3.3 / §3.4）。此处提供内存版构造；策略文件解析见 from_policy_file。"""
 
     def __init__(self, profiles: dict[str, dict] | None = None) -> None:
         # profiles[name] -> {"sensitive": approval|..., "danger": ..., "tools": {name: ...}}
         self.profiles = profiles or {
             "supervised": {"sensitive": APPROVAL_ASK, "danger": APPROVAL_DENY, "tools": {}},
         }
+
+    @classmethod
+    def from_policy_file(cls, path: str) -> "PermissionGate":
+        """从 TOML 策略文件加载（docs/07 §3.4）。
+
+        格式：
+        [profile.supervised]
+        sensitive = "ask"
+        danger = "deny"
+        [profile.supervised.tools]
+        write_draft = "allow"
+        """
+        import tomllib
+
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        profiles: dict[str, dict] = {}
+        for name, section in (data.get("profile") or {}).items():
+            prof: dict = {}
+            for key in ("safe", "sensitive", "danger"):
+                if key in section:
+                    prof[key] = section[key]
+            tools = section.get("tools") or {}
+            if isinstance(tools, dict):
+                prof["tools"] = dict(tools)
+            profiles[name] = prof
+        return cls(profiles=profiles)
 
     def check(self, session: SessionInfo, tool: Tool) -> str:
         prof = self.profiles.get(session.permission_profile, self.profiles["supervised"])

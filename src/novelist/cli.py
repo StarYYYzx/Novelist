@@ -161,13 +161,19 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.option("--ch", default=1, type=int, help="章节号")
 @click.option("--provider", default="fake", help="LLM provider：fake/scripted/lmstudio/deepseek/openai")
 @click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
+@click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
 @click.pass_context
-def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None) -> None:
+def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
+            policy: str | None) -> None:
     """串行写一章：主编剧产出草稿 + 事件实时回写（docs/04 §4.1 / ADR-013）。
 
     --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
+    --policy 指定策略文件后，sensitive/danger 工具按策略处置；ask 时交互审批（grant 可见）。
     """
     from novelist.core.orchestrator import produce_chapter
+    from novelist.core.approval import ApprovalQueue
+    from novelist.core.tools import PermissionGate
+    from novelist.tools import build_registry
 
     ws: Workspace = ctx.obj["workspace"]
     if directory:
@@ -185,12 +191,29 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     prefer_direct = True if provider in ("lmstudio", "local") else (direct if direct is not None else False)
     # 本地慢模型（约 20 token/s）用小生成预算，避免超时（量力而为）
     gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
-    res = produce_chapter(ws, project_id, vol, ch, prov, prefer_direct=prefer_direct,
+
+    # 门禁 + 审批：策略文件（可选）→ 默认 supervised；ask 走交互审批并持久化供 grant 查询
+    gate = PermissionGate.from_policy_file(policy) if policy else PermissionGate()
+    approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
+    reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision)
+
+    res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
                           generation_tokens=gen_tokens)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode})")
     click.echo(f"events committed: {res.events_committed}")
+
+
+def _interactive_decision(req) -> str:
+    """CLI 交互审批（docs/07 §3.3 CLI 提示）：ask 处置时向用户 y/n 询问。"""
+    click.echo(f"[approval] tool={req.tool} reason={req.reason}")
+    click.echo(f"  params={req.params}")
+    try:
+        ans = click.prompt("  allow? [y/N]", default="n")
+    except click.Abort:
+        return "deny"
+    return "allow" if ans.strip().lower() in ("y", "yes") else "deny"
 
 
 def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
@@ -223,10 +246,85 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
+@click.option("--approve", "approve_id", default=None, help="批准指定审批 id")
+@click.option("--deny", "deny_id", default=None, help="拒绝指定审批 id")
 @click.pass_context
-def export(ctx: click.Context, directory: str | None) -> None:
-    """导出发布包（docs/07 §6.1）。"""
-    click.echo("export: not implemented yet (M3)")
+def grant(ctx: click.Context, directory: str | None, approve_id: str | None, deny_id: str | None) -> None:
+    """处理待决门禁审批（docs/07 §6.1，F6.1）。不传 --approve/--deny 时列出待决列表。"""
+    from novelist.core.approval import ApprovalQueue
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    root = ws._abs("")
+    project_id = _locate_project(root)
+    queue = ApprovalQueue.load_persisted(persist_dir=ws._abs(f"{project_id}/logs"))
+
+    if approve_id or deny_id:
+        target = approve_id or deny_id
+        ok_ = queue.decide(target, allow=bool(approve_id))
+        if not ok_:
+            raise click.ClickException(f"approval {target} not found (already decided?)")
+        click.echo(f"{target} -> {'allow' if approve_id else 'deny'}")
+        return
+
+    pending = queue.list_pending()
+    if not pending:
+        click.echo("no pending approvals")
+        return
+    for r in pending:
+        click.echo(f"{r.id}  tool={r.tool}  agent={getattr(r.session, 'agent', '?')}  {r.reason}")
+        click.echo(f"    params={r.params}")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
+@click.option("--format", "fmt", default="markdown", help="发布包格式：markdown")
+@click.option("--output", "out", default=None, help="输出文件路径；缺省打印到 stdout")
+@click.option("--include-drafts", is_flag=True, default=False, help="把草稿并入发布包")
+@click.pass_context
+def export(ctx: click.Context, directory: str | None, fmt: str, out: str | None, include_drafts: bool) -> None:
+    """导出发布包（docs/07 §6.1，F8.1）。"""
+    from novelist.core.export import export_project
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    root = ws._abs("")
+    project_id = _locate_project(root)
+    if fmt != "markdown":
+        raise click.ClickException(f"unsupported format: {fmt}（当前仅 markdown）")
+    text = export_project(ws, project_id, include_drafts=include_drafts)
+    if out:
+        import os
+
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True) if os.path.dirname(out) else None
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text)
+        click.echo(f"exported to {out} ({len(text)} chars)")
+    else:
+        click.echo(text)
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def stats(ctx: click.Context, directory: str | None) -> None:
+    """输出项目统计（docs/07 §6.1，F8.2）。"""
+    from novelist.core.export import collect_stats
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    root = ws._abs("")
+    project_id = _locate_project(root)
+    s = collect_stats(ws, project_id)
+    click.echo(f"project: {project_id}")
+    click.echo(f"chapters(published): {s.chapters}")
+    click.echo(f"drafts:              {s.drafts}")
+    click.echo(f"total words:         {s.total_words}")
+    click.echo(f"plot events:         {s.plot_events}")
+    click.echo(f"characters:          {s.characters}")
 
 
 @cli.command()

@@ -33,6 +33,7 @@ def produce_chapter(
     provider,
     *,
     session: SessionInfo | None = None,
+    registry=None,
     system_prompt: str = "你是主编剧，负责指挥创作。",
     goal_prefix: str = "请撰写并输出下一章正文。",
     max_rounds: int = 30,
@@ -71,7 +72,7 @@ def produce_chapter(
                 raise RuntimeError(f"direct generation too short ({len(final)} chars)")
             mode = "direct"
         else:
-            reg = build_registry(ws)
+            reg = registry or build_registry(ws)
             runner = AgentRunner(provider, sess, budget=Budget(max_tokens_out=generation_tokens, max_rounds=max_rounds), registry=reg)
             runner.system(system_prompt)
             final = runner.run_loop(goal, max_rounds=max_rounds)
