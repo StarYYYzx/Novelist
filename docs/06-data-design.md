@@ -29,6 +29,14 @@ novel_workspace/
     ├── chapters/                     # 正文（已批准/正式）
     │   └── <vol>-<ch>.md
     ├── workspace/                    # 编辑中间态（主编剧 scratchpad、子代理临时）
+    ├── memory/                       # 记忆子系统（ADR-011，事实演进·实然）
+    │   ├── character_histories/<char>.json   # 人物经历史（按角色）
+    │   ├── plot_events.json          # 剧情事件流（全书事件按序）
+    │   ├── relationships.json        # 角色关系变化记录
+    │   ├── fragment_index.json       # 记忆碎片元数据（来源定位/引用 bible id/hash）
+    │   └── rag/                      # 检索索引落盘（embedding 向量/倒排，可再生）
+    ├── takes/                        # 角色演员试演片段（临时素材，随章归档）
+    │   └── <vol>-<ch>/<char_id>_n.md
     ├── reports/                      # 审查报告、一致性告警、统计
     │   ├── alerts/
     │   └── stats/
@@ -99,25 +107,90 @@ threads_involved: ["pt:V017"]
 - 结尾悬念/钩子：……
 ```
 
-## 4. 状态机（流水线 / 正文 / 伏笔）
+### 3.5 记忆层数据模型（ADR-011，事实演进·实然）
+
+> bible 定义"人设应当怎样"（应然）；memory 记录"角色经历了什么、事件如何推进"（实然）。每条记忆带**来源定位 + 引用 bible id + 版本**，供一致性定位与 RAG 检索。
+
+#### 人物经历史 `memory/character_histories/<char>.json`
+```json
+{
+  "char_id": "char:cz7",
+  "revision": 12,
+  "entries": [
+    {
+      "at": {"vol": 3, "ch": 8},
+      "summary": "苏晚在青云试炼中击败大师兄，身受重伤，暗中获得断玉佩认主",
+      "state_delta": {"power": "晋升九阶", "status": "有伤在身"},
+      "emotion": "由疑惧转向坚定",
+      "refs": ["pt:V017", "loc:qingyun"],
+      "hash": "a1b2c3"
+    }
+  ]
+}
+```
+- `entries` 按时间追加；`state_delta` 记录状态增量（人物卡本身在 bible 是基线，经历在此追加）。
+- "写作前先忆"即查询此文件 + 检索命中的历史条目。
+
+#### 剧情事件流 `memory/plot_events.json`
+```json
+[
+  {
+    "id": "ev:34",
+    "at": {"vol": 3, "ch": 8},
+    "type": "conflict|discovery|reveal|turning_point|…",
+    "summary": "断玉佩在决斗中显形，牵出宗门尘封秘辛",
+    "participants": ["char:cz7", "char:bds"],
+    "affected_threads": ["pt:V017"],
+    "related_events": ["ev:12"],
+    "causality_note": "由 5 章埋下的玉佩执念引爆"
+  }
+]
+```
+- 作为全书事件链的检索索引，供因果/伏笔回溯。
+
+#### 关系变化 `memory/relationships.json`
+```json
+{
+  "pairs": [
+    {
+      "a": "char:cz7", "b": "char:bds",
+      "entries": [
+        {"at": {"vol": 2, "ch": 1}, "from": "敌对", "to": "亦敌亦友"},
+        {"at": {"vol": 3, "ch": 8}, "from": "亦敌亦友", "to": "生死与共"}
+      ]
+    }
+  ]
+}
+```
+
+#### 记忆碎片索引 `memory/fragment_index.json`
+- 每条记忆碎片登记 `id/kind/source(vol,ch)/refs` + 内容 hash，供编纂去重、冲突定位、索引重建增量更新。
+
+## 4. 状态机（流水线 / 正文 / 伏笔 / 记忆）
 
 ### 4.1 工序状态机（F1.1）
 ```
-立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → [待发布]
-                    ↑________ 修订 ______↓ (任何一层的修订回流)
+立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → [记忆编纂] → [待发布]
+                    ↑________ 修订 ______↓      (可回流)
 ```
 - 每节点可被人工"暂停/编辑/续跑"，状态持久在 `project.json.pipeline_state`。
 - 伏笔逾期、人工跳步等事件会自动把部分工序拉回 `修订`。
 
 ### 4.2 章节正文状态
 ```
-planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok → published
+planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok → compiling → published
                                   └─reviewed_fail──→ revising ─→ reviewing
 ```
 - `draft_ready → published` 间的 `promote` 为 sensitive 操作（可走门禁）。
+- `reviewed_ok → compiling → published`：先完成记忆编纂，再进入已发布（编纂冲突未解不回正发布，见 09）。
 
 ### 4.3 伏笔状态
-`unplanned → planted → pending_return → returned`（F4.3）。
+`unplanned → planted → pending_return → returned`（F4.3）。伏笔状态变化同样记入 `plot_events.json` 供检索。
+
+### 4.4 记忆编纂与索引状态
+`draft → validated（冲突校验通过）→ indexed（rag 索引更新完）→ archived`
+- `validated` 失败 → `conflicted` → 人工仲裁 → 通过则 `validated`，否则删除（不污染记忆）。
+- RAG 索引重建可异步，但需在下次 `query_memory` 前完成或标注"待索引"。
 
 ## 5. JSON Schema 约定（正式契约）
 

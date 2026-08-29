@@ -177,14 +177,62 @@ GET  /projects/{id}/export    导出发布包
 - 关停 HTTP 不影响核心引擎；CLI 可独立驱动全部能力。
 - 对外 schema（Req/Resp）以 OpenAPI 定义，在实现阶段随 08 产出。
 
-## 7. Provider 能力矩阵与降级总表
+## 7. 记忆子系统接口（ADR-011/012/013）
+
+记忆子系统分为**读取（检索）**与**写入（编纂）**两组接口；读取工具面向所有 Agent，写入工具默认仅授予主编剧/编纂员。
+
+### 7.1 检索接口（safe，只读）
+```
+query_memory(query, {
+  filters?: { char_id?, chapter_scope?, after?, kinds?: [...] },
+  top_k?: 5, min_score?: 0.0
+}) -> {
+  hits: [{
+    sig: str,                  # 记忆碎片唯一签名
+    kind: "experience|plot_event|relationship|thread",
+    text: str,                 # 摘要文本（可控长度，不拖全文）
+    source: {vol, ch},         # 来源定位
+    refs: [bible_id],          # 引用的圣经实体（供一致性定位）
+    score: float
+  }]
+}
+
+get_character_history(char_id, {recent_n}) -> [experience entry 摘要]
+get_plot_events({filter, around})          -> 剧情事件流（因果/伏笔回溯）
+```
+- 检索结果默认以**摘要**注入上下文；文字匠可再按需 `read_file` 取详细原章。
+
+### 7.2 写入接口（sensitive，编纂员/主编剧）
+```
+append_experience(char_id, entry)        # 人物经历史追加（带冲突校验）
+append_plot_event(event)                 # 剧情事件流追加
+record_relationship_change(a, b, event)  # 关系变化记录
+```
+- 每个写入请求先过 **MemoryValidator**（规则 + LLM 语义双检，见 09§4）：失败 → 返回 `conflicted`，不写入；成功 → 写 `memory/` + 登记 `fragment_index.json`。
+- 全部写操作留审计（`session` + params 摘要 + 结果状态）。
+
+### 7.3 索引维护
+```
+reindex_memory(project, {incremental?: true})   # 重建 RAG 索引（可后台异步）
+```
+- 语义向量化由 Embedding 提供（云 API 或本地模型，见 §8 能力矩阵）。
+- 关键词兜底：无 Embedding 时退化为中文分词 + 倒排索引检索（保可用性）。
+
+### 7.4 试演片段
+```
+write_take(char_id, chapter_id, take_seq, content)  # safe, 写 takes/
+```
+- 用于角色演员产出 `character_take`；写入路径受沙箱约束，仅限本 `chapter_id` 下。
+
+## 8. Provider 能力矩阵与降级总表
 
 | 能力 | 无此能力时的策略 |
 | --- | --- |
 | tool_calling | 文本消息 + 后解析 `tool_calls`（正则/结构化提取），仍走门禁 |
 | json_mode | 退化为"由 LLM 生成 JSON + 宽松解析" |
 | streaming | 关闭流式，改整包返回 |
+| **embedding** | 语义检索退化为关键词+倒排索引；保留 `query_memory` 可用性（07§7.3） |
 | 大 context | 触发 04§5.3 压缩 | 
 
-## 8. 错误码约定
+## 9. 错误码约定
 `OK / DENIED / NOT_FOUND / BUDGET_EXCEEDED / SCHEMA_FAIL / PROVIDER_ERROR / INTERNAL` —— 贯穿工具结果、事件、HTTP 状态码映射，保证可程序化处理。

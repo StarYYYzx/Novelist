@@ -29,22 +29,30 @@ novelist/
 │   ├── __init__.py
 │   ├── core/               # 与表层无关的内核
 │   │   ├── agent_runner.py     # Agent 循环执行器（主编剧 & 子代理共用）
-│   │   ├── subagent.py         # 派发/回收/隔离会话管理
+│   │   ├── subagent.py         # 派发/回收/隔离会话管理（含演员派发）
 │   │   ├── orchestrator.py     # 主编剧具体实现（守则 + 决策）
-│   │   ├── pipeline.py         # 工序状态机
+│   │   ├── pipeline.py         # 工序状态机（含记忆编纂工序）
 │   │   ├── permission.py       # 门禁与策略
 │   │   ├── budget.py           # token/成本预算
+│   │   ├── memory.py           # 记忆子系统编辑/索引入口
 │   │   └── events.py           # 事件总线/审计
+│   ├── memory/             # 记忆子系统（ADR-011）
+│   │   ├── retriever.py        # query_memory / 检索（语义+关键词兜底）
+│   │   ├── chronicler.py       # 编纂：提炼/写入/冲突校验（ADR-013）
+│   │   ├── validators.py       # 记忆冲突双层校验器
+│   │   └── index.py            # RAG 索引构建/增量/落盘
 │   ├── tools/              # 工具注册表 + 各工具实现
 │   │   ├── registry.py
 │   │   ├── filesys.py      # read_file/write_file/list_dir/grep
 │   │   ├── writing.py      # write_draft/promote_draft
 │   │   ├── setting.py      # update_entity/add_plot_thread/set_timeline
 │   │   ├── outline.py
+│   │   ├── memory.py       # query_memory / append_experience / append_plot_event / record_relationship_change / reindex_memory
+│   │   ├── takes.py        # write_take（角色演员试演）
 │   │   ├── consistency.py  # run_rule_check/run_semantic_check
 │   │   └── governance.py   # delete/batch_rewrite/checkpoint/publish
 │   ├── providers/          # LLM Provider 适配器(插件)
-│   │   ├── base.py         # LLMProvider 抽象
+│   │   ├── base.py         # LLMProvider / Embedding 抽象
 │   │   ├── registry.py
 │   │   ├── openai.py
 │   │   ├── deepseek.py
@@ -57,7 +65,7 @@ novelist/
 │   ├── storage/            # 工作区读写、检查点、schema 校验
 │   │   ├── workspace.py
 │   │   ├── checkpoint.py
-│   │   └── schemas/*.schema.json
+│   │   └── schemas/*.schema.json        # 含 schemas/memory/*.schema.json
 │   ├── cli.py              # click 命令行
 │   ├── server.py           # FastAPI HTTP
 │   └── config.py
@@ -68,6 +76,8 @@ novelist/
 │   ├── wordsmith.md
 │   ├── reviewer.md
 │   ├── plotkeeper.md
+│   ├── chronicler.md       # 记忆编纂员
+│   ├── actor.template.md   # 角色演员提示词模板（{character}/{history}/{scene} 占位）
 │   └── inspector.md
 ├── schemas/                # 复制的公开 JSON Schema（供外部校验）
 ├── tests/
@@ -93,18 +103,21 @@ novelist/
 - 一致性规则引擎（引用完整性、时间线）落地。
 - 审校师（LLM 语义检）接入并合并告警。
 - 并行批量生成（2–4 章）+ 预算控制。
+- **记忆子系统初版**：工作区 `memory/` 读写 + 简单检索（关键词优先）+ 章节收尾编纂雏形（ADR-011/013）。
 
 ### M3 — 治理与交付（2 周）
 - danger 级门禁流程完整（CLI 审批）。
 - CLI 全命令可用；`novelist export` 发布包 + 统计。
 - 敏感词过滤 + 审计日志完整。
 - HTTP 服务（只读 + 审批为主）。
+- **记忆子系统完整**：Embedding + 语义检索（降级到关键词）、冲突双检、RAG 增量索引。
+- **角色演员**：actor 提示词模板 + takes 工具 + 多角"排演→整合"流程（ADR-012）。
 
 ### M4 — 硬化与评测（持续）
-- 完整评测集（见 09）与回归。
-- 多个 Provider 实测（云 + 本地 Ollama/vLLM）。
-- 长文（≥20 章）全流程压力测试与一致性统计。
-- 稳定性/降级路径覆盖。
+- 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
+- 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
+- 长文（≥20 章）全流程压力测试与一致性/记忆检索命中统计。
+- 稳定性/降级路径覆盖（含无 Embedding 时检索降级）。
 
 > 里程碑以"可演示的纵向切片"为单位（每次都有可跑通的新能力），而非单纯横向铺层。
 
@@ -112,71 +125,29 @@ novelist/
 
 | # | 风险 | 等级 | 缓解 |
 | --- | --- | --- | --- |
-| R1 | 主 Agent 上下文缓慢膨胀 | 高 | 04§5.3 压缩 + 引用式建模，先行落地 |
+| R1 | 主 Agent 上下文缓慢膨胀 | 高 | 04§5.3 压缩 + 引用式建模 + 记忆检索摘要化，先行落地 |
 | R2 | 结构化输出不达标 / 模型漂移 | 高 | ADR-006 重试+降级 + 契约校验 + 检查员兜底 |
 | R3 | 一致性门禁误杀（过度告警拖慢产出） | 中 | 规则分层 block/warn、可配置阈值、人工复核路径 |
 | R4 | 批量并行引发设定覆盖/脏写 | 中 | 沙箱 + 独立草稿文件 + 原子写 + 锁；仅审后转正 |
-| R5 | 成本失控（token 爆炸） | 中 | 预算上限阻断 + 并发节流 + 上下文压缩 |
-| R6 | Provider 能力矩阵差异（降级差异大） | 中 | capabilities 探测 + 降级总表（07§7）+ 适配器白盒测试 |
-| R7 | 提示词与实现耦合、难维护 | 中 | 提示词独立成 `agents/*.md` + 版本管理 + 评测驱动 |
+| R5 | 成本失控（token 爆炸） | 中 | 预算上限阻断 + 并发节流 + 上下文压缩 + 检索剪枝 |
+| R6 | Provider 能力矩阵差异（降级差异大） | 中 | capabilities 探测 + 降级总表（07§8）+ 适配器白盒测试 |
+| R7 | 提示词与实现耦合、难维护 | 中 | 提示词独立成 `agents/*.md`（含 actor 模板）+ 版本管理 + 评测驱动 |
 | R8 | 沙箱/路径安全漏洞 | 高 | 严格白名单解析、路径穿越测试、禁止绝对路径越界 |
+| R9 | 记忆检索命中差（"忆"不到关键史实） | 高 | 检索质量评测、命中率指标、多路召回（语义+关键词+卷序权重）、可调 top_k |
+| R10 | 记忆污染（编纂幻觉/重复/矛盾入库） | 高 | 冲突双检 + 溯源定位 + 人工仲裁 + 可回滚（09§4） |
+| R11 | 演员串味/越权读他人记忆 | 中 | actor 工具白名单 + take 路径沙箱 + 隔离会话 + 权限面收敛（05§7） |
 
 ## 5. 实现顺序建议（TDD 取向）
 1. 先 `storage`（工作区/schema/检查点）——是所有上层的地基。
 2. 再 `providers`（抽象 + 1 个真适配器）——打通 LLM。
 3. 再 `core/agent_runner + tools/registry + permission`——打通 Agent 循环。
 4. 再 `tools` 创作工具 + `pipeline`——打通一条完整工序。
-5. 最后 `consistency`、HTTP、评测。
+5. 再 `memory`（读取→编纂→检索）——打通"先忆 / 后纂"，回填正文写作流程。
+6. 再 `actor`（takes + 排演整合）——打通人设生动化。
+7. 最后 `consistency` 全量、HTTP、评测（含记忆/演员维度）。
 
 ## 6. 后续可迁移点（Backlog 对接）
-- worker 进程池化（分布式）、多项目空间、文风学习、内容回流（对应 02§6）。
+- worker 进程池化（分布式）、多项目空间、文风学习、内容回流、跨书记忆迁移（对应 02§6）。
+- 工程实现细化：`core/memory.py`（记忆子系统 + RAG 索引）、`agents/*.prompt`（含角色演员提示词）、`schemas/memory/*.schema.json` 的落地节奏见 M2/M3 的评测部分与本文 §3 路线节点的对应。
 
-# 09 · 质量保障与评测
-
-## 1. 质量目标（对应 NFR）
-- 一致性规则层零失败（NFR-4 基线）。
-- Provider 可插拔不受核心改动影响（NFR-2）。
-- 每次变更可回归（NFR-7）。
-- 结果质量可用离线评测集量化（NFR-10）。
-
-## 2. 测试策略
-
-| 层 | 方式 | 工具 |
-| --- | --- | --- |
-| 单元 | Provider 抽象（用 mock/fake completion）、工具、规则引擎、状态机 | pytest |
-| 集成 | 工作区读写→工具→一致性全链路 | pytest + tmp 工作区 |
-| 契约 | schema 校验、事件日志 schema | jsonschema / pydantic |
-| E2E | 跑通"创意→1章"、及"20 章一致性" | CI 长任务 |
-| 沙箱安全 | 路径穿越、越界读写的负面用例 | 专项 |
-
-### 2.1 LLM 相关测试黄金法则
-- 单元测试**绝不真正调 LLM**，用 FakeProvider 注入（确定性）。
-- 真实模型调用进**集成/评测**，受 budget 控制、可标记 skip。
-- 适配器测试覆盖 `capabilities` 差异导致的降级路径。
-
-## 3. 评测集与评分（NFR-10）
-
-评测集 = 一组"已知正确/应改"的样例项目（含设定圣经 + 大纲 + 若干章），供自动跑分。
-
-| 维度 | 说明 | 指标 |
-| --- | --- | --- |
-| 设定一致性 | 人物/地点/力量/时间线不矛盾 | 引用完整率、矛盾数 |
-| 文风保持 | 叙述与角色语气符合 style.json | 抽样人工 + 引入易检信号 |
-| 情节逻辑 | 事件因果、伏笔回收合理 | 抽样人工评分 |
-| 结构化输出 | 契约解析成功率 | json parse/validate 通过率 |
-| 门禁正确 | 危险操作均可被正确拦截/放行 | 用例通过率 |
-| 成本效率 | 每章 token 用量 | 实测统计 |
-
-评分在执行 `novelist eval <evalset>` 后输出报告（落 `reports/stats/`）。
-
-## 4. 一致性保障的持续质检（上线后）
-- 每章转正前置 `run_rule_check`（block 级阻断）。
-- `run_semantic_check` 结果进入审查工单驱动修订。
-- 统计化监控：设定实体新增/矛盾趋势、伏笔逾期数量，供人工关注。
-
-## 5. 人工评价与审计
-- 阶段性抽样人工评审（release 门禁）。
-- 基于事件日志的完整审计重放可用于定位质量问题根因。
-
-## 6. 验收回归对照
-验收标准 A1–A6（02§5）分别映射到 M2/M3/M4 的 E2E：A1/A2→M2 一致性封闭；A3→M4 多 Provider E2E；A4→检查点 kill-test；A5→门禁用例；A6→导出+过滤测试。
+> 质量、评测、一致性保障的完整内容见独立文档 `docs/09-quality-assurance.md`。
