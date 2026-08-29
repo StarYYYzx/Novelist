@@ -98,11 +98,13 @@ novelist/
 
 ## 3. 里程碑路线图
 
-### M0 — 骨架与契约（1 周）
+### M0 — 骨架与契约（1 周）✅ 已完成
 - 建立仓库、pyproject、CI 骨架。
 - 落地 `core/agent_runner.py` 最小循环 + `providers/base.py` 抽象 + 事件总线。
 - 落定 `schemas/*` 实体 JSON Schema 初版 + 工作区目录解析器。
 - 冒烟用例：一次 `complete()` + 一次工具调用。
+- `init` 命令真实化：创建项目工作区 + project.json + .checksum.json。
+- 实现：`storage/workspace.py`（目录规约/沙箱/原子写）、`storage/checkpoint.py`（快照/校验/恢复）、`storage/models.py`（SchemaRegistry + Pydantic 实体）、`providers/openai.py`（OpenAI 兼容适配器 + 拦截识别）。**27 个测试全绿**。
 
 ### M1 — Agent 循环闭环（2 周）
 - 主编剧可按剧本自主调用**只读 + 写作**工具完成"生成一章草稿"循环。

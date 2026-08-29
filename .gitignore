@@ -11,3 +11,4 @@ venv/
 # Novelist 工作区数据（演示/生成物不入库）
 *.index.db
 novel_workspace/
+demo/

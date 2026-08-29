@@ -1,16 +1,43 @@
-"""LLM Provider 适配器插件（docs/07 §2.3）。可选依赖按需加载。"""
+"""LLM Provider 适配器插件（docs/07 §2.3/§2.4）。可选依赖按需加载。
+
+注册表：`name -> 工厂可调用`；实际实例化在核心层（config 指定 primary/fallback）。
+"""
 
 from __future__ import annotations
 
-from ..core.llm import EmbeddingProvider, LLMProvider
+from typing import Any, Protocol
 
 
-REGISTRY: dict[str, type[LLMProvider]] = {}
+class ProviderFactory(Protocol):
+    def __call__(self, **kw: Any):
+        ...
 
 
-def register_provider(name: str, cls: type[LLMProvider]) -> None:
-    REGISTRY[name] = cls
+REGISTRY: dict[str, callable] = {}
 
 
-def get_provider(name: str) -> type[LLMProvider] | None:
+def register_provider(name: str, factory) -> None:
+    REGISTRY[name] = factory
+
+
+def get_provider(name: str):
     return REGISTRY.get(name)
+
+
+# 内置注册：
+# - openai：OpenAI 兼容协议（真实，需 key/base_url）
+# - fake：确定性测试用（不走网络）
+def _make_openai(**kw):
+    from .openai import OpenAICompatibleProvider
+
+    return OpenAICompatibleProvider(**kw)
+
+
+def _make_fake(**kw):
+    from .fake import FakeProvider
+
+    return FakeProvider(**kw)
+
+
+register_provider("openai", _make_openai)
+register_provider("fake", _make_fake)
