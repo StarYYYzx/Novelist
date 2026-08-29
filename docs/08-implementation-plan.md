@@ -121,14 +121,46 @@ novelist/
 - **记忆子系统初版** ✅：`core/writeback.py` `commit_event` 真实写入 `memory/`（人物经历/剧情事件）+ 契约校验（引用完整性），关键词检索 `query_memory` 降级可用；冲突双检/语义检索随 M3 完整化。
 - **DeepSeek 真实适配器** ✅：`providers/deepseek.py`（`DeepSeek-API-KEY` 环境变量），真实 API 集成测试 `test_deepseek_live_completion` 通过。
 
-### M3 — 治理与交付（2 周）
-- danger 级门禁流程完整（CLI 审批）。
-- CLI 全命令可用；`novelist export` 发布包 + 统计。
-- 敏感词过滤 + 审计日志完整。
-- HTTP 服务（只读 + 审批为主）。
-- **记忆子系统完整**：Embedding + 语义检索（降级到关键词）、冲突双检、RAG 增量索引。
-- **角色演员**：actor 提示词模板 + takes 工具 + 多角"排演→整合"流程（ADR-012）。
-- **受控围读会**：scene 场景总线 + `join/say/leave` 工具 + 结束判据收敛（ADR-014）。
+### M3 — 治理与交付（进行中）
+
+#### M3a — 门禁与交付 ✅ 已完成
+- danger 级门禁流程完整（CLI `grant` 审批 + 策略文件 `PermissionGate.from_policy_file`）。
+- CLI 全命令可用；`novelist export` 发布包 + `stats` 统计。
+- 治理工具：`publish` / `delete_file` / `checkpoint`（danger 默认 deny，可审批放行）。
+
+#### M3c — HTTP 服务 ✅ 已完成
+- FastAPI（docs/07 §6.2，F8.3）：项目列表/状态、流水线推进、串行写章、导出、待决审批与决策。
+- 审批队列跨进程复用：HTTP 与 CLI `grant` 读写同一份 `logs/pending_approvals.json`。
+- `novelist server --host/--port`；7 个端点测试全绿。
+
+#### M3d — 记忆子系统完整化 ✅ 已完成
+- **Embedding 与降级（F9.4）**：`core/embedding.py` 提供 `KeywordEmbedding`（中文二元组 + IDF 加权精确打分）
+  与 `OpenAIEmbedding`（OpenAI 兼容 `/embeddings`）；`make_embedding()` 在无 key / 缺 httpx 时自动降级，
+  检索接口不变、结果仍可用。
+- **检索（docs/07 §7.1）**：`core/memory.py` 的 `MemoryRetriever` 双路径——
+  语义模式走向量余弦，关键词模式走**精确 token + IDF 打分**。
+  （刻意不用定长哈希向量做余弦：小语料下碰撞噪声会盖过真实信号——实测 dim=256 时"零重合"文档能得 0.16 分，
+  高于真实命中的 0.12；精确集合运算无碰撞，零重合即 0。）
+- **索引（ADR-016）**：`memory/fragment_index.json`（元数据 + hash，供去重与冲突定位）
+  \+ `memory/rag/vectors.json`（**可再生缓存**；删掉后检索回落到即时计算或精确打分，正确性不受影响）。
+- **冲突双检（F11.3）**：`MemoryWriter` 写前校验——规则层（重复入库、bible 引用完整性 `char:`/`pt:`/`loc:`）
+  \+ 语义层（经 `semantic_checker` 回调注入，由编纂员子代理承担）；冲突抛 `MemoryConflictError`、
+  回写层转为 `ContradictionError` 并回退，**不静默入库**（docs/06 §4.4 `conflicted` → 人工仲裁）。
+- **事件实时回写接入（A9）**：`commit_event` 改为经 `MemoryWriter` 落记忆并**增量更新索引**，
+  下一事件/下一章立即可"先忆"（F11.4/F11.5）。
+- **先忆升级（F3.4）**：CLI `chapter` 的 goal 组装由"取 plot_events 末尾 3 条"改为**按相关度检索召回**
+  （依细纲语义召回，而非按时间顺序）。
+- **工具**：`query_memory`（支持 char_id / kinds / 章节范围过滤）、`get_character_history`、
+  `get_plot_events`、`reindex_memory`（sensitive，走门禁）。
+- 测试：`tests/test_m3_memory.py` 22 个用例（降级、排序、过滤、冲突双检、索引可再生、端到端闭环）。
+
+#### 待办
+- 敏感词过滤 + 审计日志完整（ADR-015 上游预检；`core/moderation.py` 的词表目前为空）。
+- **角色演员**：actor 提示词模板 + `write_take` 工具 + 多角"排演→整合"流程（ADR-012）。
+  `core/scene.py`（SceneBus）与 `core/scene_tools.py`（join/say/leave）已就绪，**尚未接入编排流**。
+- **受控围读会**：结束判据（全体离场 / 轮次上限 / 收敛 / 超时）与主持人调度尚未接到 `produce_chapter`（ADR-014）。
+- **真实事件抽取**：`produce_chapter` 目前只回写一条章级合成事件"完成第 X 卷第 Y 章"，不含情节内容，
+  因此检索无法按情节语义命中它。真正的"章内逐事件落定 + 编纂员提炼"（F11.1）待实现。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。

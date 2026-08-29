@@ -41,6 +41,8 @@ def produce_chapter(
     direct_words_floor: int = 20,
     prefer_direct: bool = False,
     generation_tokens: int = 4000,
+    embedding=None,
+    semantic_checker=None,
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（串行）。
 
@@ -50,6 +52,8 @@ def produce_chapter(
       （ADR-006 文本型降级），避免多轮工具调用的往返开销。
     - generation_tokens：单次生成预算；本地慢模型（约 20 token/s）请给较小值
       （如 600≈30s），以免超时。
+    - embedding / semantic_checker：透传给事件回写（ADR-013）——前者用于 RAG 增量索引的
+      向量化，后者注入冲突双检的语义层（编纂员子代理，docs/05 §5.4 第 4 步）。
     - 无论哪种模式，写完后触发一次"事件回写"（ADR-013）。
     """
     from .agent_runner import AgentRunner
@@ -101,7 +105,7 @@ def produce_chapter(
         kind="chapter", summary=f"完成第 {vol} 卷第 {ch} 章",
     )
     try:
-        commit_event(ev, sess, ws=ws)
+        commit_event(ev, sess, ws=ws, embedding=embedding, semantic_checker=semantic_checker)
         events = 1
     except Exception:  # noqa: BLE001 - 回写失败不影响本书草稿已落盘
         events = 0

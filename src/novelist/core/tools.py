@@ -129,6 +129,10 @@ class ToolRegistry:
                 return ToolResult(status="denied", code=DENIED, data={"tool": name, "approval": req.id if req else None})
         try:
             data = tool.invoke(session, params, budget)
+            # 工具实现可直接返回 ToolResult（如用 ok() 构造）；此时不再二次包装，
+            # 否则 result.data 会变成嵌套的 ToolResult 而不是业务数据。
+            if isinstance(data, ToolResult):
+                return data
             return ok(data=data)
         except NovelistError as e:
             return ToolResult(status=e.to_status(), code=e.code, data={"error": e.message})

@@ -193,32 +193,58 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
 
     # 门禁 + 审批：策略文件（可选）→ 默认 supervised；ask 走交互审批并持久化供 grant 查询
+    # Embedding：按配置 provider.embedding 选取；无 key/不可用时自动降级为关键词索引（F9.4）
+    from novelist.core.embedding import make_embedding
+
+    emb = make_embedding(getattr(ctx.obj["config"].provider, "embedding", "keyword-fallback"))
+
     gate = PermissionGate.from_policy_file(policy) if policy else PermissionGate()
     approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
-    reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision)
+    reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision, embedding=emb)
 
-    # 全链路：细纲读入 + 前导"先忆"（query_memory）→ 拼进生成目标 → 正文 → 事件回写
-    final_goal = _compose_goal(ws, project_id, vol, ch)
+    # 全链路：细纲读入 + 前导"先忆"（记忆检索）→ 拼进生成目标 → 正文 → 事件回写
+    final_goal = _compose_goal(ws, project_id, vol, ch, embedding=emb)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
-                          final_goal=final_goal, generation_tokens=gen_tokens)
+                          final_goal=final_goal, generation_tokens=gen_tokens, embedding=emb)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode})")
     click.echo(f"events committed: {res.events_committed}")
 
 
-def _compose_goal(ws, project_id: str, vol: int, ch: int) -> str:
+def _compose_goal(ws, project_id: str, vol: int, ch: int, embedding=None) -> str:
     """组装生成目标：注入细纲要点 + 前导记忆近况（先忆，docs/04 §4.1 4a / ADR-011）。"""
     parts = [f"请撰写并输出第 {vol} 卷第 {ch} 章正文（project={project_id}）"]
     # 1) 细纲（outline/chapters/<vol>-<ch>.md），若存在
+    gist_text = ""
     gist = ws.outline_chapter_path(project_id, vol, ch)
     if gist.exists():
+        gist_text = gist.read_text(encoding="utf-8")[:800]
         parts.append("细纲：")
-        parts.append(gist.read_text(encoding="utf-8")[:800])
-    # 2) 前导记忆：本卷最新已有记忆片段（人物近况/事件），供继承前期情节
+        parts.append(gist_text)
+    # 2) 前导记忆（先忆）：以细纲为查询召回相关历史片段；无命中时退回近期事件摘要
     parts.append("近期记忆（前情速览）：")
-    parts.append(_recent_memory_summary(ws, project_id))
+    parts.append(_recall_memory(ws, project_id, gist_text or f"第 {vol} 卷第 {ch} 章", embedding=embedding))
     return "\n".join(parts)
+
+
+def _recall_memory(ws, project_id: str, query: str, embedding=None, top_k: int = 5) -> str:
+    """写作前"先忆"（docs/07 §7.1 / F3.4）：经记忆检索召回相关历史片段。
+
+    索引缺失时自动从 memory/ 事实源重建；完全没有记忆时退回 plot_events 末尾摘要。
+    """
+    from novelist.core.memory import MemoryIndex, MemoryQuery, MemoryRetriever
+
+    idx = MemoryIndex.load(ws, project_id)
+    if not idx.fragments:
+        idx.rebuild(ws, project_id, embedding)
+    if idx.fragments:
+        hits = MemoryRetriever(idx, embedding=embedding).query(MemoryQuery(query=query, top_k=top_k))
+        if hits:
+            return "\n".join(
+                f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}" for h in hits
+            )
+    return _recent_memory_summary(ws, project_id)
 
 
 def _recent_memory_summary(ws, project_id: str, limit: int = 3) -> str:

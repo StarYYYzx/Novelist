@@ -106,6 +106,15 @@ class Workspace:
         safe = re.sub(r"[^A-Za-z0-9_-]", "_", char_id)
         return self._abs(f"{project_id}/memory/character_histories/{safe}.json")
 
+    def relationships_path(self, project_id: str) -> Path:
+        return self._abs(f"{project_id}/memory/relationships.json")
+
+    def fragment_index_path(self, project_id: str) -> Path:
+        return self._abs(f"{project_id}/memory/fragment_index.json")
+
+    def rag_dir(self, project_id: str) -> Path:
+        return self._abs(f"{project_id}/memory/rag")
+
     def project_json_path(self, project_id: str) -> Path:
         return self._abs(f"{project_id}/project.json")
 

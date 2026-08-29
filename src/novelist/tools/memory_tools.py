@@ -1,73 +1,144 @@
-"""记忆检索工具（docs/05 §4.1 / docs/07 §7.1）：query_memory / get_character_history（safe）。
+"""记忆检索工具（docs/05 §4.1 / docs/07 §7）：query_memory / get_character_history / get_plot_events / reindex_memory。
 
-M1：提供可用的**关键词降级**检索（docs/07 §7.3 —— 无 Embedding 时退化为中文分词/子串匹配，
-接口与未来语义检索一致）。命中返回摘要 + 来源定位 + refs。
+检索走 `core.memory.MemoryRetriever`（docs/07 §7.1）：
+- 有真实 Embedding Provider 时走语义检索；
+- 无则退化为 `KeywordEmbedding` 关键词索引（F9.4 降级路径，接口一致、结果可用）。
+
+索引（`memory/fragment_index.json` + `memory/rag/vectors.json`）是**可再生缓存**，
+缺失时自动从 `memory/` 事实源重建（ADR-016：文件才是事实源）。
 """
 
 from __future__ import annotations
 
+import json
+
+from ..core.memory import MemoryIndex, MemoryQuery, MemoryRetriever, reindex_memory
 from ..core.session import SessionInfo
 from ..core.tools import Tool, ok
 from ..storage.workspace import Workspace
 
 
-def _harvest_texts(ws: Workspace, project_id: str) -> list[dict]:
-    """扫描 memory/ 与 bible/ 下的 JSON 文件，抽出可检索文本片段。"""
-    items: list[dict] = []
-    mem_dir = ws.memory_dir(project_id)
-    if mem_dir.is_dir():
-        for f in sorted(mem_dir.rglob("*.json")):
-            try:
-                import json
-
-                data = json.loads(f.read_text(encoding="utf-8"))
-                items.append({"source": str(f.name), "text": _flatten(data)})
-            except (ValueError, OSError):  # pragma: no cover - 跳过坏文件
-                continue
-    return items
+def _load_index(ws: Workspace, project_id: str, embedding=None) -> MemoryIndex:
+    """装载索引；缺失或为空时从文件事实源重建。"""
+    p = ws.fragment_index_path(project_id)
+    idx = MemoryIndex.load(ws, project_id) if p.exists() else None
+    if idx is None or not idx.fragments:
+        idx = MemoryIndex()
+        idx.rebuild(ws, project_id, embedding)
+    return idx
 
 
-def _flatten(data) -> str:
-    if isinstance(data, str):
-        return data
-    if isinstance(data, list):
-        return " ".join(_flatten(x) for x in data)
-    if isinstance(data, dict):
-        return " ".join(_flatten(v) for k, v in data.items())
-    return str(data)
-
-
-def tools(ws: Workspace) -> list[Tool]:
+def tools(ws: Workspace, embedding=None) -> list[Tool]:
     def _query_memory(session: SessionInfo, params, budget=None):
-        q = params.get("query", "")
-        top_k = int(params.get("top_k", 5))
-        hits = []
-        for item in _harvest_texts(ws, session.project_id):
-            if not q or q.lower() in item["text"].lower():
-                hits.append(
-                    {"sig": f"{item['source']}:{item['text'][:20]}", "kind": "keyword",
-                     "text": item["text"][:200], "source": {"vol": 0, "ch": 0}, "refs": [], "score": 1.0}
-                )
-                if len(hits) >= top_k:
-                    break
-        return ok(data={"hits": hits})
+        q = str(params.get("query", "") or "")
+        top_k = int(params.get("top_k", 5) or 5)
+        filters = params.get("filters") or {}
+        # 便捷过滤：char_id / kinds 也可从顶层传入（LLM 更容易填对）
+        if "char_id" in params and "char_id" not in filters:
+            filters["char_id"] = params["char_id"]
+        if "kinds" in params and "kinds" not in filters:
+            filters["kinds"] = params["kinds"]
+        min_score = float(params.get("min_score", 0.0) or 0.0)
+
+        idx = _load_index(ws, session.project_id, embedding)
+        retriever = MemoryRetriever(idx, embedding=embedding, min_score=min_score)
+        hits = retriever.query(MemoryQuery(query=q, filters=filters, top_k=top_k, min_score=min_score))
+        return ok(
+            data={
+                "hits": [
+                    {
+                        "sig": h.sig,
+                        "kind": h.kind,
+                        "text": h.text,
+                        "source": h.source,
+                        "refs": h.refs,
+                        "score": h.score,
+                    }
+                    for h in hits
+                ],
+                "total": len(idx.fragments),
+                "mode": getattr(embedding, "kind", "keyword-hash"),
+            }
+        )
 
     def _history(session: SessionInfo, params, budget=None):
-        char_id = params.get("char_id", "")
+        char_id = str(params.get("char_id", "") or "")
         p = ws.char_history_path(session.project_id, char_id)
         text = ""
+        entries: list = []
         if p.exists():
             try:
-                import json
-
-                text = json.dumps(json.loads(p.read_text(encoding="utf-8")), ensure_ascii=False)
+                data = json.loads(p.read_text(encoding="utf-8"))
+                entries = list(data.get("entries") or []) if isinstance(data, dict) else []
+                text = json.dumps(data, ensure_ascii=False)
             except (ValueError, OSError):  # pragma: no cover
-                text = ""
-        return ok(data={"char_id": char_id, "history": text[:500]})
+                text, entries = "", []
+        limit = int(params.get("limit", 0) or 0)
+        recent = entries[-limit:] if limit > 0 else entries
+        return ok(data={"char_id": char_id, "history": text[:500], "count": len(entries),
+                        "recent": recent})
+
+    def _plot_events(session: SessionInfo, params, budget=None):
+        """读取剧情事件流（事实源 memory/plot_events.json），可按卷/章过滤。"""
+        path = ws._abs(f"{session.project_id}/memory/plot_events.json")
+        events = []
+        if path.exists():
+            try:
+                events = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(events, list):
+                    events = []
+            except (ValueError, OSError):  # pragma: no cover
+                events = []
+        vol = params.get("vol")
+        ch = params.get("ch")
+        if vol is not None:
+            events = [e for e in events if (e.get("at") or {}).get("vol", e.get("vol")) == int(vol)]
+        if ch is not None:
+            events = [e for e in events if (e.get("at") or {}).get("ch", e.get("ch")) == int(ch)]
+        limit = int(params.get("limit", 0) or 0)
+        if limit > 0:
+            events = events[-limit:]
+        return ok(data={"events": events, "count": len(events)})
+
+    def _reindex(session: SessionInfo, params, budget=None):
+        """全量重建记忆索引（docs/07 §7.3）。sensitive——会重写索引文件。"""
+        n = reindex_memory(ws, session.project_id, embedding=embedding)
+        return ok(data={"fragments": n, "mode": getattr(embedding, "kind", "keyword-hash")})
 
     return [
-        Tool("query_memory", "检索相关历史经历/剧情（关键词降级）", "safe", _query_memory,
-             {"query": {"type": "string"}, "top_k": {"type": "integer"}}),
-        Tool("get_character_history", "获取某角色经历摘要", "safe", _history,
-             {"char_id": {"type": "string"}}),
+        Tool(
+            "query_memory",
+            "检索相关历史经历/剧情/关系（语义检索，无 embedding 时降级为关键词）",
+            "safe",
+            _query_memory,
+            {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer"},
+                "char_id": {"type": "string"},
+                "kinds": {"type": "array", "items": {"type": "string"}},
+                "min_score": {"type": "number"},
+                "filters": {"type": "object"},
+            },
+        ),
+        Tool(
+            "get_character_history",
+            "获取某角色经历摘要",
+            "safe",
+            _history,
+            {"char_id": {"type": "string"}, "limit": {"type": "integer"}},
+        ),
+        Tool(
+            "get_plot_events",
+            "读取剧情事件流（可按卷/章过滤）",
+            "safe",
+            _plot_events,
+            {"vol": {"type": "integer"}, "ch": {"type": "integer"}, "limit": {"type": "integer"}},
+        ),
+        Tool(
+            "reindex_memory",
+            "从 memory/ 事实源全量重建记忆检索索引",
+            "sensitive",
+            _reindex,
+            {},
+        ),
     ]

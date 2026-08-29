@@ -2,7 +2,7 @@
 
 面向**长连载网文 / 商业化长篇**的多 Agent 写作系统。以 Claude Code 式的**单 Agent 主循环 + 按需子代理 + 工具调用**为内核，以**小说工作区（文件系统）**为共享黑板，以**可插拔 LLM 适配器**对接任意大模型后端；并内置**记忆子系统（Memory + RAG）**解决长期连载中"AI 遗忘剧情/人物经历"的痛点——写作前"先忆"、创作中由**角色演员**贴合人设试演、收尾由**记忆编纂员**把剧情与人物变化沉淀为可检索记忆。
 
-> 当前阶段：**软件工程设计（文档先行）+ 代码脚手架**。本仓库含完整架构文档（docs/01–09）、实体 JSON Schema 契约（schemas/）与最小可运行脚手架（src/）。
+> 当前阶段：**文档先行 + 里程碑推进中**。本仓库含完整架构文档（docs/01–09）、实体 JSON Schema 契约（schemas/）与按 M0–M4 里程碑推进的实现（src/）。M0–M2 已完成，M3 已完成门禁/导出/HTTP 服务/记忆子系统完整化，角色演员与围读会待接入。进度以 [`docs/08-implementation-plan.md`](docs/08-implementation-plan.md) 为准。
 
 ## 架构选型结论（一句话）
 
@@ -30,13 +30,25 @@
 2. 再读 [04-architecture-design.md](docs/04-architecture-design.md) 掌握**整体长什么样**；
 3. 需要落地时对照 [05-agent-design.md](docs/05-agent-design.md) 与 [08-implementation-plan.md](docs/08-implementation-plan.md)。
 
-## 当前脚手架（src/）
+## 当前实现（src/）
 
-文档的**契约已固化为实体 Schema**（`schemas/`），核心抽象已落成可导入的**接口桩**（`src/novelist/`）：Provider 抽象 / 工具注册表与门禁 / 事件总线 / 流水线状态机 / 围读会场景总线 / 记忆子系统接口 / 审核预检 / SQLite 辅助索引 / CLI 骨架。配套冒烟测试覆盖核心桩的最小正确行为。
+文档的**契约已固化为实体 Schema**（`schemas/`），核心抽象已落成可运行的实现（`src/novelist/`）：
+
+| 能力 | 状态 |
+| --- | --- |
+| Provider 适配器（OpenAI 兼容 / DeepSeek / LM-Studio / Fake） | ✅ |
+| Agent 循环（工具调用 + 预算收敛，本地慢模型走直出降级） | ✅ |
+| 工具注册表 + 三级门禁 + 人工审批队列（跨进程持久化） | ✅ |
+| 流水线状态机 + 一致性规则引擎（R-REF / R-TL）+ 检查点 | ✅ |
+| 记忆子系统（检索降级 / 冲突双检 / RAG 增量索引） | ✅ |
+| CLI 全命令 + FastAPI HTTP 服务 | ✅ |
+| 角色演员试演 / 受控围读会（SceneBus 已就绪，未接入编排） | ⬜ |
+| 敏感词过滤 + 审核拦截降级链 | ⬜ |
 
 ```
-python -m pytest tests/ -q          # 运行冒烟测试（依赖 pytest/click）
-python -m novelist.cli --help       # CLI 骨架（需 src 在 pythonpath）
+python -m pytest tests/ -q          # 运行测试（依赖 pytest/click）
+python -m novelist.cli --help       # CLI（需 src 在 pythonpath）
 ```
 
-> 路线：真实实现按 [08-implementation-plan.md](docs/08-implementation-plan.md) 的 M0–M4 里程碑推进；M0 先落地工作区/checkpoint/schema 与首个 Provider 适配器。
+> 路线：实现按 [08-implementation-plan.md](docs/08-implementation-plan.md) 的 M0–M4 里程碑推进。
+> **进度以代码和 `docs/08` 为准**——文档自述可能滞后于真实实现。

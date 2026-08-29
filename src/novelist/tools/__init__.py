@@ -21,22 +21,24 @@ def build_registry(
     gate: PermissionGate | None = None,
     approvals: "ApprovalQueue | None" = None,
     decision_fn=None,
+    embedding=None,
 ) -> ToolRegistry:
     """装配完整工具注册表（docs/05 §4.1 / docs/07 §3.3）。
 
     approvals/decision_fn 透传给 ToolRegistry（ask 处置的人工审批接入，docs/07 §3.3）。
+    embedding 透传给记忆工具（docs/07 §7.1）；None 时检索降级为关键词索引（F9.4）。
     """
     reg = ToolRegistry(gate=gate or PermissionGate(), approvals=approvals, decision_fn=decision_fn)
-    for tool in all_tools(ws):
+    for tool in all_tools(ws, embedding=embedding):
         reg.register(tool)
     return reg
 
 
-def all_tools(ws: Workspace) -> list[Tool]:
+def all_tools(ws: Workspace, embedding=None) -> list[Tool]:
     return (
         filesys.tools(ws)
         + writing.tools(ws)
-        + memory_tools.tools(ws)
+        + memory_tools.tools(ws, embedding=embedding)
         + governance.tools(ws)
     )
 
