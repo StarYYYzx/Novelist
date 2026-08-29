@@ -10,6 +10,12 @@
     "name": { "type": "string", "minLength": 1 },
     "aliases": { "type": "array", "items": { "type": "string" } },
     "species": { "type": "string" },
+    "gender": {
+      "type": "string",
+      "enum": ["male", "female", "unknown"],
+      "description": "人物性别。小说系统必需——缺失时 LLM 会自行漂移人物性别（实测把男性主角写成女性）。"
+    },
+    "age": { "type": ["integer", "string"] },
     "core_traits": { "type": "array", "items": { "type": "string" } },
     "power": {
       "type": "object",
