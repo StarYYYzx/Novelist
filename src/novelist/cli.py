@@ -360,10 +360,14 @@ def stats(ctx: click.Context, directory: str | None) -> None:
 
 
 @cli.command()
+@click.option("--host", default="127.0.0.1", help="监听地址")
+@click.option("--port", default=8000, type=int, help="监听端口")
 @click.pass_context
-def server(ctx: click.Context) -> None:
+def server(ctx: click.Context, host: str, port: int) -> None:
     """启动 HTTP 服务（docs/07 §6.2）。"""
-    click.echo("server: not implemented yet (M3)")
+    import uvicorn
+
+    uvicorn.run("novelist.server:app", host=host, port=port, reload=False)
 
 
 def _locate_project(root) -> str:
