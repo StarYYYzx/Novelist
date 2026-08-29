@@ -159,10 +159,14 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.argument("directory", required=False, default=None)
 @click.option("--vol", default=1, type=int, help="卷号")
 @click.option("--ch", default=1, type=int, help="章节号")
-@click.option("--provider", default="fake", help="LLM provider：fake/scripted/openai")
+@click.option("--provider", default="fake", help="LLM provider：fake/scripted/lmstudio/deepseek/openai")
+@click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
 @click.pass_context
-def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str) -> None:
-    """串行写一章：主编剧经 Agent 循环调工具产出草稿 + 事件实时回写（docs/04 §4.1 / ADR-013）。"""
+def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None) -> None:
+    """串行写一章：主编剧产出草稿 + 事件实时回写（docs/04 §4.1 / ADR-013）。
+
+    --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
+    """
     from novelist.core.orchestrator import produce_chapter
 
     ws: Workspace = ctx.obj["workspace"]
@@ -177,10 +181,15 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
         raise click.ClickException(f"chapter: {e}") from e
 
     prov = _make_cli_provider(provider, vol, ch)
-    res = produce_chapter(ws, project_id, vol, ch, prov)
+    # 本地模型默认直出（prefer_direct）；其余遵循用户 --direct/--loop 显式选择
+    prefer_direct = True if provider in ("lmstudio", "local") else (direct if direct is not None else False)
+    # 本地慢模型（约 20 token/s）用小生成预算，避免超时（量力而为）
+    gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
+    res = produce_chapter(ws, project_id, vol, ch, prov, prefer_direct=prefer_direct,
+                          generation_tokens=gen_tokens)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
-    click.echo(f"wrote draft: {res.chapter_path}")
+    click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode})")
     click.echo(f"events committed: {res.events_committed}")
 
 
@@ -202,6 +211,10 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
         from novelist.providers.deepseek import DeepSeekProvider
 
         return DeepSeekProvider(model="deepseek-chat")
+    if provider in ("lmstudio", "local"):
+        from novelist.providers.lmstudio import LMStudioProvider
+
+        return LMStudioProvider()  # 默认 http://127.0.0.1:1234, qwen/qwen3.5-9b
     # openai 等真实 provider（需 key/base_url，见 providers.openai）
     from novelist.providers.openai import OpenAICompatibleProvider
 

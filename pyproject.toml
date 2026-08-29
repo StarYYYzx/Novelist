@@ -43,3 +43,7 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: 慢速真实集成测试（本地 LM-Studio 长文本生成），用 -m slow 显式运行",
+]

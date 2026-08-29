@@ -45,6 +45,13 @@ def _make_fake(**kw):
     return FakeProvider(**kw)
 
 
+def _make_lmstudio(**kw):
+    from .lmstudio import LMStudioProvider
+
+    return LMStudioProvider(**kw)
+
+
 register_provider("openai", _make_openai)
 register_provider("deepseek", _make_deepseek)
 register_provider("fake", _make_fake)
+register_provider("lmstudio", _make_lmstudio)
