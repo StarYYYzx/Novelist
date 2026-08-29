@@ -36,6 +36,7 @@ def produce_chapter(
     registry=None,
     system_prompt: str = "你是主编剧，负责指挥创作。",
     goal_prefix: str = "请撰写并输出下一章正文。",
+    final_goal: str | None = None,
     max_rounds: int = 30,
     direct_words_floor: int = 20,
     prefer_direct: bool = False,
@@ -55,7 +56,7 @@ def produce_chapter(
     from ..core.llm import LLMMessage, LLMRequest
 
     sess = session or SessionInfo(project_id=project_id, agent="orchestrator")
-    goal = f"{goal_prefix}：第 {vol} 卷第 {ch} 章（project={project_id}）"
+    goal = final_goal if final_goal is not None else f"{goal_prefix}：第 {vol} 卷第 {ch} 章（project={project_id}）"
 
     mode = "tool"
     try:
@@ -100,7 +101,7 @@ def produce_chapter(
         kind="chapter", summary=f"完成第 {vol} 卷第 {ch} 章",
     )
     try:
-        commit_event(ev, sess)
+        commit_event(ev, sess, ws=ws)
         events = 1
     except Exception:  # noqa: BLE001 - 回写失败不影响本书草稿已落盘
         events = 0

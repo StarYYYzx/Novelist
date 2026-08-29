@@ -132,3 +132,38 @@ def test_lmstudio_end_to_end_chapter(tmp_path):
     assert ws.draft_path(pid, 1, 1).exists()
     body = ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")
     assert len(body) > 0
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _lmstudio_reachable(), reason="LM-Studio 本地服务不可达或未运行")
+def test_lmstudio_cli_chapter_full(tmp_path):
+    """CLI chapter 全链路（真实 LM-Studio）：细纲+前情记忆注入 → 正文直出 → 事件回写。
+
+    最小预算（150 token≈8s），量力而为：不追求长篇，只验证链路从细纲到回写真跑通。
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from novelist.cli import cli
+    from novelist.storage.checkpoint import Checkpoint
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "proj-lmcli"
+    ws.create_project(pid)
+    Checkpoint(ws).save(pid, {"id": pid, "title": "t", "pipeline_state": "正文", "event_seq": 0})
+    gist = ws.outline_chapter_path(pid, 1, 2)
+    gist.parent.mkdir(parents=True, exist_ok=True)
+    gist.write_text("细纲：苏晚发现断玉佩，掌门之位悬而未决。", encoding="utf-8")
+    ev = ws._abs(f"{pid}/memory/plot_events.json")
+    ev.parent.mkdir(parents=True, exist_ok=True)
+    ev.write_text(json.dumps([{"id": "ev:0", "vol": 1, "ch": 1, "summary": "苏晚刚刚下山"}]), encoding="utf-8")
+
+    res = CliRunner().invoke(cli, ["chapter", str(tmp_path), "--provider", "lmstudio", "--vol", "1", "--ch", "2"],
+                             env=None)
+    assert res.exit_code == 0, res.output
+    assert ws.draft_path(pid, 1, 2).exists()
+    events = json.loads(ws._abs(f"{pid}/memory/plot_events.json").read_text(encoding="utf-8"))
+    assert len(events) == 2  # 前情 1 + 本章回写 1
+    assert events[-1]["summary"].startswith("完成")

@@ -197,12 +197,44 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
     reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision)
 
+    # 全链路：细纲读入 + 前导"先忆"（query_memory）→ 拼进生成目标 → 正文 → 事件回写
+    final_goal = _compose_goal(ws, project_id, vol, ch)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
-                          generation_tokens=gen_tokens)
+                          final_goal=final_goal, generation_tokens=gen_tokens)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode})")
     click.echo(f"events committed: {res.events_committed}")
+
+
+def _compose_goal(ws, project_id: str, vol: int, ch: int) -> str:
+    """组装生成目标：注入细纲要点 + 前导记忆近况（先忆，docs/04 §4.1 4a / ADR-011）。"""
+    parts = [f"请撰写并输出第 {vol} 卷第 {ch} 章正文（project={project_id}）"]
+    # 1) 细纲（outline/chapters/<vol>-<ch>.md），若存在
+    gist = ws.outline_chapter_path(project_id, vol, ch)
+    if gist.exists():
+        parts.append("细纲：")
+        parts.append(gist.read_text(encoding="utf-8")[:800])
+    # 2) 前导记忆：本卷最新已有记忆片段（人物近况/事件），供继承前期情节
+    parts.append("近期记忆（前情速览）：")
+    parts.append(_recent_memory_summary(ws, project_id))
+    return "\n".join(parts)
+
+
+def _recent_memory_summary(ws, project_id: str, limit: int = 3) -> str:
+    """抽取 memory/plot_events.json 最近事件作前情摘要（docs/07 §7.1 先忆）。"""
+    import json
+
+    path = ws._abs(f"{project_id}/memory/plot_events.json")
+    if not path.exists():
+        return "（暂无）"
+    try:
+        events = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:  # pragma: no cover
+        return "（暂无）"
+    if not isinstance(events, list) or not events:
+        return "（暂无）"
+    return "; ".join(f"{e.get('vol')}:{e.get('ch')} {e.get('summary')}" for e in events[-limit:])
 
 
 def _interactive_decision(req) -> str:
