@@ -12,16 +12,9 @@
     "genre": { "type": ["string", "null"] },
     "prefs": { "type": "object", "additionalProperties": true },
     "budget": { "type": "object", "additionalProperties": true },
-    "pipeline_state": { "type": "string", "enum": ["立项", "世界观", "大纲", "细纲", "正文", "审查", "记忆编纂", "待发布", "已完成"] },
-    "batch_meta": {
-      "type": "object",
-      "properties": {
-        "current_batch": { "type": "integer", "minimum": 0 },
-        "batch_base_ref": { "type": ["string", "null"] }
-      },
-      "additionalProperties": true
-    }
+    "pipeline_state": { "type": "string", "enum": ["立项", "世界观", "大纲", "细纲", "正文", "审查", "待发布", "已完成"] },
+    "event_seq": { "type": "integer", "minimum": 0 }
   },
   "additionalProperties": true,
-  "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐"
+  "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐；event_seq 为事件回写序列计数"
 }

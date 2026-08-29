@@ -171,34 +171,30 @@ threads_involved: ["pt:V017"]
 
 ### 4.1 工序状态机（F1.1）
 ```
-立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → [记忆编纂] → [待发布]
+立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → 待发布
                     ↑________ 修订 ______↓      (可回流)
 ```
 - 每节点可被人工"暂停/编辑/续跑"，状态持久在 `project.json.pipeline_state`。
 - 伏笔逾期、人工跳步等事件会自动把部分工序拉回 `修订`。
+- **正文阶段严格串行逐章**（ADR-002 修订），不做批次并行；事件回写在正文编写过程中实时完成（见 04§4.2 / 05§5.4），无须独立的章末"记忆编纂"工序节点。
 
-### 4.2 章节正文状态
+### 4.2 章节正文状态（串行，事件实时回写）
 ```
-planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok → compiling → published
+planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok → published
                                   └─reviewed_fail──→ revising ─→ reviewing
-持续写作                    reviewed_ok → compiling → [pending_release] → published   (仅并行批次转向章)
 ```
 - `draft_ready → published` 间的 `promote` 为 sensitive 操作（可走门禁）。
-- `reviewed_ok → compiling → published`：先完成记忆编纂，再进入已发布（编纂冲突未解不回正发布，见 09）。
-- **`pending_release`（并行批次专用）**：章节正常通过审查，但在**批次内发生了"影响其他章剧情"的转向**（如角色死亡、关键伏笔回收、时间线跳变，见 04§4.2），须**推迟到批次提交时统一发布**，避免过早转正导致批次内其他章失真。转换：`reviewed_ok → compiling → pending_release → (批次提交/转向核定后) → published`。若与该批其他章冲突无法调和，则该章**回退 `revising`**（批内转向冲突处理）。
+- `reviewed_ok → published`：章节审查通过后转正；事件回写已在写作过程中逐条完成（§4.4），转正即时序收口，无章末补录、无 `pending_release`。
+- **无并行批次**：同一时刻至多一章在 `drafting`；串行推进（NFR-1/14）。
 
 ### 4.3 伏笔状态
-`unplanned → planted → pending_return → returned`（F4.3）。伏笔状态变化同样记入 `plot_events.json` 供检索。
+`unplanned → planted → pending_return → returned`（F4.3）。伏笔状态变化在事件回写时实时记入 `plot_events.json` 与 `plot_threads.json` 供检索。
 
-### 4.4 记忆编纂与索引状态
-`draft → validated（冲突校验通过）→ indexed（rag 索引更新完）→ archived`
-- `validated` 失败 → `conflicted` → 人工仲裁 → 通过则 `validated`，否则删除（不污染记忆）。
-- RAG 索引重建可异步，但需在下次 `query_memory` 前完成或标注"待索引"。
-
-### 4.5 并行批次基线（配合 04§4.2）
-- 一批并行章启动前，将当前 `bible + memory + 已发布章节头` 固化为一张**批次基线快照 `batch_base`**（可视为对该批"只读的上下文基准"）。
-- 批内每章写作基于同一 `batch_base`；某章发生可影响其他章的转向时，该章进入 **`pending_release`**（不立即转正，见 §4.2），其记忆暂缓最终沉淀，由编纂员在批次提交时统一核定、汇总。
-- 批末统一执行**整批一致性门禁** + 编纂沉淀，产出滚动基线供下一批 `query_memory`。`batch_base` 元信息写入 `project.json.pipeline_state`。
+### 4.4 事件回写与索引状态
+`event_landed → validated（冲突双检通过）→ indexed（rag 索引增量更新）→ archived`
+- 每个事件落定即触发此状态机（ADR-013）：`validated` 失败 → `conflicted` → 人工仲裁 → 通过则 `validated`，否则丢弃（不污染记忆）。
+- RAG 索引增量重建可异步，但需在下一事件/下一章 `query_memory` 前完成或标注"待索引"。
+- “章末统一编纂”已废除；批/章末补录不存在。
 
 ## 5. JSON Schema 约定（正式契约）
 
@@ -237,7 +233,7 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 
 ## 7. 容量与并发约束（设计假设）
 - 单文件（人物卡/地点/伏笔）规模适中，全量读入上下文可接受；超限时用 04§5.3 压缩。
-- 批量并行写草稿互不冲突（每章独立文件），同时写 `project.json` 的原子更新用"临时文件 + rename + 锁"。
+- 正文**严格串行**推进（同一时刻至多一章在写），草稿按独立文件落地；写 `project.json`、`memory/*.json` 的更新用"临时文件 + rename + 锁"保证原子性（事件回写与正文写可能短时并发提交）。
 - 目录路径全部相对沙箱根，禁止 `..`（安全约束）。
 
 ## 8. 版本策略
@@ -250,7 +246,7 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
   - `fragments`（记忆碎片检索索引：`sig/kind/source/refs/score_fields`——从 `memory/*.json` + 正文重建）；
   - `plot_events`、`relationships`、`character_histories`（从对应 JSON 事实源导入的范围查询视图）；
   - `audit_log`（事件日志的持久化副本，见 F7.1）；
-  - `checkpoints`、`batch_meta`（检查点与批基线元信息）。
+  - `checkpoints`（检查点元信息）。
 - **可重建性**：`reindex_memory` / `rebuild_indexdb` 从文件全量重建 `.index.db`；任一条目可用 `.checksum.json` 的 hash 与文件核验一致。
 - **一致性约束**：写入路径以"文件为真、SQLite 为冗余镜像"——任何写操作先落文件（原子写）后同步索引；索引缺失/过期时自动触发重建，不影响正确性、只影响查询性能。
 - 切换策略：若某部署想回到"纯文件、无 SQLite"，删除 `.index.db` 并把查询退化为文件扫描即可（功能等价，性能或降级）。

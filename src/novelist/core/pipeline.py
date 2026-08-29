@@ -1,12 +1,13 @@
 """流水线工序状态机（docs/06 §4.1）。
 
-立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → 记忆编纂 → 待发布，带修订回流。
+立项 → 世界观 → 大纲 → 细纲 → 正文 → 审查 → 待发布，带修订回流。
+正文阶段严格串行逐章，事件回写在写作过程中实时完成（ADR-013，非独立工序）。
 状态持久在 project.json.pipeline_state（schemas/project.schema.json）。
 """
 
 from __future__ import annotations
 
-PIPELINE_STAGES = ["立项", "世界观", "大纲", "细纲", "正文", "审查", "记忆编纂", "待发布", "已完成"]
+PIPELINE_STAGES = ["立项", "世界观", "大纲", "细纲", "正文", "审查", "待发布", "已完成"]
 REVISION_STAGE = "修订"
 
 

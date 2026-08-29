@@ -53,7 +53,7 @@ def init(ctx: click.Context, directory: str | None, title: str | None) -> None:
         "prefs": {},
         "budget": {},
         "pipeline_state": "立项",
-        "batch_meta": {"current_batch": 0, "batch_base_ref": None},
+        "event_seq": 0,
     }
     ck = Checkpoint(ws)
     ck.save(project_id, project)
