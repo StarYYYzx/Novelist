@@ -180,9 +180,11 @@ threads_involved: ["pt:V017"]
 ```
 planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok → compiling → published
                                   └─reviewed_fail──→ revising ─→ reviewing
+持续写作                    reviewed_ok → compiling → [pending_release] → published   (仅并行批次转向章)
 ```
 - `draft_ready → published` 间的 `promote` 为 sensitive 操作（可走门禁）。
 - `reviewed_ok → compiling → published`：先完成记忆编纂，再进入已发布（编纂冲突未解不回正发布，见 09）。
+- **`pending_release`（并行批次专用）**：章节正常通过审查，但在**批次内发生了"影响其他章剧情"的转向**（如角色死亡、关键伏笔回收、时间线跳变，见 04§4.2），须**推迟到批次提交时统一发布**，避免过早转正导致批次内其他章失真。转换：`reviewed_ok → compiling → pending_release → (批次提交/转向核定后) → published`。若与该批其他章冲突无法调和，则该章**回退 `revising`**（批内转向冲突处理）。
 
 ### 4.3 伏笔状态
 `unplanned → planted → pending_return → returned`（F4.3）。伏笔状态变化同样记入 `plot_events.json` 供检索。
@@ -191,6 +193,11 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 `draft → validated（冲突校验通过）→ indexed（rag 索引更新完）→ archived`
 - `validated` 失败 → `conflicted` → 人工仲裁 → 通过则 `validated`，否则删除（不污染记忆）。
 - RAG 索引重建可异步，但需在下次 `query_memory` 前完成或标注"待索引"。
+
+### 4.5 并行批次基线（配合 04§4.2）
+- 一批并行章启动前，将当前 `bible + memory + 已发布章节头` 固化为一张**批次基线快照 `batch_base`**（可视为对该批"只读的上下文基准"）。
+- 批内每章写作基于同一 `batch_base`；某章发生可影响其他章的转向时，该章进入 **`pending_release`**（不立即转正，见 §4.2），其记忆暂缓最终沉淀，由批次提交时统一核定。，由编纂员在批次提交时汇总。
+- 批末统一执行**整批一致性门禁** + 编纂沉淀，产出滚动基线供下一批 `query_memory`。`batch_base` 元信息写入 `project.json.pipeline_state`。
 
 ## 5. JSON Schema 约定（正式契约）
 

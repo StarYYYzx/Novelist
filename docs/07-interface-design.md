@@ -73,6 +73,16 @@ class LLMProvider(Protocol):
 4. 仍失败 → 宽松解析（取文本、尝试提取 JSON/段），标记 `degraded=true` 并记审计。
 5. 降级产物仍可入流水线（通过检查员二次校验），不阻断全书（见质量设计 09）。
 
+### 2.6 供应商审核拦截降级（ADR-015，人工审查意见第 4 点）
+- 云 LLM API 有厂商内容审核，可能以**拒答、审核错误、安全拒绝、空输出**等形式出现。Provider 层将这些统一识别为 `moderation_blocked` 结果类别（映射规范见 §9 错误码）。
+- 处理链（按序，均受预算与次数上限约束）：
+  1. **改写重试**：由当前 Agent 换措辞重发（通常 1–2 次）；
+  2. **切换 Provider**：若配置备用模型，切换重发；
+  3. **人工介入**：挂起该片段，向用户请求改写/授权/弱化处理；
+  4. 全部失败 → 片段置为 `moderation_pending`，**不静默跳过/编造**，该章暂不转正，待人工后再继续。
+- **上游预检**：正文生成/对白前运行本地敏感词预检，命中即提示改写，降低厂商侧拦截概率（见 04§5.10）。
+- `LLMResult` 新增字段：`blocked: bool`、`block_reason?: string`、`provider_note?: string`；拦截事件入审计与统计。
+
 ## 3. 工具协议
 
 Agent 侧请求、系统侧执行的统一契约（F5.4，04§4.2）。
@@ -224,6 +234,18 @@ write_take(char_id, chapter_id, take_seq, content)  # safe, 写 takes/
 ```
 - 用于角色演员产出 `character_take`；写入路径受沙箱约束，仅限本 `chapter_id` 下。
 
+### 7.5 围读会接口（ADR-014，受控群聊）
+主持人（主编剧/编排层）可通过以下 safe 接口驱动一场围读会，满足收敛判据即结束。
+```
+create_scene(scene_id, {topic, actors: [char_id], context_refs, max_rounds})   # 主持人
+join_scene(scene_id)                  # 演员加入，返回当前谈话流摘要
+say_line(scene_id, speech)            # 广播给同场景其他演员，返回下一回合提示
+leave_scene(scene_id)                 # 演员退出，返回剩余活跃人数
+close_scene(scene_id, {reason})       # 主持人收场；落地 scene.transcript → 并入 takes
+```
+- 结束判据（见 05§5.3）：全体 `leave_scene` / 达 `max_rounds` / 主持人判定收敛 / 预算超时 / 异常强制收场。任一满足即由主持人 `close_scene`。
+- 谈话纪要 `scene.transcript` 作为演员 `character_take` 的组成部分供文字匠整合。
+
 ## 8. Provider 能力矩阵与降级总表
 
 | 能力 | 无此能力时的策略 |
@@ -232,7 +254,10 @@ write_take(char_id, chapter_id, take_seq, content)  # safe, 写 takes/
 | json_mode | 退化为"由 LLM 生成 JSON + 宽松解析" |
 | streaming | 关闭流式，改整包返回 |
 | **embedding** | 语义检索退化为关键词+倒排索引；保留 `query_memory` 可用性（07§7.3） |
+| **审核行为可识别性** | 若 Provider 不吐明确的审核错误（统一返回空/拒答），需按"空输出 + 预检命中"启发式判断并走上游预检，见 07§2.6 |
 | 大 context | 触发 04§5.3 压缩 | 
 
 ## 9. 错误码约定
-`OK / DENIED / NOT_FOUND / BUDGET_EXCEEDED / SCHEMA_FAIL / PROVIDER_ERROR / INTERNAL` —— 贯穿工具结果、事件、HTTP 状态码映射，保证可程序化处理。
+`OK / DENIED / NOT_FOUND / BUDGET_EXCEEDED / SCHEMA_FAIL / PROVIDER_ERROR / MODERATION_BLOCKED / INTERNAL` —— 贯穿工具结果、事件、HTTP 状态码映射，保证可程序化处理。
+- `MODERATION_BLOCKED`：LLM 输出被供应商审核拦截（ADR-015），上游按 07§2.6 处理链降级。
+- 围读会相关的场景级状态（未加入/已结束/越权/轮次达到上限）由工具返回结构化 `status` 字段表达，不新增顶层错误码。

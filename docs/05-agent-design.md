@@ -98,6 +98,7 @@ SubagentResult {
 | **记忆·读取** | `query_memory(essence/filters, top_k)`, `get_character_history`, `get_plot_events` | safe | RAG 检索历史经历/剧情/关系，供"写作前先忆" |
 | **记忆·写入** | `append_experience`, `append_plot_event`, `record_relationship_change` | sensitive | 编纂员专用，写 `memory/`，记录版本 |
 | **试演** | `write_take(char_id, chapter_id, content)` | safe | 演员写自己的试演片段到临时 take 目录 |
+| **围读会** | `join_scene(scene_id)`, `say_line(scene_id, speech)`, `leave_scene(scene_id)` | safe | 演员参与受控群聊（ADR-014）；主持人经编排层调度轮次与收场 |
 | 创作 | `write_draft`, `promote_draft`(转正) | safe/sensitive | 写草稿 safe；转正 sensitive |
 | 设定 | `update_entity`, `add_plot_thread`, `set_timeline` | sensitive | 改设定圣经，记录版本 |
 | 大纲 | `write_outline`, `patch_outline` | sensitive | 写/改大纲 |
@@ -119,11 +120,16 @@ def query_memory(params: {
 def write_take(params: {
   char_id, chapter_id, take_seq, content
 }) -> { status, path, hash }
+
+def join_scene(scene_id) -> { ok, active_actors, current_topic }
+def say_line(scene_id, speech) -> { ok, next_turn, reactions?[] }   # 向同场景其他演员说话
+def leave_scene(scene_id) -> { ok, remaining_actors }
 ```
 - `content` 以"整章文本/片段"传入，工具负责原子写盘（临时文件 + rename）与字数统计。
 - 所有写工具返回 `hash` 供一致性/审计定位版本。
 - `query_memory` 为**只读检索**，返回命中片段的摘要与来源定位（卷/章），不把全文拖进上下文（控制 token，见 04§5.8）。
 - `write_take` 作者为 `char_id` 指定的演员会话，写入 `workspace/takes/<ch>/<char_id>_n.md`。
+- 围读会工具（ADR-014）作用域仅限**当前场景**：`say_line` 只把 `speech` 追加到该场景谈话流并广播给已 `join_scene` 的演员；`leave_scene` 后该演员不再收到后续消息。全部动作经主持人（编排层）调度与判定收敛（见 §5.3）。
 
 ### 4.3 权限门禁流程（F6.1 / ADR-007）
 ```
@@ -153,6 +159,19 @@ Agent 请求工具 → 注册表解析级别
 3. 各角色演员在**隔离会话**中独立产出 `character_take`，经 `write_take` 落到 `workspace/takes/<ch>/`。
 4. 主编剧（或文字匠）把 N 个 take 合并 + 依据细纲/因果打磨，铺陈成**正文第三人称叙事**；若发现 take 间冲突或与设定相悖，则在此处仲裁（不直接改 bible）。
 5. 试演片段是**临时素材**，随章节批准可归档/清理，不进入正文章节文件本身。
+
+#### 可选变体：受控围读会（ADR-014，对应人工审查意见第 3 点）
+在角色交锋激烈、需要多角互相回应的重场戏，开启**围读会**（round-table scene）代替各自独白：
+1. 主编剧（主持人）创建一个 `scene_id`，注入场景说明与相关记忆，邀请 N 个演员 `join_scene`。
+2. 演员轮流/按序 `say_line` 互相回应；主持人在每个 `say_line` 后广播该句给同场景其他演员，并可在轮次间注入转折或纠正"出戏"言论。
+3. **结束判据（OR 条件，满足任一即收场）**：
+   - **全体离场**：所有已 `join_scene` 的演员都已 `leave_scene`；
+   - **达轮次上限**：`max_rounds`（如 6 轮）耗尽；
+   - **话题收敛**：主持人判定已达成剧情要点/情绪基调，无需再谈；
+   - **预算/超时**：达到会话 token 预算或超时；
+   - **异常强制收场**：主持人或人工强制关闭场景（如越界言论、模型故障）。
+4. 综述：把围读谈话纪要（`scene.transcript`）并入各演员的 `character_take`，交给文字匠整合成正文。
+5. 纪律：围读会仅一场戏范围内有效（`scene_id` 隔离），参与者不可读他人未授权记忆、不可在场景外互相调用；主持人可随时收场——保证其是"受控群聊"，不回退到无界自由群聊（ADR-001）。
 
 ### 5.4 章节收尾"记忆编纂"协议（ADR-013）
 1. 章节审查通过、转正后，编排器派发「记忆编纂员」。
