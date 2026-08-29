@@ -106,11 +106,12 @@ novelist/
 - `init` 命令真实化：创建项目工作区 + project.json + .checksum.json。
 - 实现：`storage/workspace.py`（目录规约/沙箱/原子写）、`storage/checkpoint.py`（快照/校验/恢复）、`storage/models.py`（SchemaRegistry + Pydantic 实体）、`providers/openai.py`（OpenAI 兼容适配器 + 拦截识别）。**27 个测试全绿**。
 
-### M1 — Agent 循环闭环（2 周）
+### M1 — Agent 循环闭环（2 周）✅ 已完成
 - 主编剧可按剧本自主调用**只读 + 写作**工具完成"生成一章草稿"循环。
 - 工具注册表 + 门禁（safe/sensitive 先行）接入。
 - 子代理派发/回收可用（至少 1 个：文字匠）。
-- 检查点初版（快照 + 恢复）。
+- 检查点初版（快照 + 恢复，已在 M0 完成）。
+- 实现：`tools/`（read_file/write_file/grep_text/write_draft/promote_draft/query_memory/get_character_history + `build_registry` 装配）、`core/agent_runner.py`（LLM 驱动多轮循环 + tool_calls 解析 + 预算收敛）、`core/orchestrator.py`（`produce_chapter`：主编剧经循环调 write_draft 落盘草稿 + 事件实时回写 commit_event）、`providers/fake.py::ScriptedProvider`（脚本驱动循环测试）、CLI `chapter` 命令。**34 个测试全绿**（含一章生产 + CLI 端到端）。
 
 ### M2 — 流水线与一致性（2 周）
 - 工序状态机完整贯通（大纲→细纲→正文→审查→修订）。

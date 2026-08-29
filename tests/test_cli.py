@@ -13,10 +13,3 @@ def test_cli_help_smoke():
     res = runner.invoke(cli, ["--help"])
     assert res.exit_code == 0
     assert "Novelist" in res.output
-
-
-def test_cli_init_placeholder():
-    runner = CliRunner()
-    res = runner.invoke(cli, ["init", "demo"])
-    # 脚手架占位实现；M0 后替换为真实目录初始化
-    assert res.exit_code == 0

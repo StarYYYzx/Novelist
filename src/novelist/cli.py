@@ -105,6 +105,55 @@ def status(ctx: click.Context, directory: str | None) -> None:
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
+@click.option("--vol", default=1, type=int, help="卷号")
+@click.option("--ch", default=1, type=int, help="章节号")
+@click.option("--provider", default="fake", help="LLM provider：fake/scripted/openai")
+@click.pass_context
+def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str) -> None:
+    """串行写一章：主编剧经 Agent 循环调工具产出草稿 + 事件实时回写（docs/04 §4.1 / ADR-013）。"""
+    from novelist.core.orchestrator import produce_chapter
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    ck = Checkpoint(ws)
+    root = ws._abs("")
+    try:
+        project_id = _locate_project(root)
+        ck.restore(project_id)
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"chapter: {e}") from e
+
+    prov = _make_cli_provider(provider, vol, ch)
+    res = produce_chapter(ws, project_id, vol, ch, prov)
+    if not res.ok:
+        raise click.ClickException(f"chapter production failed: {res.result}")
+    click.echo(f"wrote draft: {res.chapter_path}")
+    click.echo(f"events committed: {res.events_committed}")
+
+
+def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
+    from novelist.providers.fake import FakeProvider, ScriptedProvider
+
+    if provider == "fake":
+        # 占位演示：返回一段文本（不产生工具调用），展示循环结束
+        return FakeProvider(reply="演示：fake provider 直接返回文本。")
+    if provider in ("scripted", "demo"):
+        # 默认/演示：脚本驱动一次 write_draft 工具调用（写入指定卷/章）+ 结束语
+        return ScriptedProvider(
+            [
+                {"tool": "write_draft", "args": {"vol": vol, "ch": ch, "content": f"第 {ch} 章占位草稿：由 scripted provider 写入。"}},
+                {"final": "done"},
+            ]
+        )
+    # openai 等真实 provider（需 key/base_url，见 providers.openai）
+    from novelist.providers.openai import OpenAICompatibleProvider
+
+    return OpenAICompatibleProvider(model="gpt-4o-mini")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
 @click.pass_context
 def export(ctx: click.Context, directory: str | None) -> None:
     """导出发布包（docs/07 §6.1）。"""
