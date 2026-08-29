@@ -10,8 +10,10 @@ venv/
 
 # Novelist 工作区数据（演示/生成物不入库）
 *.index.db
-novel_workspace/
 demo/
+# 排除工作区生成数据，但保留端到端测试脚本与测试报告（测试资产需可复现）
+novel_workspace/*
+!novel_workspace/_harness/
 
 # 会话记忆（本项目工作日志，非源码）
 .workbuddy/
