@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/outline/chapter_gist.schema.json",
+  "title": "chapter_gist",
+  "description": "章节细纲（Markdown front-matter 结构契约，对应 outline/chapters/<vol>-<ch>.md 头部）。见 docs/06 §3.4。",
+  "type": "object",
+  "required": ["id", "vol", "ch", "title", "turns"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^ch:[0-9]+:[0-9]+$" },
+    "vol": { "type": "integer", "minimum": 1 },
+    "ch": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "pov": { "type": ["string", "null"] },
+    "key_events": { "type": "array", "items": { "type": "string" } },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["opening-hook", "setup", "conflict", "climax", "cliffhanger", "resolution"]
+      }
+    },
+    "threads_involved": { "type": "array", "items": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" } },
+    "characters": { "type": "array", "items": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" } }
+  },
+  "additionalProperties": false
+}

@@ -13,7 +13,7 @@
 | LLM 接口 | 自研 Provider 抽象 + 各 SDK 可选依赖 | ADR-003 插件化 |
 | 本地推理 | Ollama / vLLM（OpenAI 协议） | 满足本地部署需求 |
 | 配置 | TOML + 环境变量 | 简单、版本可控 |
-| 存储 | 文件系统工作区 + 轻量 JSON | ADR-004/010，兼容 Git |
+| 存储 | 文件系统工作区 + 轻量 JSON + SQLite 辅助索引 | ADR-004/010/016，兼容 Git + 可并发读范围查询 |
 | 日志 | structlog / logging | 事件化、结构化 |
 | 测试 | pytest + pytest-asyncio | 标准 |
 | 对外 | click(CLI) + FastAPI(HTTP) | 轻量、成熟 |
@@ -68,13 +68,14 @@ novelist/
 │   ├── consistency/        # 一致性规则引擎 + 语义检
 │   │   ├── rules.py        # 确定性规则
 │   │   └── semantic.py
-│   ├── storage/            # 工作区读写、检查点、schema 校验
+│   ├── storage/            # 工作区读写、检查点、schema 校验、SQLite 索引
 │   │   ├── workspace.py
 │   │   ├── checkpoint.py
-│   │   └── schemas/*.schema.json        # 含 schemas/memory/*.schema.json
+│   │   ├── indexdb.py      # .index.db 读写/重建（ADR-016）
+│   │   └── schemas/        # 实体 JSON Schema（见仓库根 schemas/）
 │   ├── cli.py              # click 命令行
 │   ├── server.py           # FastAPI HTTP
-│   └── config.py
+│   └── config.py           # pyproject+toml 配置加载、policy 解析
 ├── agents/                 # 各 Agent 系统提示（提示词独立成文本文件）
 │   ├── orchestrator.md
 │   ├── worldbuilder.md
@@ -85,8 +86,13 @@ novelist/
 │   ├── chronicler.md       # 记忆编纂员
 │   ├── actor.template.md   # 角色演员提示词模板（{character}/{history}/{scene} 占位）
 │   └── inspector.md
-├── schemas/                # 复制的公开 JSON Schema（供外部校验）
-├── tests/
+├── schemas/                # 实体 JSON Schema（bible/memory/outline/config/policy/llm/events/tools）
+│   ├── bible/{worldview,characters,locations,timeline,plot_threads,style}.schema.json
+│   ├── outline/{volume,chapter_gist}.schema.json
+│   ├── memory/{character_history,plot_event,relationship,fragment_index}.schema.json
+│   ├── config.schema.json
+│   └── policy.schema.json
+├── tests/                  # pytest 冒烟 + 契约校验测试
 └── docs/
 ```
 
@@ -95,7 +101,7 @@ novelist/
 ### M0 — 骨架与契约（1 周）
 - 建立仓库、pyproject、CI 骨架。
 - 落地 `core/agent_runner.py` 最小循环 + `providers/base.py` 抽象 + 事件总线。
-- 落定 `storage/schemas/*` 初版 + 工作区目录解析器。
+- 落定 `schemas/*` 实体 JSON Schema 初版 + 工作区目录解析器。
 - 冒烟用例：一次 `complete()` + 一次工具调用。
 
 ### M1 — Agent 循环闭环（2 周）

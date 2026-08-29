@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/characters.schema.json",
+  "title": "character",
+  "description": "人物卡（设定圣经·权威约束·应然）。见 docs/06 §3.1。",
+  "type": "object",
+  "required": ["id", "name", "status"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "species": { "type": "string" },
+    "core_traits": { "type": "array", "items": { "type": "string" } },
+    "power": {
+      "type": "object",
+      "properties": {
+        "level": { "type": "string" },
+        "faction": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "arc": { "type": "string" },
+    "first_appear": {
+      "type": "object",
+      "required": ["vol", "ch"],
+      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+      "additionalProperties": false
+    },
+    "status": { "enum": ["active", "dead", "away", "unknown"] },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "type"],
+        "properties": {
+          "target": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
+          "type": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false,
+  "$comment": "revision 用于版本策略（docs/06 §8）"
+}

@@ -37,6 +37,7 @@ novel_workspace/
     │   └── rag/                      # 检索索引落盘（embedding 向量/倒排，可再生）
     ├── takes/                        # 角色演员试演片段（临时素材，随章归档）
     │   └── <vol>-<ch>/<char_id>_n.md
+    ├── .index.db                     # SQLite 辅助索引/查询通道（ADR-016，可由文件重建）
     ├── reports/                      # 审查报告、一致性告警、统计
     │   ├── alerts/
     │   └── stats/
@@ -196,7 +197,7 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 
 ### 4.5 并行批次基线（配合 04§4.2）
 - 一批并行章启动前，将当前 `bible + memory + 已发布章节头` 固化为一张**批次基线快照 `batch_base`**（可视为对该批"只读的上下文基准"）。
-- 批内每章写作基于同一 `batch_base`；某章发生可影响其他章的转向时，该章进入 **`pending_release`**（不立即转正，见 §4.2），其记忆暂缓最终沉淀，由批次提交时统一核定。，由编纂员在批次提交时汇总。
+- 批内每章写作基于同一 `batch_base`；某章发生可影响其他章的转向时，该章进入 **`pending_release`**（不立即转正，见 §4.2），其记忆暂缓最终沉淀，由编纂员在批次提交时统一核定、汇总。
 - 批末统一执行**整批一致性门禁** + 编纂沉淀，产出滚动基线供下一批 `query_memory`。`batch_base` 元信息写入 `project.json.pipeline_state`。
 
 ## 5. JSON Schema 约定（正式契约）
@@ -241,3 +242,15 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 
 ## 8. 版本策略
 - 每个 `bible/` 实体更新自增版本号（`revision` 字段），与 `.checksum.json` 联动，保证一致性引擎能定位"引入了哪次改动的章节"。
+
+## 9. SQLite 辅助索引（ADR-016）
+> 文件（bible/memory/outline/chapters）仍是**持久事实源**；`<project>/.index.db` 仅是加速的**辅助查询通道**，随时可删、可从文件重建。
+
+- 承载表：
+  - `fragments`（记忆碎片检索索引：`sig/kind/source/refs/score_fields`——从 `memory/*.json` + 正文重建）；
+  - `plot_events`、`relationships`、`character_histories`（从对应 JSON 事实源导入的范围查询视图）；
+  - `audit_log`（事件日志的持久化副本，见 F7.1）；
+  - `checkpoints`、`batch_meta`（检查点与批基线元信息）。
+- **可重建性**：`reindex_memory` / `rebuild_indexdb` 从文件全量重建 `.index.db`；任一条目可用 `.checksum.json` 的 hash 与文件核验一致。
+- **一致性约束**：写入路径以"文件为真、SQLite 为冗余镜像"——任何写操作先落文件（原子写）后同步索引；索引缺失/过期时自动触发重建，不影响正确性、只影响查询性能。
+- 切换策略：若某部署想回到"纯文件、无 SQLite"，删除 `.index.db` 并把查询退化为文件扫描即可（功能等价，性能或降级）。

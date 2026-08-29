@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "novelist"
+version = "0.1.0"
+description = "多 Agent 长篇小说撰写系统（文档先行 · 代码脚手架）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.5",
+    "click>=8.1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "tomli>=2.0;python_version<'3.11'",
+    "jsonschema>=4.20",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+providers = [
+    "openai>=1.30",
+    "anthropic>=0.28",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+novelist = "novelist.cli:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

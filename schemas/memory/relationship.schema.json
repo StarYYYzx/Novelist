@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/memory/relationship.schema.json",
+  "title": "relationship_record",
+  "description": "角色关系变化记录（记忆层）。见 docs/06 §3.5。",
+  "type": "object",
+  "required": ["pairs"],
+  "properties": {
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["a", "b", "entries"],
+        "properties": {
+          "a": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
+          "b": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["at", "from", "to"],
+              "properties": {
+                "at": {
+                  "type": "object",
+                  "required": ["vol", "ch"],
+                  "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
+                  "additionalProperties": false
+                },
+                "from": { "type": "string" },
+                "to": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/events.schema.json",
+  "title": "event",
+  "description": "事件总线事件。见 docs/07 §4.1。",
+  "type": "object",
+  "required": ["ts", "kind", "seq"],
+  "properties": {
+    "ts": { "type": "string", "format": "date-time" },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "agent.think", "agent.tool", "agent.spawn", "scene.round",
+        "pipeline.step", "consistency.alert", "human.decision",
+        "memory.read", "memory.compile", "moderation.blocked", "system.error"
+      ]
+    },
+    "seq": { "type": "integer", "minimum": 0 },
+    "session": {
+      "type": "object",
+      "required": ["project", "agent"],
+      "properties": {
+        "project": { "type": "string" },
+        "agent": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "payload": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": false
+}

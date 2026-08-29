@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/policy.schema.json",
+  "title": "permission_policy",
+  "description": "权限门禁策略（TOML → JSON Schema 建模）。对应 docs/07 §3.4。",
+  "type": "object",
+  "required": ["profiles"],
+  "properties": {
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [],
+        "properties": {
+          "sensitive": { "enum": ["allow", "ask", "deny"] },
+          "danger": { "enum": ["allow", "ask", "deny"] },
+          "tools": {
+            "type": "object",
+            "additionalProperties": { "enum": ["allow", "ask", "deny"] }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

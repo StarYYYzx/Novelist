@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/llm.schema.json",
+  "title": "llm_contract",
+  "description": "LLM 适配器请求/响应契约。见 docs/07 §2。用于 Provider 边界校验；核心实现用 Python Protocol + dataclass，本 schema 供契约测试与日志脱敏参考。",
+  "oneOf": [
+    {
+      "$comment": "LLMRequest",
+      "type": "object",
+      "required": ["messages"],
+      "properties": {
+        "model": { "type": ["string", "null"] },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "content"],
+            "properties": {
+              "role": { "enum": ["system", "user", "assistant"] },
+              "content": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "tools": { "type": ["array", "null"], "items": { "type": "object" } },
+        "temperature": { "type": "number" },
+        "response_format": { "enum": ["json_object", "text"] },
+        "budget": { "type": "object", "properties": { "max_tokens_out": { "type": "integer" } } }
+      }
+    },
+    {
+      "$comment": "LLMResult",
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "content": { "type": "string" },
+        "tool_calls": { "type": ["array", "null"], "items": { "type": "object" } },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "tokens_in": { "type": "integer" },
+            "tokens_out": { "type": "integer" },
+            "cost_estimate": { "type": "number" }
+          }
+        },
+        "finish_reason": { "enum": ["stop", "tool_calls", "length", "error"] },
+        "provider": { "type": "string" },
+        "degraded": { "type": "boolean", "default": false },
+        "blocked": { "type": "boolean", "default": false },
+        "block_reason": { "type": ["string", "null"] },
+        "provider_note": { "type": ["string", "null"] }
+      }
+    }
+  ]
+}

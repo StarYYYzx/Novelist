@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/config.schema.json",
+  "title": "novelist_config",
+  "description": "全局配置（TOML → 校验用 JSON Schema 建模，Pydantic 可消费）。对应 docs/08 技术栈配置层。",
+  "type": "object",
+  "required": ["provider", "security"],
+  "properties": {
+    "provider": {
+      "type": "object",
+      "required": ["primary"],
+      "properties": {
+        "primary": { "type": "string", "enum": ["openai", "deepseek", "anthropic", "ollama", "vllm"] },
+        "fallback": { "type": ["string", "null"], "enum": ["openai", "deepseek", "anthropic", "ollama", "vllm", null] },
+        "model": { "type": ["string", "null"] },
+        "fallback_model": { "type": ["string", "null"] },
+        "embedding": { "type": "string", "enum": ["auto", "cloud", "local", "keyword-fallback"] },
+        "timeout_s": { "type": "number", "minimum": 0 },
+        "api_base": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "security": {
+      "type": "object",
+      "required": ["policy_file"],
+      "properties": {
+        "policy_file": { "type": "string" },
+        "sandbox_root": { "type": ["string", "null"] },
+        "moderation_precheck": { "type": "boolean", "default": true }
+      },
+      "additionalProperties": true
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "default_max_tokens_out": { "type": "integer", "minimum": 1 },
+        "default_max_cost": { "type": ["number", "null"], "minimum": 0 },
+        "default_max_rounds": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "use_indexdb": { "type": "boolean", "default": true },
+        "workspace_root": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

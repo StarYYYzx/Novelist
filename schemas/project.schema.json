@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/project.schema.json",
+  "title": "project_meta",
+  "description": "project.json（项目元数据 + 流水线状态 + 批基线元信息）。见 docs/06 §2/§4.5/§6。",
+  "type": "object",
+  "required": ["id", "title", "pipeline_state"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^proj:[A-Za-z0-9_-]+$" },
+    "title": { "type": "string", "minLength": 1 },
+    "brief": { "type": "string" },
+    "genre": { "type": ["string", "null"] },
+    "prefs": { "type": "object", "additionalProperties": true },
+    "budget": { "type": "object", "additionalProperties": true },
+    "pipeline_state": { "type": "string", "enum": ["立项", "世界观", "大纲", "细纲", "正文", "审查", "记忆编纂", "待发布", "已完成"] },
+    "batch_meta": {
+      "type": "object",
+      "properties": {
+        "current_batch": { "type": "integer", "minimum": 0 },
+        "batch_base_ref": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐"
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/memory/fragment_index.schema.json",
+  "title": "fragment_index",
+  "description": "记忆碎片索引元数据（编纂去重/冲突定位/索引重建）。见 docs/06 §3.5 与 §9。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["sig", "kind", "source"],
+    "properties": {
+      "sig": { "type": "string" },
+      "kind": { "type": "string", "enum": ["experience", "plot_event", "relationship", "thread"] },
+      "source": {
+        "type": "object",
+        "required": ["vol", "ch"],
+        "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
+        "additionalProperties": false
+      },
+      "refs": { "type": "array", "items": { "type": "string" } },
+      "hash": { "type": "string" }
+    },
+    "additionalProperties": false
+  }
+}

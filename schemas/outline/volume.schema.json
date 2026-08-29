@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/outline/volume.schema.json",
+  "title": "volume_outline",
+  "description": "卷级大纲。见 docs/06 §2（outline/volumes.json）。",
+  "type": "object",
+  "required": ["id", "order", "summary"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^vol:[A-Za-z0-9_-]+$" },
+    "order": { "type": "integer", "minimum": 1 },
+    "title": { "type": ["string", "null"] },
+    "summary": { "type": "string" },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "key_beats": { "type": "array", "items": { "type": "string" } },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

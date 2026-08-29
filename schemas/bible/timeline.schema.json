@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/timeline.schema.json",
+  "title": "timeline_event",
+  "description": "时间线事件（供一致性规则单调性校验）。见 docs/06 §3.3。",
+  "type": "object",
+  "required": ["id", "at", "event"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^tl:[A-Za-z0-9_-]+$" },
+    "at": {
+      "type": "object",
+      "properties": {
+        "era": { "type": "string" },
+        "year": { "type": "integer" },
+        "season": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "event": { "type": "string", "minLength": 1 },
+    "in_chapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["vol", "ch"],
+        "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
+        "additionalProperties": false
+      }
+    },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

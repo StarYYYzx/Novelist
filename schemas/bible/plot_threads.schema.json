@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/plot_threads.schema.json",
+  "title": "plot_threads",
+  "description": "伏笔登记与回收（单一事实源）。见 docs/06 §3.2。",
+  "type": "object",
+  "required": ["id", "desc", "status"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" },
+    "desc": { "type": "string", "minLength": 1 },
+    "planted": {
+      "type": "object",
+      "required": ["vol", "ch"],
+      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+      "additionalProperties": false
+    },
+    "status": { "enum": ["unplanned", "planted", "pending_return", "returned"] },
+    "report_deadline": {
+      "type": "object",
+      "required": ["vol", "ch"],
+      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+      "additionalProperties": false
+    },
+    "returned": {
+      "type": ["object", "null"],
+      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+      "additionalProperties": false
+    },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

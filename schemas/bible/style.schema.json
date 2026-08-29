@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/style.schema.json",
+  "title": "style",
+  "description": "文风约束/禁用词/术语表/叙述偏好（设定圣经）。见 docs/06 §2。",
+  "type": "object",
+  "required": ["style"],
+  "properties": {
+    "style": { "type": "string" },
+    "tone": { "type": ["string", "null"] },
+    "pov": { "type": ["string", "null"] },
+    "narrative_prefs": { "type": "array", "items": { "type": "string" } },
+    "banned_words": { "type": "array", "items": { "type": "string" } },
+    "glossary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["term", "def"],
+        "properties": {
+          "term": { "type": "string" },
+          "def": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

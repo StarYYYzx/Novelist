@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/worldview.schema.json",
+  "title": "worldview",
+  "description": "世界观（体系/文明/设定规则）。见 docs/06 §2。",
+  "type": "object",
+  "required": ["id", "name"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^world:[A-Za-z0-9_-]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "systems": { "type": "array", "items": { "type": "string" } },
+    "civilizations": { "type": "array", "items": { "type": "string" } },
+    "rules": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

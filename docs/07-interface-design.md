@@ -26,7 +26,20 @@ class LLMProvider(Protocol):
     def capabilities(self) -> ProviderCapabilities: ...
 ```
 - 核心层只依赖该抽象，不 import 任何 SDK。
-- `ProviderCapabilities` 描述：`tool_calling: bool`、`max_context`、`json_mode: bool`、`streaming: bool`，供降级策略使用（ADR-006）。
+- `ProviderCapabilities` 描述：`tool_calling: bool`、`max_context`、`json_mode: bool`、`streaming: bool`、`embedding: bool`，供降级策略使用（ADR-006）。
+
+### 2.1.1 Embedding 接口（F5.3，记忆 RAG / ADR-011）
+```python
+class EmbeddingProvider(Protocol):
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+    @property
+    def dim(self) -> int: ...        # 向量维度，供索引建表与切换重建
+    @property
+    def kind(self) -> str: ...       # "cloud" | "local" | "keyword-fallback"
+```
+- 可由 `LLMProvider` 附带实现（多数云 API 如此），也可独立注册（本地模型 / 独立服务）。
+- **无任何 Embedding 时自动降级**：`query_memory` 退化为中文分词 + 倒排索引检索（07§7.3），接口不变、可用性保留（NFR-9/14，F9.4）。
+- Provider 切换导致 `dim` 变化时须重建索引（07§7.3 `reindex_memory`）。
 
 ### 2.2 请求 / 响应结构
 ```json
@@ -48,7 +61,10 @@ class LLMProvider(Protocol):
   "usage": {"tokens_in": 1200, "tokens_out": 900, "cost_estimate": 0.004},
   "finish_reason": "stop|tool_calls|length|error",
   "provider": "openai|deepseek|ollama|vllm|...",
-  "degraded": false
+  "degraded": false,
+  "blocked": false,          // 供应商审核拦截（ADR-015）
+  "block_reason": null,      // "safety" | "moderation" | "empty" | ...
+  "provider_note": null      // 供应商原始提示/错误（脱敏后）
 }
 ```
 
@@ -109,6 +125,24 @@ def invoke_tool(
 ```
 `ToolResult` 统一含：`status(ok|denied|error)`、`data`、`usage`、`audit_id`。
 
+**核心类型定义（契约，编码实现直接建模）**
+```python
+@dataclass
+class SessionInfo:
+    project_id: str            # 所属项目
+    agent: str                 # 调用者：orchestrator | sub:<name> | actor:<char_id>
+    permission_profile: str    # 权限面名（见 §3.4 policy）
+    actor_char_id: str | None  # 仅演员 Agent 有值（数据隔离依据，05§7）
+    task_id: str               # 当前派发任务 id（审计关联）
+
+@dataclass
+class Budget:
+    max_tokens_out: int
+    max_tokens_in: int | None = None
+    max_cost: float | None = None
+    max_rounds: int | None = None   # 循环/围读会轮次上限
+```
+
 ### 3.3 门禁判定（F6.1/ADR-007）
 ```
 level==safe → execute
@@ -117,6 +151,29 @@ level==sensitive && profile.ask → wait(HumanDecision) | fallback deny-if-timeo
 level==danger && profile != allow → wait(HumanDecision); deny if != allow
 ```
 门禁决策来源：CLI 提示 / HTTP 审批端点 / 配置策略文件，三种可并存。
+
+### 3.4 权限策略文件（policy，TOML）
+门禁判定引用 `profile`（权限面名，来自 `SessionInfo.permission_profile`）；策略文件定义各 profile 对工具级 `level` 的处置：
+
+```toml
+[profile.auto]          # 全自动：仅 safe 自动执行
+sensitive = "deny"
+danger = "deny"
+
+[profile.supervised]    # 默认：sensitive 询问、danger 拒绝
+sensitive = "ask"
+danger = "deny"
+
+[profile.trusted]       # 信任态：sensitive 放行、danger 询问
+sensitive = "allow"
+danger = "ask"
+
+[profile.allow-all]     # 调试用：全部放行（禁止生产）
+sensitive = "allow"
+danger = "allow"
+```
+- **工具级覆盖**：`[profile.<name>.tools.<tool_name>]` 可对单个工具覆盖默认处置（如 `write_draft = "allow"`）。
+- 策略文件路径由配置项 `security.policy_file` 指定；未配置时回退 `supervised` 默认。
 
 ## 4. 事件总线（F7.1，可观测）
 
@@ -224,9 +281,11 @@ record_relationship_change(a, b, event)  # 关系变化记录
 ### 7.3 索引维护
 ```
 reindex_memory(project, {incremental?: true})   # 重建 RAG 索引（可后台异步）
+rebuild_indexdb(project)                        # 从文件重建 .index.db（ADR-016）——可随时运维恢复
 ```
 - 语义向量化由 Embedding 提供（云 API 或本地模型，见 §8 能力矩阵）。
 - 关键词兜底：无 Embedding 时退化为中文分词 + 倒排索引检索（保可用性）。
+- 检索/范围查询优先走 `.index.db`（SQLite，ADR-016 的辅助索引）；索引缺失或过期时自动降级为文件扫描并后台重建。
 
 ### 7.4 试演片段
 ```
@@ -259,5 +318,17 @@ close_scene(scene_id, {reason})       # 主持人收场；落地 scene.transcrip
 
 ## 9. 错误码约定
 `OK / DENIED / NOT_FOUND / BUDGET_EXCEEDED / SCHEMA_FAIL / PROVIDER_ERROR / MODERATION_BLOCKED / INTERNAL` —— 贯穿工具结果、事件、HTTP 状态码映射，保证可程序化处理。
+
+### 9.1 错误码 ↔ HTTP / 工具结果映射表
+| 错误码 | HTTP | 工具 status | 说明 |
+| --- | --- | --- | --- |
+| `OK` | 200 | `ok` | 正常 |
+| `DENIED` | 403 | `denied` | 权限门禁拒绝 |
+| `NOT_FOUND` | 404 | `error` | 实体/文件不存在 |
+| `BUDGET_EXCEEDED` | 429 | `error` | 预算/配额超限 |
+| `SCHEMA_FAIL` | 422 | `error` | 结构化输出/参数校验失败 |
+| `PROVIDER_ERROR` | 502 | `error` | LLM 供应商错误（可重试） |
+| `MODERATION_BLOCKED` | 451 | `error` | 供应商审核拦截（ADR-015，走 07§2.6 处理链） |
+| `INTERNAL` | 500 | `error` | 未预期内部错误 |
 - `MODERATION_BLOCKED`：LLM 输出被供应商审核拦截（ADR-015），上游按 07§2.6 处理链降级。
 - 围读会相关的场景级状态（未加入/已结束/越权/轮次达到上限）由工具返回结构化 `status` 字段表达，不新增顶层错误码。
