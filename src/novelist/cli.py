@@ -170,9 +170,14 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="成章后追加一次 LLM 调用优化文风（降低 AI 味），并用确定性指标复核")
 @click.option("--no-bible", is_flag=True, default=False,
               help="关闭圣经注入（仅用于对照实验；默认开启，见 B-02）")
+@click.option("--event-loop/--no-event-loop", default=False,
+              help="按细纲 key_events 逐事件生成、逐事件回写（ADR-013 落地，第二批第 2 条）")
+@click.option("--screenplay", is_flag=True, default=False,
+              help="重场戏：先剧本体写对白交锋，再叙事化成小说（第三批第 2 条·档 2，两遍生成）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
-            policy: str | None, gen_tokens: int | None, polish: bool, no_bible: bool) -> None:
+            policy: str | None, gen_tokens: int | None, polish: bool, no_bible: bool,
+            event_loop: bool, screenplay: bool) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
@@ -215,7 +220,8 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     memories = _recall_lines(ws, project_id, vol, ch, embedding=emb)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
                           generation_tokens=gen_tokens, embedding=emb,
-                          inject_bible=not no_bible, memories=memories or None, polish=polish)
+                          inject_bible=not no_bible, memories=memories or None, polish=polish,
+                          event_loop=event_loop, screenplay=screenplay)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 GENDER_CN = {"male": "男", "female": "女", "unknown": "未知"}
@@ -68,7 +69,26 @@ def load_bible(ws, project_id: str) -> dict:
         "style": _read_json(ws, project_id, "bible/style.json", {}) or {},
         "locations": _read_json(ws, project_id, "bible/locations.json", []) or [],
         "plot_threads": _read_json(ws, project_id, "bible/plot_threads.json", []) or [],
+        "worldstate": _read_json(ws, project_id, "bible/worldstate.json", {}) or {"characters": {}},
     }
+
+
+def parse_key_events(gist_text: str) -> list[str]:
+    """从细纲 front-matter 解析 key_events（声明式事件清单，人工审查第二批第 2 条）。
+
+    细纲已声明事件清单，生成期按它迭代即可——不需要 LLM 递归判断"这一段是不是一个事件"。
+    解析容错：无 front-matter / 无该字段 / 空列表 都返回 []。
+    """
+    m = re.search(r"^key_events:\s*\[(.*)\]\s*$", gist_text or "", re.M)
+    if not m:
+        return []
+    body = m.group(1)
+    out = []
+    for piece in body.split(","):
+        piece = piece.strip().strip("'\"").strip()
+        if piece:
+            out.append(piece)
+    return out
 
 
 def chapter_cast(characters: list[dict], vol: int, ch: int, gist_text: str = "",
@@ -184,6 +204,24 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             if c.get("arc"):
                 line += f"；弧线：{c['arc']}"
             L.append(f"- {line}")
+
+    if cast:
+        # 世界状态（B-STATE）：人物**当前**修为/位置/持有物/伤势。
+        # 人物卡是"应然"（设定），这里是"实然"（故事进行到的状态）——战力对比以此为准。
+        # 它是战力/物品类跨章矛盾的硬约束：模型被告知谁在哪、什么修为、带什么伤。
+        try:
+            from .worldstate import snapshot_lines
+
+            ids = [c.get("id") for c in cast if c.get("id")]
+            state_lines = snapshot_lines(bible.get("worldstate") or {}, ids)
+            if state_lines:
+                L.append("")
+                L.append("【人物当前状态】（截至上一章结束的实然状态，不得与之矛盾；"
+                         "战力对比以此为准——修为低者不得凭空碾压修为高者，"
+                         "除非正文明确写出越级之战的代价与机缘）")
+                L.extend(state_lines)
+        except Exception:  # noqa: BLE001 - worldstate 缺失时静默跳过
+            pass
 
     open_threads = [t for t in threads if isinstance(t, dict) and t.get("status") == "planted"]
     if open_threads:

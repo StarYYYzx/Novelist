@@ -30,15 +30,21 @@ from .memory import MemoryConflictError, MemoryWriter
 
 EVENT_KINDS = ("conflict", "discovery", "reveal", "turning_point", "dialogue", "departure")
 
-EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取其中**确实发生了**的剧情事件。
+EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取其中**确实发生了**的剧情事件，
+以及本章结束时人物的**状态变化**。
 
-只输出事件行，每行一个事件，格式严格为（竖线分隔，第三段可省略）：
+第一部分——事件行，每行一个事件，格式严格为（竖线分隔，第三段可省略）：
 事件简述 | 类型 | 涉及人物姓名（逗号分隔）
-
 - 类型只能是：conflict、discovery、reveal、turning_point、dialogue、departure
 - 涉及人物只写正文里真实出现过的人名，不要编造
-- 不要输出标题、序号、解释或空行
-- 最多 {max_events} 条，宁少勿多，只写真正推动剧情的事
+
+第二部分——状态行，以「状态：」开头，每行一个人物：
+状态：人物名 | 修为：新境界 | 位置：新地点 | 获得：物品 | 失去：物品 | 受伤：伤情 | 痊愈：伤情
+- 只写**本章内发生的变化**，没有变化的人物不要输出
+- 修为只写正文明确写到突破/跌落的，不要臆测
+- 人物名必须是已出场人物
+
+不要输出标题、序号、解释或空行。事件最多 {max_events} 条，宁少勿多。
 
 正文：
 """
@@ -58,6 +64,8 @@ class ChroniclerReport:
     written: int = 0
     conflicts: list[str] = field(default_factory=list)
     events: list[ExtractedEvent] = field(default_factory=list)
+    # 世界状态变更（B-STATE）：char_id -> 本轮合并进 worldstate 的字段
+    state_updates: dict[str, dict] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -115,26 +123,37 @@ class Chronicler:
         return ids
 
     # ---- 抽取 ----
-    def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500) -> list[ExtractedEvent]:
-        """LLM 从正文抽取事件。无 LLM 时返回空列表（不做假）。"""
+    def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500
+                ) -> tuple[list[ExtractedEvent], list[tuple[str, dict]]]:
+        """LLM 从正文抽取事件与状态变化。无 LLM 时返回空（不做假）。
+
+        返回 (events, state_changes)；state_changes 为 [(char_id, delta)]。
+        """
         if self.llm is None or not chapter_text.strip():
-            return []
+            return [], []
         res = self.llm.complete(
             LLMRequest(
                 messages=[LLMMessage(role="user",
                                      content=EXTRACT_PROMPT.format(max_events=max_events)
                                      + chapter_text[-max_chars:])],
-                max_tokens_out=300,
+                max_tokens_out=450,
                 temperature=0.3,
             )
         )
         if res.blocked or not res.content:
-            return []
+            return [], []
         return self._parse(res.content, max_events)
 
-    def _parse(self, content: str, max_events: int) -> list[ExtractedEvent]:
+    def _parse(self, content: str, max_events: int) -> tuple[list[ExtractedEvent], list[tuple[str, dict]]]:
+        from .worldstate import parse_state_lines
+
+        # 状态行先摘出来，避免「状态：X | 修为：Y」被当成事件行
+        state_changes = parse_state_lines(content, self._name_map)
+        event_lines = [ln for ln in content.splitlines()
+                       if not ln.strip().startswith(("状态：", "状态:"))]
+
         out: list[ExtractedEvent] = []
-        for line in content.splitlines():
+        for line in event_lines:
             line = line.strip().lstrip("-•*").strip()
             line = re.sub(r"^\d+[.、)．]\s*", "", line)
             if "|" not in line:
@@ -152,17 +171,27 @@ class Chronicler:
             ))
             if len(out) >= max_events:
                 break
-        return out
+        return out, state_changes
 
     # ---- 写入（含冲突双检）----
-    def commit(self, events: list[ExtractedEvent], vol: int, ch: int, *, project_id: str = "") -> ChroniclerReport:
-        """逐条写入；冲突回退并记入 report，不静默入库（docs/06 §4.4）。"""
+    def commit(self, events: list[ExtractedEvent], vol: int, ch: int, *, project_id: str = "",
+               state_changes: list[tuple[str, dict]] | None = None,
+               tag: str = "c") -> ChroniclerReport:
+        """逐条写入；冲突回退并记入 report，不静默入库（docs/06 §4.4）。
+
+        `state_changes` 非空时同步更新世界状态（B-STATE），
+        并把 delta 写进对应人物经历的 `state_delta` 字段（docs/06 §3.5 预留字段）。
+        """
         report = ChroniclerReport(extracted=len(events), events=list(events))
         pid = project_id or self.project_id
+        deltas_by_char: dict[str, dict] = {}
+        for cid, delta in (state_changes or []):
+            deltas_by_char.setdefault(cid, {}).update(delta)
+
         for i, ev in enumerate(events, 1):
             try:
                 self._writer.append_plot_event({
-                    "id": f"ev:{pid}:{vol}:{ch}:c{i}",
+                    "id": f"ev:{pid}:{vol}:{ch}:{tag}{i}",
                     "at": {"vol": vol, "ch": ch},
                     "type": ev.kind,
                     "summary": ev.summary,
@@ -177,14 +206,30 @@ class Chronicler:
                     self._writer.append_experience(cid, {
                         "at": {"vol": vol, "ch": ch},
                         "summary": ev.summary,
-                        "state_delta": None,
+                        "state_delta": deltas_by_char.get(cid),
                     })
                 except MemoryConflictError:
                     pass  # 同事件同人已入库，不重复追加
             report.written += 1
+
+        # 世界状态（B-STATE）：硬状态层的更新与事件写入同一事务语义——
+        # 先合 delta，再把实际生效的变更记进 report 供编排层/人工核对。
+        if deltas_by_char:
+            from .worldstate import apply_delta
+
+            for cid, delta in deltas_by_char.items():
+                applied = apply_delta(self.ws, self.project_id, cid, delta,
+                                      at={"vol": vol, "ch": ch})
+                if applied:
+                    report.state_updates[cid] = applied
         return report
 
-    def run(self, chapter_text: str, vol: int, ch: int, *, max_events: int = 3) -> ChroniclerReport:
-        """一次性完成抽取 + 双检 + 写入（编排层的主要入口）。"""
-        events = self.extract(chapter_text, max_events=max_events)
-        return self.commit(events, vol, ch)
+    def run(self, chapter_text: str, vol: int, ch: int, *, max_events: int = 3,
+            tag: str = "c") -> ChroniclerReport:
+        """一次性完成抽取 + 双检 + 写入 + 状态更新（编排层的主要入口）。
+
+        `tag` 用于事件 id 命名空间：事件循环逐事件调用时传 e1/e2/…，
+        避免同一章内不同片段抽出的事件 id 撞名。
+        """
+        events, state_changes = self.extract(chapter_text, max_events=max_events)
+        return self.commit(events, vol, ch, state_changes=state_changes, tag=tag)

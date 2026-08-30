@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+from .llm import LLMMessage, LLMRequest
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
 
@@ -65,6 +66,111 @@ def _completeness_problems(comp: dict) -> list[str]:
     return problems
 
 
+_SEAM_CHARS = 300  # 事件间接缝：取上一事件末尾若干字，让模型自然续写
+
+_SCRIPT_INSTRUCTION = ("""
+
+【本轮特殊要求：剧本体】
+不要写小说正文，改以剧本体输出本章的对白与动作交锋，格式为：
+角色名：（动作/神态）台词
+- 只写对白与关键动作，不写环境描写与心理旁白
+- 覆盖本章细纲全部要点，冲突要给足
+- 人物说话必须贴合各自人设，声音要有区分度
+""")
+
+
+def _generate_with_continuation(provider, system_prompt: str, prompt: str,
+                                budget: int, max_continuations: int) -> str:
+    """生成一次；若被 length 截断则**续写**而不是整章重来（第二批第 1 条·第 2 层修复）。
+
+    重来一遍要重新付思考开销，且已生成的好内容可能被换掉；续写把已有文本作为前缀，
+    只补齐剩余部分。返回拼接后的完整文本。
+    """
+    res = provider.complete(
+        LLMRequest(messages=[LLMMessage(role="system", content=system_prompt),
+                             LLMMessage(role="user", content=prompt)],
+                   max_tokens_out=budget)
+    )
+    text = res.content or ""
+    for _ in range(max(0, max_continuations)):
+        if res.finish_reason != "length" or not text:
+            break
+        res = provider.complete(
+            LLMRequest(messages=[
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=(
+                    "接续下文继续写。从中断处自然写下去，不要重复已有内容，"
+                    "不要总结，直到写完一个完整的收束句为止。\n\n"
+                    "已写部分：\n" + text[-1500:])),
+            ],
+                max_tokens_out=budget)
+        )
+        piece = (res.content or "").strip()
+        if not piece:
+            break
+        text = text.rstrip() + piece
+    return text
+
+
+def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> list[str]:
+    """事件级先忆（检索是本地操作，不花 LLM 调用）。失败静默返回空。"""
+    try:
+        from .memory import MemoryIndex, MemoryQuery, MemoryRetriever
+
+        idx = MemoryIndex.load(ws, project_id)
+        if not idx.fragments:
+            idx.rebuild(ws, project_id, embedding)
+        if not idx.fragments:
+            return []
+        hits = MemoryRetriever(idx, embedding=embedding).query(
+            MemoryQuery(query=query, top_k=top_k))
+        return [f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}"
+                for h in hits if h.score > 0]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piece: str,
+                seam_chars: int, memories: list[str], is_last: bool) -> str:
+    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆）。"""
+    parts = [f"{chapter_goal}", "",
+             f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
+    if prev_piece:
+        parts += ["", f"【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
+                  "…" + prev_piece[-seam_chars:]]
+    if memories:
+        parts += ["", "【相关前情】（先忆，保持一致）：", *memories]
+    parts += ["", "篇幅约 300–600 字。" + ("这是本章最后一个事件，结尾必须是一个完整的收束句。"
+                                         if is_last else
+                                         "不要写本章其他事件的内容，写到本事件结束即停。")]
+    return "\n".join(parts)
+
+
+def _make_chronicler(ws, project_id: str, provider, embedding, semantic_checker):
+    try:
+        from .chronicler import Chronicler
+
+        return Chronicler(ws, project_id, llm=provider, embedding=embedding,
+                          semantic_checker=semantic_checker)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _merge_reports(reports: list):
+    """合并多份编纂报告（事件循环每事件一份）。"""
+    from .chronicler import ChroniclerReport
+
+    merged = ChroniclerReport()
+    for r in reports:
+        merged.extracted += getattr(r, "extracted", 0)
+        merged.written += getattr(r, "written", 0)
+        merged.conflicts.extend(getattr(r, "conflicts", []) or [])
+        merged.events.extend(getattr(r, "events", []) or [])
+        for cid, delta in (getattr(r, "state_updates", {}) or {}).items():
+            merged.state_updates.setdefault(cid, {}).update(delta)
+    return merged
+
+
 def produce_chapter(
     ws,
     project_id: str,
@@ -92,6 +198,10 @@ def produce_chapter(
     commit_chapter_event: bool | None = None,
     chronicler=None,
     polish: bool = False,
+    # ---- 新增：事件循环 / 续写 / 剧本草稿（人工审查第二、三批）----
+    event_loop: bool = False,
+    screenplay: bool = False,
+    max_continuations: int = 2,
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -104,9 +214,8 @@ def produce_chapter(
       `None`（默认）= **自动兜底**：编纂员写出了真实情节事件就不写合成事件，
       编纂不可用 / 一条都没写出来时才回退写入，保证章节进度至少留痕。
     """
-    from .context import build_chapter_context
+    from .context import build_chapter_context, parse_key_events
     from .polish import completeness, polish_chapter
-    from ..core.llm import LLMMessage, LLMRequest
 
     sess = session or SessionInfo(project_id=project_id, agent="orchestrator")
 
@@ -127,35 +236,91 @@ def produce_chapter(
     else:
         goal = final_goal
 
-    # ---- 2) 生成（含完整性校验与重试，B-04）----
+    # 声明式事件清单（第二批第 2 条）：key_events 写在细纲 front-matter，生成期直接迭代
+    gist_text_for_events = ""
+    try:
+        _gist_p = ws.outline_chapter_path(project_id, vol, ch)
+        if _gist_p.exists():
+            gist_text_for_events = _gist_p.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        gist_text_for_events = ""
+
+    # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
     comp: dict = {}
+    chronic_reports: list = []
     try:
         if prefer_direct:
-            last_problems: list[str] = []
-            for attempt in range(max_retries + 1):
-                attempts = attempt + 1
-                prompt = goal + (_REPAIR_HINT.format(problems="；".join(last_problems))
-                                 if last_problems else "")
-                res = provider.complete(
+            mode = "direct"
+            final = ""
+
+            if screenplay:
+                # 剧本草稿（第三批第 2 条·档 2）：先剧本体写对白交锋，再叙事化。
+                # 多声音质感 ↑，成本 ×2，无失控风险；重场戏专用。
+                script_res = provider.complete(
                     LLMRequest(
                         messages=[LLMMessage(role="system", content=system_prompt or ""),
-                                  LLMMessage(role="user", content=prompt)],
+                                  LLMMessage(role="user", content=goal + _SCRIPT_INSTRUCTION)],
                         max_tokens_out=generation_tokens,
                     )
                 )
-                final = res.content or ""
-                if len(final) < direct_words_floor:
-                    raise RuntimeError(f"direct generation too short ({len(final)} chars)")
-                comp = completeness(final)
-                problems = _completeness_problems(comp) if validate else []
-                if not problems:
-                    break
-                last_problems = problems
-                if attempt == max_retries:
-                    comp["_unresolved"] = problems  # 重试耗尽：保留问题标记，不静默
-            mode = "direct"
+                script_text = (script_res.content or "").strip()
+                if script_text:
+                    goal = (goal + "\n\n【对白草稿】（仅作素材：保留其中对白原话与冲突走向，"
+                            "转化为小说叙事，补足动作、场景与心理描写，不要保留剧本格式）\n"
+                            + script_text)
+
+            key_events = parse_key_events(gist_text_for_events) if event_loop else []
+            if key_events:
+                # 事件循环（第二批第 2 条）：按声明式 key_events 逐事件推进、逐事件回写。
+                # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
+                pieces: list[str] = []
+                seam = max(200, min(400, _SEAM_CHARS))
+                for idx, ev_text in enumerate(key_events, 1):
+                    is_last = idx == len(key_events)
+                    memories_ev = _recall_for(ws, project_id, ev_text, embedding)
+                    prompt = _event_goal(goal, ev_text, idx, len(key_events),
+                                         pieces[-1] if pieces else "", seam,
+                                         memories_ev, is_last)
+                    piece = _generate_with_continuation(
+                        provider, system_prompt or "", prompt, generation_tokens,
+                        max_continuations)
+                    if len(piece) < direct_words_floor:
+                        raise RuntimeError(
+                            f"event {idx}/{len(key_events)} too short ({len(piece)} chars)")
+                    pieces.append(piece)
+                    attempts += 1
+                    # 逐事件回写（ADR-013）；失败不阻断，交由章级兜底
+                    if chronicler is None:
+                        chronicler = _make_chronicler(ws, project_id, provider, embedding,
+                                                      semantic_checker)
+                    if chronicler is not None:
+                        try:
+                            chronic_reports.append(
+                                chronicler.run(piece, vol, ch, max_events=2,
+                                               tag=f"e{idx}"))
+                        except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
+                            pass
+                final = "\n".join(pieces)
+            else:
+                last_problems: list[str] = []
+                for attempt in range(max_retries + 1):
+                    attempts = attempt + 1
+                    prompt = goal + (_REPAIR_HINT.format(problems="；".join(last_problems))
+                                     if last_problems else "")
+                    final = _generate_with_continuation(
+                        provider, system_prompt or "", prompt, generation_tokens,
+                        max_continuations)
+                    if len(final) < direct_words_floor:
+                        raise RuntimeError(f"direct generation too short ({len(final)} chars)")
+                    comp = completeness(final)
+                    problems = _completeness_problems(comp) if validate else []
+                    if not problems:
+                        break
+                    last_problems = problems
+                    if attempt == max_retries:
+                        comp["_unresolved"] = problems  # 重试耗尽：保留问题标记，不静默
         else:
             from .agent_runner import AgentRunner
 
@@ -176,6 +341,9 @@ def produce_chapter(
     except Exception as e:  # noqa: BLE001 - 循环/生成异常统一收敛为失败
         return ProductionResult(ok=False, result=str(e), mode=mode, bible_injected=bible_injected,
                                 attempts=attempts, completeness=comp)
+
+    if not comp and final:
+        comp = completeness(final)
 
     # ---- 3) 落盘草稿 ----
     draft = ws.draft_path(project_id, vol, ch)
@@ -211,17 +379,22 @@ def produce_chapter(
     events = 0
     chronicle = None
     try:
-        text_for_chronicle = final if mode == "direct" else (
-            draft.read_text(encoding="utf-8") if draft.exists() else "")
-        if text_for_chronicle:
-            if chronicler is None and inject_bible is not False:
-                from .chronicler import Chronicler
+        if chronic_reports:
+            # 事件循环已在生成期逐事件回写（ADR-013），此处只合并报告，**不得**对整章重复编纂
+            chronicle = _merge_reports(chronic_reports)
+            events = chronicle.written
+        else:
+            text_for_chronicle = final if mode == "direct" else (
+                draft.read_text(encoding="utf-8") if draft.exists() else "")
+            if text_for_chronicle:
+                if chronicler is None and inject_bible is not False:
+                    from .chronicler import Chronicler
 
-                chronicler = Chronicler(ws, project_id, llm=provider, embedding=embedding,
-                                        semantic_checker=semantic_checker)
-            if chronicler is not None:
-                chronicle = chronicler.run(text_for_chronicle, vol, ch)
-                events = chronicle.written
+                    chronicler = Chronicler(ws, project_id, llm=provider, embedding=embedding,
+                                            semantic_checker=semantic_checker)
+                if chronicler is not None:
+                    chronicle = chronicler.run(text_for_chronicle, vol, ch)
+                    events = chronicle.written
     except Exception:  # noqa: BLE001 - 编纂失败不影响草稿已落盘
         chronicle = None
 

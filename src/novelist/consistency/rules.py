@@ -143,7 +143,7 @@ def _load(ws: Workspace, project_id: str, rel: str) -> dict | list:
 
 
 def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """全部确定性规则（bible 引用 + 时间线 + 正文用词与战力表述）。
+    """全部确定性规则（bible 引用 + 时间线 + 正文用词与战力表述 + 世界状态）。
 
     注意：这里的"全部"也只是**能确定性判定**的部分。称谓是否合乎身份、
     情节逻辑是否自洽、伏笔是否回收等仍属 LLM 语义检（见 consistency/reviewer.py）。
@@ -152,7 +152,90 @@ def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
     alerts += _referential_integrity(ws, project_id)
     alerts += _timeline_monotonic(ws, project_id)
     alerts += run_lexicon_checks(ws, project_id)
+    alerts += run_state_checks(ws, project_id)
     return alerts
+
+
+def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-STATE：世界状态层的确定性校验（人工审查第三批第 3 条）。
+
+    - 境界只进不退（倒退 → block；"跌境/自废修为"类情节当前不做例外，出现时人工仲裁）
+    - 一次跨 2 个及以上大境界 → warn（须有对应突破/机缘描写，否则是编纂员抽错了）
+    - 已死亡人物在死亡章之后仍出现在正文 → warn（可能是回忆/提及，人工复核）
+    """
+    from ..core.worldstate import parse_realm
+
+    alerts: list[RuleAlert] = []
+    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    levels = ((wv.get("power_system") or {}).get("levels")) if isinstance(wv, dict) else None
+    st = _read_json(ws._abs(f"{project_id}/bible/worldstate.json")) or {}
+    chars = st.get("characters") if isinstance(st, dict) else None
+    if not isinstance(chars, dict):
+        return alerts
+
+    chapters = {name: text for name, text in _iter_chapters(ws, project_id)}
+
+    # 基线：人物卡 power.level（init 前的初始状态，未进 history，须作为比较起点）
+    card_realms: dict[str, str] = {}
+    card_data = _read_json(ws._abs(f"{project_id}/bible/characters.json")) or []
+    for c in card_data if isinstance(card_data, list) else []:
+        if isinstance(c, dict) and c.get("id") and (c.get("power") or {}).get("level"):
+            card_realms[c["id"]] = str(c["power"]["level"])
+
+    for cid, cur in chars.items():
+        if not isinstance(cur, dict):
+            continue
+        name = cur.get("name") or cid
+        seq = [h for h in (cur.get("history") or [])
+               if isinstance(h, dict) and isinstance(h.get("at"), dict)]
+        seq.sort(key=lambda h: (int(h["at"].get("vol", 0) or 0), int(h["at"].get("ch", 0) or 0)))
+
+        # 初始修为（人物卡）作为单调性比较的基线
+        prev: tuple[int, int] | None = None
+        if levels and card_realms.get(cid):
+            prev = parse_realm(card_realms[cid], [str(x) for x in levels])
+        death_ch: tuple[int, int] | None = None
+        for h in seq:
+            delta = h.get("delta") or {}
+            at = (int(h["at"].get("vol", 0) or 0), int(h["at"].get("ch", 0) or 0))
+            if delta.get("阵亡") or delta.get("死亡"):
+                death_ch = at
+            new_realm = delta.get("realm")
+            if not new_realm or not levels:
+                continue
+            parsed = parse_realm(str(new_realm), [str(x) for x in levels])
+            if parsed is None:
+                continue
+            if prev is not None:
+                if parsed < prev:
+                    alerts.append(RuleAlert(
+                        level="block", rule_id="R-STATE", object_ref=name,
+                        detail=(f"境界倒退：{prev} → {parsed}（{str(new_realm)}，at {at[0]}:{at[1]}）。"
+                                "若无「跌境/自废修为」情节则为编纂错误")))
+                elif parsed[0] - prev[0] >= 2:
+                    alerts.append(RuleAlert(
+                        level="warn", rule_id="R-STATE", object_ref=name,
+                        detail=(f"越级跳变：跨 {parsed[0] - prev[0]} 个大境界（at {at[0]}:{at[1]}），"
+                                "须有对应突破/机缘描写")))
+            prev = parsed if prev is None else max(prev, parsed)
+
+        if death_ch and cur.get("dead"):
+            for ch_name, text in chapters.items():
+                m = re.match(r"(\d+)-(\d+)$", ch_name)
+                if not m:
+                    continue
+                at = (int(m.group(1)), int(m.group(2)))
+                if at > death_ch and name in text:
+                    alerts.append(RuleAlert(
+                        level="warn", rule_id="R-STATE", object_ref=f"{ch_name}｜{name}",
+                        detail=(f"人物已在 {death_ch[0]}:{death_ch[1]} 阵亡，"
+                                "之后章节正文仍出现其名（确认是否回忆/提及）")))
+    return alerts
+
+
+def run_state_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """只跑世界状态规则（R-STATE），供编纂流程单独调用。"""
+    return _worldstate_check(ws, project_id)
 
 
 def _referential_integrity(ws: Workspace, project_id: str) -> list[RuleAlert]:
