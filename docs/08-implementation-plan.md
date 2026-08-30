@@ -260,6 +260,27 @@ novelist/
   （细纲标记可展开 → 一次 LLM 子事件清单 ≤3 个），优先级低于前四项。
 - 测试：`tests/test_m7_plotline.py` 7 个用例。全量 173 passed。
 
+#### M3i — RAG 知识检索层（prompt 注入检索化 + 向量化 + LLM 查询生成）✅ 已完成
+
+> 讨论第 8 轮（用户拍板三件都做）：把 system_prompt 里 5 块"静态全量/固定前 N"
+> 检索化，长卷不随内容膨胀，且相关性注入 = 注意力不被稀释。
+
+- **KnowledgeBase（`core/knowledge.py`）** ✅ 统一知识条目：设定/人物（含 worldstate
+  状态行）/伏笔/教训/势力/物品功法，从 bible 各文件收集为可检索条目。
+- **三层检索** ✅ ① 确定性：关键词 + token 交集（与 MemoryRetriever 同口径，兜底）；
+  ② 语义：向量化后余弦（nomic-embed，`make_embedding("openai", base_url=LM-Studio)`，
+  keyword 模式自动退化）；③ **LLM 查询生成**：`plan_queries` 让模型决定"本事件需要
+  哪些知识"→ 用生成的查询检索（`knowledge_llm=False` 退化为事件文本检索）。
+- **system 瘦身为 L1 基座** ✅ 出场人物全卡（≤16 人）→【人物名单】名字+境界一行
+  （防造人）；势力前 6 全给 → 事件级命中注入；伏笔/教训固定前 N → 事件级相关检索；
+  人物当前状态 → 随相关人物卡事件级注入（战力硬约束不丢）。保留：身份/主线/铁律/
+  境界体系/文风/主角约束/纪律/格式。
+- **事件级注入** ✅ `_event_goal` 增 related 段：相关人物卡（带当前状态/首现标记）、
+  相关设定/伏笔/教训/势力——知识检索 → 过滤 → 注入一条链。
+- **最近 1 章固定回退** ✅ 相关检索召回语义相似但未必时间最近，长卷下直接带最近一章
+  事件补连续性（用户拍板）。
+- 测试：`tests/test_m8_rag.py` 7 个用例。全量 180 passed。
+
 #### 待办
 - **角色演员**：actor 提示词模板 + `write_take` 工具 + 多角"排演→整合"流程（ADR-012）。
   `core/scene.py`（SceneBus）与 `core/scene_tools.py`（join/say/leave）已就绪，**尚未接入编排流**。
