@@ -1,0 +1,206 @@
+{
+  "tag": "v2",
+  "chapters": 10,
+  "total_chars": 12349,
+  "ai_tone_overall": 27.71,
+  "ai_tone_avg": 26.06,
+  "truncated_chapters": [],
+  "meta_narration_chapters": [],
+  "consistency_alerts": 0,
+  "alerts_by_rule": {},
+  "events_total": 31,
+  "events_real": 30,
+  "events_synthetic": 1,
+  "per_chapter": {
+    "1-1": {
+      "chars": 740,
+      "ai_tone": 17.6,
+      "paragraphs": 23,
+      "para_stdev": 15.68,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 0,
+        "如字模板": 1,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 1,
+        "省略号": 2,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-10": {
+      "chars": 939,
+      "ai_tone": 35.2,
+      "paragraphs": 28,
+      "para_stdev": 19.22,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 0,
+        "如字模板": 4,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 1,
+        "省略号": 3,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-2": {
+      "chars": 1034,
+      "ai_tone": 23.42,
+      "paragraphs": 41,
+      "para_stdev": 10.61,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 0,
+        "如字模板": 1,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 2,
+        "省略号": 4,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-3": {
+      "chars": 1435,
+      "ai_tone": 38.91,
+      "paragraphs": 50,
+      "para_stdev": 16.67,
+      "signals": {
+        "对比排比": 1,
+        "模糊比喻": 3,
+        "如字模板": 1,
+        "时间套话": 2,
+        "认知开头": 0,
+        "破折号": 0,
+        "省略号": 5,
+        "形容词堆叠": 0,
+        "结尾升华": 1
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-4": {
+      "chars": 1550,
+      "ai_tone": 25.38,
+      "paragraphs": 66,
+      "para_stdev": 11.83,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 0,
+        "如字模板": 5,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 0,
+        "省略号": 2,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-5": {
+      "chars": 1172,
+      "ai_tone": 26.13,
+      "paragraphs": 45,
+      "para_stdev": 18.58,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 1,
+        "如字模板": 2,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 1,
+        "省略号": 3,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-6": {
+      "chars": 1582,
+      "ai_tone": 23.0,
+      "paragraphs": 35,
+      "para_stdev": 28.81,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 2,
+        "如字模板": 4,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 0,
+        "省略号": 3,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-7": {
+      "chars": 1378,
+      "ai_tone": 10.76,
+      "paragraphs": 31,
+      "para_stdev": 30.53,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 1,
+        "如字模板": 0,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 0,
+        "省略号": 5,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-8": {
+      "chars": 1385,
+      "ai_tone": 17.54,
+      "paragraphs": 43,
+      "para_stdev": 19.12,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 1,
+        "如字模板": 0,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 3,
+        "省略号": 2,
+        "形容词堆叠": 0,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    },
+    "1-9": {
+      "chars": 1134,
+      "ai_tone": 42.68,
+      "paragraphs": 28,
+      "para_stdev": 18.32,
+      "signals": {
+        "对比排比": 0,
+        "模糊比喻": 1,
+        "如字模板": 4,
+        "时间套话": 0,
+        "认知开头": 0,
+        "破折号": 0,
+        "省略号": 6,
+        "形容词堆叠": 1,
+        "结尾升华": 0
+      },
+      "ends_properly": true,
+      "meta_narration": []
+    }
+  }
+}

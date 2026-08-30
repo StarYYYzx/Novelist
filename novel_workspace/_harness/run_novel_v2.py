@@ -139,6 +139,12 @@ def run_chapter(ch: int, provider, embedding, *, do_polish: bool = True) -> dict
             rec["chars"] = res2.completeness.get("chars", rec["chars"])
             rec["ai_after"] = getattr(res2.polish, "after", None) and res2.polish.after.score
             rec["events"] = res2.events_committed
+            # 重生成后补齐编纂/润色字段——否则日志里会出现"编纂 0 但记忆里有事件"的假象
+            rec["chronicle_written"] = getattr(res2.chronicle, "written", 0)
+            rec["chronicle_conflicts"] = getattr(res2.chronicle, "conflicts", [])
+            rec["polish_applied"] = bool(res2.polish and res2.polish.changed)
+            if getattr(res2.polish, "before", None) is not None:
+                rec["ai_before"] = res2.polish.before.score
             issues2 = reviewer.review(
                 ws.draft_path(PID, VOL, ch).read_text(encoding="utf-8"), VOL, ch,
                 gist_text=gist.read_text(encoding="utf-8") if gist.exists() else "")
