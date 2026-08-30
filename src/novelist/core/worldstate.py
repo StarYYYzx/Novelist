@@ -58,10 +58,14 @@ NOOP_VALUES = {"无", "无变化", "未变", "不变", "无碍", "无伤", "没�
 def parse_realm(realm: str, levels: list[str]) -> tuple[int, int] | None:
     """把「炼气三层」「筑基大圆满」解析成（大境界序号, 细分序号），用于单调性比较。
 
-    无法识别细分时细分记 0（只比较大境界）；完全不在体系内返回 None（R-STATE 跳过）。
+    - 先剥离括号注释（LLM 常写「金丹中期（跌落）」，括号是编纂噪声不是修为）。
+    - 细分无法识别（如「炼气期」的"期"）→ 返回 None 跳过比较，避免把
+      "细分表述不全"误判成"境界倒退"（实测吴虎炼气七层→炼气期被 R-STATE 误报）。
+    - 完全不在体系内也返回 None。
     """
     if not realm:
         return None
+    realm = re.sub(r"[（(].*?[）)]", "", realm).strip()
     for i, lv in enumerate(levels):
         if not realm.startswith(lv):
             continue
@@ -71,7 +75,9 @@ def parse_realm(realm: str, levels: list[str]) -> tuple[int, int] | None:
             return (i, _CN_NUM[m.group(1)])
         if sub in _SUB_ORDER:
             return (i, _SUB_ORDER[sub])
-        return (i, 0)
+        if not sub:
+            return (i, 0)   # 只有大境界（如「炼气」）
+        return None         # 细分无法识别 → 跳过，宁缺毋滥
     return None
 
 
