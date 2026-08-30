@@ -20,7 +20,8 @@ novel_workspace/
     │   ├── locations.json            # 地点/地图
     │   ├── timeline.json             # 时间线事件
     │   ├── plot_threads.json         # 伏笔登记与回收
-    │   └── style.json                # 文风约束、禁用词、术语表、叙述偏好
+    │   ├── style.json                # 文风约束、禁用词、术语表、叙述偏好
+    │   └── worldstate.json           # 世界状态（硬状态层）：人物当前修为/位置/持有物/伤势
     ├── outline/                      # 大纲（结构化）
     │   ├── volumes.json              # 卷级大纲
     │   └── chapters/<vol>-<ch>.md    # 章节细纲（每章一文件）
