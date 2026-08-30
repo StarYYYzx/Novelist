@@ -186,6 +186,26 @@ def _merge_reports(reports: list):
     return merged
 
 
+_TITLE_RE = re.compile(r"^#{1,6}\s*第\s*[一二三四五六七八九十\d]+\s*章")
+
+
+def _dedupe_chapter_titles(text: str) -> str:
+    """事件循环拼接后处理：模型常在每个事件开头重写章节标题，删除非首行重复标题。
+
+    实测（诡夜大学 ch1）：3 事件拼出 4065 字，第 2 个事件开头又写了一遍
+    「## 第 1 章 脚步声在午夜响起」——读者视角是标题重复。
+    """
+    kept: list[str] = []
+    title_seen = False
+    for ln in text.splitlines():
+        if _TITLE_RE.match(ln.strip()):
+            if title_seen:
+                continue
+            title_seen = True
+        kept.append(ln)
+    return "\n".join(kept).strip("\n")
+
+
 def produce_chapter(
     ws,
     project_id: str,
@@ -323,7 +343,7 @@ def produce_chapter(
                                                tag=f"e{idx}"))
                         except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             pass
-                final = "\n".join(pieces)
+                final = _dedupe_chapter_titles("\n".join(pieces))
             else:
                 last_problems: list[str] = []
                 for attempt in range(max_retries + 1):
