@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/worldstate.schema.json",
+  "title": "worldstate",
+  "description": "世界状态（硬状态层）。人物当前修为/位置/持有物/伤势的确定性事实源，由编纂员在事件回写时更新，供生成上下文注入与 R-STATE 校验。见 docs/06 §3、docs/人工审查.md 第三批第 3 条。",
+  "type": "object",
+  "required": ["characters"],
+  "properties": {
+    "characters": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "realm": { "type": "string", "description": "当前修为境界，如「炼气三层」" },
+          "location": { "type": "string", "description": "当前所在地" },
+          "items": { "type": "array", "items": { "type": "string" } },
+          "injuries": { "type": "array", "items": { "type": "string" } },
+          "dead": { "type": "boolean", "default": false },
+          "history": {
+            "type": "array",
+            "description": "状态变更历史，R-STATE 依据它校验境界单调性与越级跳变",
+            "items": {
+              "type": "object",
+              "required": ["at", "delta"],
+              "properties": {
+                "at": {
+                  "type": "object",
+                  "properties": {
+                    "vol": { "type": "integer", "minimum": 1 },
+                    "ch": { "type": "integer", "minimum": 0 }
+                  },
+                  "additionalProperties": false
+                },
+                "delta": { "type": "object", "additionalProperties": true }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$comment": "硬状态层。realm 只进不退（R-STATE 校验），越级跳变（一次跨 2 个大境界以上）须有对应突破事件。"
+}
