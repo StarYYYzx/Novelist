@@ -573,6 +573,99 @@ class MemoryWriter:
         return payload
 
 
+    # ---- 修订与回退（B-07）----
+    def drop_by_source(self, vol: int, ch: int, *, kinds: Iterable[str] | None = None) -> dict:
+        """回退某一章写入的真实记忆（章节重写 / 人工撤销时用）。
+
+        docs/06 §4.4 声称冲突记忆"可回滚"，但原先只有 append_*，撤回能力缺失——
+        导致章节重生成后新旧事件并存、重复且矛盾。本方法补上这条回退路径。
+
+        `kinds` 默认含全部真实类型；`chapter` 型合成事件始终保留（它是系统的
+        章级进度记录，不属于情节记忆）。
+        """
+        idx = self._ensure_index()
+        drop_kinds = set(kinds) if kinds else {"plot_event", "experience", "relationship"}
+        removed = {"plot_events": 0, "experiences": 0, "relationships": 0}
+
+        if "plot_event" in drop_kinds:
+            path = self.ws._abs(f"{self.project_id}/memory/plot_events.json")
+            events = _read_json(path)
+            if isinstance(events, list):
+                kept = []
+                for e in events:
+                    if not isinstance(e, dict):
+                        continue
+                    at = e.get("at")
+                    is_synthetic = e.get("type") == "chapter"
+                    if (not is_synthetic and isinstance(at, dict)
+                            and int(at.get("vol", -1)) == vol and int(at.get("ch", -1)) == ch):
+                        removed["plot_events"] += 1
+                        continue
+                    kept.append(e)
+                self.ws.write_json(path, kept)
+
+        if "experience" in drop_kinds:
+            hist_dir = self.ws.memory_dir(self.project_id) / "character_histories"
+            if hist_dir.is_dir():
+                for f in sorted(hist_dir.glob("*.json")):
+                    data = _read_json(f)
+                    if not isinstance(data, dict):
+                        continue
+                    old = list(data.get("entries") or [])
+                    entries = [x for x in old
+                               if not (isinstance(x, dict) and (x.get("at") or {}).get("vol") == vol
+                                       and (x.get("at") or {}).get("ch") == ch)]
+                    if len(entries) != len(old):
+                        removed["experiences"] += len(old) - len(entries)
+                        data["entries"] = entries
+                        data["revision"] = int(data.get("revision", 0) or 0) + 1
+                        self.ws.write_json(f, data)
+
+        if "relationship" in drop_kinds:
+            path = self.ws.relationships_path(self.project_id)
+            data = _read_json(path)
+            if isinstance(data, dict):
+                pairs = []
+                for pair in data.get("pairs") or []:
+                    if not isinstance(pair, dict):
+                        continue
+                    old = list(pair.get("entries") or [])
+                    kept = [x for x in old
+                            if not (isinstance(x, dict) and (x.get("at") or {}).get("vol") == vol
+                                    and (x.get("at") or {}).get("ch") == ch)]
+                    removed["relationships"] += len(old) - len(kept)
+                    if kept:
+                        pair["entries"] = kept
+                        pairs.append(pair)
+                self.ws.write_json(path, {"pairs": pairs})
+
+        idx.rebuild(self.ws, self.project_id, self.embedding)
+        return removed
+
+    def revise_fragment(self, sig: str, new_text: str) -> bool:
+        """修订索引中一条记忆碎片的文本（人工仲裁后的更正路径）。
+
+        只改索引文本与向量；`memory/` 事实源里的原始条目不动——事实源的更正应
+        由编纂员以 append 追加「更正条目」的方式完成，保留审计线索（docs/09 §5）。
+        """
+        idx = self._ensure_index()
+        for f in idx.fragments:
+            if f.sig == sig:
+                f.text = new_text
+                f.hash = _sha1(new_text)
+                if self.embedding is not None and getattr(self.embedding, "kind", None) != KEYWORD_KIND:
+                    idx.vectors[sig] = (self.embedding.embed([new_text]) or [[]])[0]
+                idx.revision += 1
+                idx.save(self.ws, self.project_id)
+                return True
+        return False
+
+
+def rollback_chapter(ws, project_id: str, vol: int, ch: int, embedding=None) -> dict:
+    """回退某一章写入的真实记忆（章节重生成前的清理）。返回删除计数。"""
+    return MemoryWriter(ws, project_id, embedding=embedding).drop_by_source(vol, ch)
+
+
 def reindex_memory(ws, project_id: str, embedding=None) -> int:
     """全量重建记忆索引（docs/07 §7.3）。返回碎片数。文件是事实源，索引可随时重建。"""
     idx = MemoryIndex()

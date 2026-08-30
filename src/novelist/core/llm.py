@@ -79,6 +79,12 @@ class LLMResult:
     blocked: bool = False
     block_reason: str | None = None
     provider_note: str | None = None
+    # 思考型模型（如 qwen3.5）的推理过程。
+    # 关键：思考 token **计入 max_tokens**（`usage.completion_tokens_details.reasoning_tokens`），
+    # 会挤占正文预算——预算被思考吃光时 `content` 为空字符串，而 `finish_reason == "length"`。
+    # 见 docs/人工审查.md 第二批第 1 条。
+    reasoning: str = ""
+    reasoning_tokens: int | None = None
 
 
 class LLMProvider(Protocol):

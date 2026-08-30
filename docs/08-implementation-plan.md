@@ -154,13 +154,51 @@ novelist/
   `get_plot_events`、`reindex_memory`（sensitive，走门禁）。
 - 测试：`tests/test_m3_memory.py` 22 个用例（降级、排序、过滤、冲突双检、索引可再生、端到端闭环）。
 
+#### M3e — 成稿质量增强 ✅ 已完成
+
+> 针对端到端系统测试（`novel_workspace/_harness/系统整体测试报告.md`）暴露的缺陷逐项修复。
+> 编号沿用报告里的 B-xx。
+
+- **B-02 圣经注入** ✅ 新增 `core/context.py`。按章节装配 世界观 / 境界体系 / 世界铁律 /
+  文风（视角·时态·笔调·禁用词·专有名词）/ **本章出场人物卡（含性别·境界·阵营·性格·弧线）** /
+  主角代词硬约束 / 未回收伏笔 / 输出纪律（元叙事、完整性、人物边界、事实一致）。
+  `produce_chapter(inject_bible=True)` 默认开启。
+  *出场人物取"已登场且仍在场"而非"细纲点名"*——只按细纲点名会让模型忘记既有角色，
+  转而在正文里另造名字填坑，反而加剧凭空造人。
+- **B-03 编纂员** ✅ 新增 `core/chronicler.py`。LLM 从成章正文抽取真实情节事件 →
+  `MemoryWriter` 冲突双检 → 写 `plot_events` 与各人物经历。
+  章级合成事件改为**自动兜底**：有真实事件就不写，编纂不可用才写（`commit_chapter_event=None`）。
+- **B-04 生成完整性校验与重试** ✅ `core/polish.py::completeness`：截断、元叙事泄漏、
+  篇幅检测；`produce_chapter(validate=True, max_retries=1)` 带修复提示重生成。
+  *元叙事检测跳过首行*——章节标题本来就该写「第X章」，真正的泄漏是叙述里的说法。
+- **B-05 CLI 生成预算可配** ✅ `novelist chapter --gen-tokens N`（原对 lmstudio 硬编码 400）。
+- **B-06 CLI promote 命令** ✅ `novelist promote --vol/--ch | --all [--policy]`（sensitive，
+  默认 ask 门禁，可交互审批或策略放行）。CLI 现共 10 个命令。
+- **B-07 记忆回退与修订** ✅ `MemoryWriter.drop_by_source(vol, ch)` 与 `revise_fragment(sig, text)`，
+  模块级 `rollback_chapter(ws, pid, vol, ch)`。章节重写时新旧事件不再并存。
+- **B-08 审校（双层）** ✅ 确定性层：`rules.py` 新增 **R-LEX**（现代词 / 西方典故 / style 禁用词）
+  与 **R-PWR**（同一境界混用「层」「重」等细分表述）。语义层：新增 `consistency/reviewer.py`
+  审校师（设定矛盾 / 人设漂移 / 称谓失当 / 时间线 / 战力越级 / 事实前后矛盾 / 细纲未覆盖），
+  `run_consistency(ws, pid, llm=...)` 追加为 `R-SEM` 告警；CLI `novelist review --provider ...`。
+- **B-09 敏感词表** ✅ `core/moderation.py` 内置起步词表（违禁品 / 赌博 / 极端暴力 / 违规导流），
+  支持 `.txt`/`.json` 词表文件与 `bible/moderation.json`、`NOVELIST_BANNED_WORDS` 环境变量。
+  ⚠️ 起步清单**不构成本地合规词表**，生产环境须加载完整词表或对接专业审核服务。
+- **B-13 导出书名** ✅ `export_project` 取 `project.json.title`，回退 `project_id`。
+- **文风优化（新增）** ✅ `core/polish.py`：九种可测的"AI 味"信号（对比排比、模糊比喻、
+  「X 如 Y」模板、时间套话、认知动词开头、破折号/省略号、形容词堆叠、结尾升华、段落节奏过匀），
+  给出 0–100 的确定性分数；`polish_chapter()` 在成章后**额外追加一次 LLM 调用**定向改写，
+  并用同一指标复核——**分数没变好或章节被写坏就保留原稿**。CLI `chapter --polish`。
+- 测试：`tests/test_m4_quality.py` 40 个用例。全量 135 passed。
+
 #### 待办
-- 敏感词过滤 + 审计日志完整（ADR-015 上游预检；`core/moderation.py` 的词表目前为空）。
 - **角色演员**：actor 提示词模板 + `write_take` 工具 + 多角"排演→整合"流程（ADR-012）。
   `core/scene.py`（SceneBus）与 `core/scene_tools.py`（join/say/leave）已就绪，**尚未接入编排流**。
 - **受控围读会**：结束判据（全体离场 / 轮次上限 / 收敛 / 超时）与主持人调度尚未接到 `produce_chapter`（ADR-014）。
-- **真实事件抽取**：`produce_chapter` 目前只回写一条章级合成事件"完成第 X 卷第 Y 章"，不含情节内容，
-  因此检索无法按情节语义命中它。真正的"章内逐事件落定 + 编纂员提炼"（F11.1）待实现。
+- **子代理框架**：`core/subagent.py` 仍不存在。当前 B-03 编纂员与 B-08 审校师是**独立的领域组件**，
+  由编排层直接调用，尚未统一到 docs/05 §3 的 `SubagentTask`/`SubagentResult` 契约与隔离会话机制。
+- **冲突双检有效性**：真实语料上一次都没触发，需专门构造用例验证（F11.3）。
+- **大纲覆盖度检查**：docs/05 的「检查员」未实现；实测 22 建档人物中 3 人正文零出场且无告警。
+- **审计日志完整**（F7.1）：事件与 token 计量尚未落 `reports/` 与 `.index.db`。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。

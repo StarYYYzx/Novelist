@@ -21,11 +21,26 @@ class ProjectStats:
     consistency_alerts: int = 0
 
 
+def _book_title(ws: Workspace, project_id: str) -> str:
+    """发布包书名：优先 project.json.title，回退 project_id。
+
+    原先直接用 project_id，导出来是「# proj-duanyu」这种机器名（B-13）。
+    """
+    try:
+        data = ws.read_json(project_id, ws.project_json_path(project_id), required=False)
+        title = (data or {}).get("title") if isinstance(data, dict) else None
+        if title:
+            return str(title)
+    except Exception:  # noqa: BLE001 - project.json 缺失/损坏时用 id 兜底
+        pass
+    return project_id
+
+
 def export_project(ws: Workspace, project_id: str, *, include_drafts: bool = False) -> str:
     """导出发布包：拼接已发布章节正文（docs/02 F8.1）。"""
     root = ws.project_dir(project_id)
     chapters_dir = root / "chapters"
-    parts = [f"# {project_id}\n"]
+    parts = [f"# {_book_title(ws, project_id)}\n"]
     if chapters_dir.is_dir():
         for f in sorted(chapters_dir.glob("*.md")):
             parts.append(f"\n## {f.stem}\n")

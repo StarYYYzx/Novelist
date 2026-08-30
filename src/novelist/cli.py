@@ -6,6 +6,7 @@ import click
 
 from .config import load_config
 from .core.errors import NovelistError
+from .core.session import SessionInfo
 from .storage.checkpoint import Checkpoint
 from .storage.workspace import WorkspaceError, Workspace
 
@@ -162,10 +163,17 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.option("--provider", default="fake", help="LLM provider：fake/scripted/lmstudio/deepseek/openai")
 @click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
 @click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
+@click.option("--gen-tokens", type=int, default=None,
+              help="单次生成预算（B-05）。缺省时本地模型 400、其余 4000；"
+                   "本地 9B 模型写满一章建议 1200–1500")
+@click.option("--polish/--no-polish", default=False,
+              help="成章后追加一次 LLM 调用优化文风（降低 AI 味），并用确定性指标复核")
+@click.option("--no-bible", is_flag=True, default=False,
+              help="关闭圣经注入（仅用于对照实验；默认开启，见 B-02）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
-            policy: str | None) -> None:
-    """串行写一章：主编剧产出草稿 + 事件实时回写（docs/04 §4.1 / ADR-013）。
+            policy: str | None, gen_tokens: int | None, polish: bool, no_bible: bool) -> None:
+    """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
     --policy 指定策略文件后，sensitive/danger 工具按策略处置；ask 时交互审批（grant 可见）。
@@ -189,8 +197,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     prov = _make_cli_provider(provider, vol, ch)
     # 本地模型默认直出（prefer_direct）；其余遵循用户 --direct/--loop 显式选择
     prefer_direct = True if provider in ("lmstudio", "local") else (direct if direct is not None else False)
-    # 本地慢模型（约 20 token/s）用小生成预算，避免超时（量力而为）
-    gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
+    # 生成预算（B-05）：显式 --gen-tokens 优先；否则本地模型 400、其余 4000
+    if not gen_tokens:
+        gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
 
     # 门禁 + 审批：策略文件（可选）→ 默认 supervised；ask 走交互审批并持久化供 grant 查询
     # Embedding：按配置 provider.embedding 选取；无 key/不可用时自动降级为关键词索引（F9.4）
@@ -202,14 +211,26 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
     reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision, embedding=emb)
 
-    # 全链路：细纲读入 + 前导"先忆"（记忆检索）→ 拼进生成目标 → 正文 → 事件回写
-    final_goal = _compose_goal(ws, project_id, vol, ch, embedding=emb)
+    # 先忆结果交给编排层注入圣经上下文（B-02）；关闭注入时仍可用于旧链路
+    memories = _recall_lines(ws, project_id, vol, ch, embedding=emb)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
-                          final_goal=final_goal, generation_tokens=gen_tokens, embedding=emb)
+                          generation_tokens=gen_tokens, embedding=emb,
+                          inject_bible=not no_bible, memories=memories or None, polish=polish)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
-    click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode})")
+    click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "
+               f"attempts={res.attempts})")
     click.echo(f"events committed: {res.events_committed}")
+    if res.completeness:
+        c = res.completeness
+        flag = "ok" if c.get("ends_properly") and not c.get("meta_narration") else "CHECK"
+        click.echo(f"completeness: {flag} ({c.get('chars')} 字, 末字「{c.get('last_char')}」"
+                   + (f", 元叙事={c['meta_narration']}" if c.get("meta_narration") else "")
+                   + (f", 未解决={c['_unresolved']}" if c.get("_unresolved") else "") + ")")
+    if res.polish is not None:
+        p = res.polish
+        click.echo(f"polish: {'applied' if p.changed else 'kept original'} "
+                   f"AI味 {p.before.score} -> {p.after.score} ({p.delta:+.2f}) {p.note}")
 
 
 def _compose_goal(ws, project_id: str, vol: int, ch: int, embedding=None) -> str:
@@ -228,22 +249,35 @@ def _compose_goal(ws, project_id: str, vol: int, ch: int, embedding=None) -> str
     return "\n".join(parts)
 
 
-def _recall_memory(ws, project_id: str, query: str, embedding=None, top_k: int = 5) -> str:
-    """写作前"先忆"（docs/07 §7.1 / F3.4）：经记忆检索召回相关历史片段。
+def _recall_lines(ws, project_id: str, vol: int, ch: int, embedding=None, top_k: int = 6) -> list[str]:
+    """先忆结果（行列表），供编排层注入圣经上下文（B-02）。"""
+    gist = ws.outline_chapter_path(project_id, vol, ch)
+    gist_text = gist.read_text(encoding="utf-8")[:800] if gist.exists() else ""
+    return _recall(ws, project_id, gist_text or f"第 {vol} 卷第 {ch} 章", embedding=embedding, top_k=top_k)
 
-    索引缺失时自动从 memory/ 事实源重建；完全没有记忆时退回 plot_events 末尾摘要。
-    """
+
+def _recall(ws, project_id: str, query: str, embedding=None, top_k: int = 6) -> list[str]:
+    """记忆检索，返回「- [kind @ vol:ch] text」行列表；无记忆时为空列表。"""
     from novelist.core.memory import MemoryIndex, MemoryQuery, MemoryRetriever
 
     idx = MemoryIndex.load(ws, project_id)
     if not idx.fragments:
         idx.rebuild(ws, project_id, embedding)
-    if idx.fragments:
-        hits = MemoryRetriever(idx, embedding=embedding).query(MemoryQuery(query=query, top_k=top_k))
-        if hits:
-            return "\n".join(
-                f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}" for h in hits
-            )
+    if not idx.fragments:
+        return []
+    hits = MemoryRetriever(idx, embedding=embedding).query(MemoryQuery(query=query, top_k=top_k))
+    return [f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}"
+            for h in hits if h.score > 0]
+
+
+def _recall_memory(ws, project_id: str, query: str, embedding=None, top_k: int = 5) -> str:
+    """写作前"先忆"（docs/07 §7.1 / F3.4）：经记忆检索召回相关历史片段。
+
+    索引缺失时自动从 memory/ 事实源重建；完全没有记忆时退回 plot_events 末尾摘要。
+    """
+    lines = _recall(ws, project_id, query, embedding=embedding, top_k=top_k)
+    if lines:
+        return "\n".join(lines)
     return _recent_memory_summary(ws, project_id)
 
 
@@ -300,6 +334,91 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
     from novelist.providers.openai import OpenAICompatibleProvider
 
     return OpenAICompatibleProvider(model="gpt-4o-mini")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
+@click.option("--vol", type=int, default=None, help="卷号；与 --ch 配对使用")
+@click.option("--ch", type=int, default=None, help="章号；与 --vol 配对使用")
+@click.option("--all", "all_chapters", is_flag=True, default=False, help="转正全部草稿")
+@click.option("--policy", default=None, help="权限策略文件；sensitive 设为 allow 可免交互")
+@click.pass_context
+def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int | None,
+            all_chapters: bool, policy: str | None) -> None:
+    """草稿转正为正式章节（docs/06 §4.2 reviewed_ok → published，B-06）。
+
+    promote_draft 是 sensitive 工具：默认走 ask 门禁。不带 --policy 时会交互询问，
+    也可用策略文件把 sensitive 设为 allow 批量放行。
+    """
+    from novelist.core.approval import ApprovalQueue
+    from novelist.core.tools import PermissionGate
+    from novelist.tools import build_registry
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    project_id = _locate_project(ws._abs(""))
+
+    if not all_chapters and (vol is None or ch is None):
+        raise click.ClickException("specify --vol/--ch, or use --all")
+
+    gate = PermissionGate.from_policy_file(policy) if policy else PermissionGate()
+    approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
+    reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision)
+    sess = SessionInfo(project_id=project_id, agent="cli")
+
+    targets: list[tuple[int, int]] = []
+    if all_chapters:
+        for f in sorted((ws.project_dir(project_id) / "drafts" / "chapters").glob("*.md")):
+            parts = f.stem.split("-")
+            if len(parts) == 2 and all(p.isdigit() for p in parts):
+                targets.append((int(parts[0]), int(parts[1])))
+    else:
+        targets.append((int(vol or 0), int(ch or 0)))
+
+    ok_n = 0
+    for v, c in targets:
+        r = reg.invoke(sess, "promote_draft", {"vol": v, "ch": c})
+        if r.status == "ok":
+            ok_n += 1
+            click.echo(f"promoted {v}-{c}")
+        else:
+            click.echo(f"FAILED {v}-{c}: {r.code} {r.data}")
+    click.echo(f"promoted {ok_n}/{len(targets)} chapter(s)")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="lmstudio", help="审校用的 LLM provider")
+@click.option("--max-show", default=20, type=int, help="最多展示多少条告警")
+@click.pass_context
+def review(ctx: click.Context, directory: str | None, provider: str, max_show: int) -> None:
+    """一致性审查：确定性规则 + 审校师语义检（docs/04 §5.4，B-08）。
+
+    不传 provider 也能跑（只跑规则层）；传了才会追加 LLM 语义审校。
+    """
+    from novelist.consistency import run_consistency
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    project_id = _locate_project(ws._abs(""))
+
+    llm = None
+    if provider and provider != "none":
+        try:
+            llm = _make_cli_provider(provider)
+        except Exception as e:  # noqa: BLE001 - provider 不可用时降级为纯规则层
+            click.echo(f"[warn] provider unavailable, rule layer only: {e}")
+
+    alerts = run_consistency(ws, project_id, llm=llm)
+    blocks = [a for a in alerts if a.level == "block"]
+    warns = [a for a in alerts if a.level == "warn"]
+    click.echo(f"alerts: {len(alerts)} (block {len(blocks)} / warn {len(warns)})")
+    for a in alerts[:max_show]:
+        click.echo(f"  [{a.level}/{a.rule_id}] {a.object_ref}: {a.detail}")
+    if len(alerts) > max_show:
+        click.echo(f"  ... {len(alerts) - max_show} more")
 
 
 @cli.command()
