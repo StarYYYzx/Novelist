@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .llm import LLMMessage, LLMRequest
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
