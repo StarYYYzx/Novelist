@@ -30,7 +30,8 @@ from .writeback import LandedEvent, commit_event
 class ProductionResult:
     def __init__(self, ok: bool, chapter_path: str | None = None, result: str = "", events_committed: int = 0,
                  mode: str = "tool", *, bible_injected: bool = False, attempts: int = 1,
-                 completeness: dict | None = None, polish=None, chronicle=None):
+                 completeness: dict | None = None, polish=None, chronicle=None,
+                 review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -41,6 +42,9 @@ class ProductionResult:
         self.completeness = completeness or {}
         self.polish = polish            # core.polish.PolishResult | None
         self.chronicle = chronicle      # core.chronicler.ChroniclerReport | None
+        self.review_blocks = review_blocks      # 事件级审校 block 数（讨论第 7 轮）
+        self.events_revised = events_revised    # 因 block 重写的事件数
+        self.lessons_added = lessons_added      # 本轮沉淀的历史教训数
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -56,6 +60,14 @@ _REPAIR_HINT = (
     "上一稿的问题：{problems}\n"
     "请重新输出完整的一章：写完细纲全部要点，结尾必须是一个完整的收束句"
     "（以句号/问号/感叹号/引号结束），正文里不得出现「第X章」「本章」等元叙事表述。"
+)
+
+# 每事件审校修订（讨论第 7 轮）：block 级问题带审校建议重写该事件，只修订不整章重来
+_REVISE_HINT = (
+    "\n\n【本事件未通过审校，必须修订后重写】\n"
+    "审校问题（block 级，必须逐条修正）：\n{problems}\n"
+    "请重写本事件：逐条修正上述问题；保留未出问题的情节、人物与对白；"
+    "结尾必须是完整的收束句。"
 )
 
 
@@ -173,6 +185,84 @@ def _load_settings(ws, project_id: str):
         return None
 
 
+def _make_reviewer(ws, project_id: str, provider):
+    """构造审校师（LLM 语义检）；失败返回 None（不阻断生成）。"""
+    try:
+        from ..consistency.reviewer import Reviewer
+
+        return Reviewer(ws, project_id, llm=provider)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_LESSONS_MAX = 30  # review_lessons.json 上限，防无限膨胀
+
+
+def _lesson_lines(ws, project_id: str) -> list[str]:
+    """读历史教训（bible/review_lessons.json）→ 注入行。"""
+    try:
+        p = ws._abs(f"{project_id}/bible/review_lessons.json")
+        if not p.exists():
+            return []
+        import json as _json
+
+        data = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    lines = []
+    for it in data if isinstance(data, list) else []:
+        if not isinstance(it, dict):
+            continue
+        rule = str(it.get("rule") or it.get("issue") or "").strip()
+        if not rule:
+            continue
+        if len(rule) > 80:
+            rule = rule[:77] + "…"
+        lines.append(f"- [{it.get('category', '审校')}] {rule}")
+    return lines
+
+
+def _append_lessons(ws, project_id: str, issues, vol: int, ch: int) -> int:
+    """把 block 级审校问题沉淀为历史教训（项目级独立文件，讨论第 7 轮）。
+
+    返回新增条数。去重键：category + detail 前 40 字。
+    """
+    blocks = [i for i in issues if getattr(i, "level", "") == "block"]
+    if not blocks:
+        return 0
+    import json as _json
+
+    p = ws._abs(f"{project_id}/bible/review_lessons.json")
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (ValueError, OSError):
+        data = []
+    if not isinstance(data, list):
+        data = []
+    added = 0
+    for i in blocks:
+        key = f"{i.category}|{i.detail[:40]}"
+        if any(str(x.get("_key", "")) == key for x in data):
+            continue
+        rule = (i.suggestion or i.detail).strip()
+        data.append({
+            "_key": key,
+            "category": i.category,
+            "issue": i.detail[:120],
+            "rule": rule[:200],
+            "source": f"{vol}:{ch}",
+        })
+        added += 1
+    if added:
+        data = data[-_LESSONS_MAX:]
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:  # pragma: no cover
+            return 0
+    return added
+
+
 def _merge_reports(reports: list):
     """合并多份编纂报告（事件循环每事件一份）。"""
     from .chronicler import ChroniclerReport
@@ -183,6 +273,7 @@ def _merge_reports(reports: list):
         merged.written += getattr(r, "written", 0)
         merged.conflicts.extend(getattr(r, "conflicts", []) or [])
         merged.events.extend(getattr(r, "events", []) or [])
+        merged.threads_activated += getattr(r, "threads_activated", 0)
         for cid, delta in (getattr(r, "state_updates", {}) or {}).items():
             merged.state_updates.setdefault(cid, {}).update(delta)
     return merged
@@ -240,6 +331,7 @@ def produce_chapter(
     screenplay: bool = False,
     max_continuations: int = 2,
     settings=None,
+    event_review: bool = True,   # 每事件审校+修订（讨论第 7 轮）；仅事件循环生效
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -261,7 +353,10 @@ def produce_chapter(
     bible_injected = False
     if system_prompt is None and final_goal is None and inject_bible:
         try:
-            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories, genre=genre)
+            # 历史教训（讨论第 7 轮）：此前审校 block 沉淀的纪律，随圣经注入
+            lesson_lines = _lesson_lines(ws, project_id)
+            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories, genre=genre,
+                                        lessons=lesson_lines or None)
             system_prompt, final_goal = ctx.system_prompt, ctx.user_goal
             bible_injected = True
         except Exception:  # noqa: BLE001 - 工作区不全时退回默认提示，不阻断写章
@@ -288,6 +383,9 @@ def produce_chapter(
     attempts = 0
     comp: dict = {}
     chronic_reports: list = []
+    review_blocks = 0       # 事件级审校 block 数（讨论第 7 轮）
+    events_revised = 0      # 因 block 重写的事件数
+    lessons_added = 0       # 本轮沉淀的历史教训数
     try:
         if prefer_direct:
             mode = "direct"
@@ -332,6 +430,33 @@ def produce_chapter(
                     if len(piece) < direct_words_floor:
                         raise RuntimeError(
                             f"event {idx}/{len(key_events)} too short ({len(piece)} chars)")
+
+                    # 每事件审校 + 修订（讨论第 7 轮）：block → 带建议重写 1 次。
+                    # 审校只读产出工单，修订由编排层决定（docs/04 §5.4 双层门禁语义层）。
+                    if event_review:
+                        reviewer = _make_reviewer(ws, project_id, provider)
+                        if reviewer is not None:
+                            try:
+                                issues = reviewer.review(
+                                    piece, vol, ch, gist_text=gist_text_for_events,
+                                    memories=memories_ev)
+                                blocks = [i for i in issues if i.level == "block"]
+                            except Exception:  # noqa: BLE001 - 审校失败不阻断
+                                issues, blocks = [], []
+                            if blocks:
+                                review_blocks += len(blocks)
+                                problems = "\n".join(
+                                    f"- [{i.category}] {i.detail} 修订建议：{i.suggestion or '按维度修正'}"
+                                    for i in blocks)
+                                revised = _generate_with_continuation(
+                                    provider, system_prompt or "",
+                                    prompt + _REVISE_HINT.format(problems=problems),
+                                    generation_tokens, max_continuations)
+                                if len(revised) >= direct_words_floor:
+                                    piece = revised
+                                    events_revised += 1
+                                lessons_added += _append_lessons(ws, project_id, blocks, vol, ch)
+
                     pieces.append(piece)
                     attempts += 1
                     # 逐事件回写（ADR-013）；失败不阻断，交由章级兜底
@@ -471,4 +596,6 @@ def produce_chapter(
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
-                            completeness=comp, polish=polish_res, chronicle=chronicle)
+                            completeness=comp, polish=polish_res, chronicle=chronicle,
+                            review_blocks=review_blocks, events_revised=events_revised,
+                            lessons_added=lessons_added)

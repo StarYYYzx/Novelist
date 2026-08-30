@@ -250,8 +250,10 @@ def test_event_loop_generates_per_event_and_writes_back(tmp_path):
 
     llm = _SeqLLM([
         _res("苏晚被逐出内门，他叩首退下，一言不发地走下高台。"),  # gen event1
+        _res("ok"),                                               # 审校 event1
         _res("苏晚被逐 | conflict | 苏晚"),                       # chronicler1
         _res("下山时拾得半枚焦黑玉佩，掌心发烫，他知道这不简单。"),  # gen event2
+        _res("ok"),                                               # 审校 event2
         _res("拾得玉佩 | discovery | 苏晚"),                     # chronicler2
     ])
     res = produce_chapter(

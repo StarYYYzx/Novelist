@@ -73,6 +73,8 @@ def load_bible(ws, project_id: str) -> dict:
         "items": _read_json(ws, project_id, "bible/items.json", []) or [],
         "skills": _read_json(ws, project_id, "bible/skills.json", []) or [],
         "settings": _read_json(ws, project_id, "bible/settings.json", []) or [],
+        "volumes": _read_json(ws, project_id, "outline/volumes.json", []) or [],
+        "lessons": _read_json(ws, project_id, "bible/review_lessons.json", []) or [],
     }
 
 
@@ -139,8 +141,13 @@ def _mark_protagonist(bible: dict) -> None:
 
 
 def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
-                        *, genre: str | None = None) -> str:
-    """装配 system prompt：世界观 + 文风 + 人物卡 + 输出纪律。"""
+                        *, genre: str | None = None,
+                        lessons: list[str] | None = None) -> str:
+    """装配 system prompt：世界观 + 文风 + 人物卡 + 输出纪律。
+
+    `lessons`：审校历史教训行（bible/review_lessons.json 的注入形态，讨论第 7 轮——
+    把历史 block 问题变成后续生成纪律，避免重复犯错）。
+    """
     wv = bible.get("worldview") or {}
     st = bible.get("style") or {}
     levels = ((wv.get("power_system") or {}).get("levels")) or []
@@ -148,9 +155,16 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     banned = st.get("forbidden_words") or []
     glossary = st.get("glossary") or []
     threads = bible.get("plot_threads") or []
+    volumes = bible.get("volumes") or []
 
     L: list[str] = []
     L.append(f"你是一部{genre or ''}长篇小说的主编剧，正在写第 {vol} 卷第 {ch} 章。")
+
+    # 明线（讨论第 6 轮）：卷主线注入——每章须服务本卷主线，而不是只有细纲要点
+    cur_vol = next((v for v in volumes if isinstance(v, dict) and int(v.get("vol", 0) or 0) == vol), None)
+    if cur_vol and cur_vol.get("summary"):
+        L.append("")
+        L.append(f"【本卷主线】（每章都要服务于它）：{cur_vol['summary']}")
 
     if wv:
         L.append("")
@@ -206,6 +220,10 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
                 line += f"：性格{'、'.join(c['core_traits'])}"
             if c.get("arc"):
                 line += f"；弧线：{c['arc']}"
+            # 首次出场提示（讨论第 6 轮）：人物介绍靠行动自然带出，不硬交代
+            fa = c.get("first_appear") or {}
+            if int(fa.get("vol", 0) or 0) == vol and int(fa.get("ch", 0) or 0) == ch:
+                line += "（本章首次出场：让读者通过他的行动/对白自然认识他，不要写成人物简介）"
             L.append(f"- {line}")
 
     if cast:
@@ -226,12 +244,20 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         except Exception:  # noqa: BLE001 - worldstate 缺失时静默跳过
             pass
 
-    open_threads = [t for t in threads if isinstance(t, dict) and t.get("status") == "planted"]
+    # 伏笔（暗线，讨论第 6 轮）：planted（未展开）与 active（已推进）都注入，
+    # 提醒模型推进伏笔但不草率回收
+    open_threads = [t for t in threads if isinstance(t, dict)
+                    and t.get("status") in ("planted", "active")]
     if open_threads:
         L.append("")
-        L.append("【尚未回收的伏笔】（可推进，但不要在本章草率回收）")
+        L.append("【未回收的伏笔】（可推进，但不要在本章草率回收）")
         for t in open_threads[:5]:
             L.append(f"- {t.get('id')}：{t.get('desc', '')}")
+
+    if lessons:
+        L.append("")
+        L.append("【历史教训】（此前审校发现的问题，本条禁止重犯）")
+        L.extend(lessons[:5])
 
     L.append("")
     L.append("【输出纪律】")
@@ -254,8 +280,12 @@ def build_chapter_context(
     genre: str | None = None,
     gist_max_chars: int = 1200,
     max_cast: int = 16,
+    lessons: list[str] | None = None,
 ) -> ChapterContext:
-    """装配一章的完整生成上下文（圣经注入的入口）。"""
+    """装配一章的完整生成上下文（圣经注入的入口）。
+
+    `lessons`：审校历史教训注入行（bible/review_lessons.json），见 build_system_prompt。
+    """
     bible = load_bible(ws, project_id)
     _mark_protagonist(bible)
 
@@ -274,7 +304,7 @@ def build_chapter_context(
     if not cast and bible.get("characters"):
         cast = [c for c in bible["characters"] if isinstance(c, dict)][:1]
 
-    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre)
+    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre, lessons=lessons)
 
     goal: list[str] = [f"请撰写第 {vol} 卷第 {ch} 章正文。"]
     if gist_text:

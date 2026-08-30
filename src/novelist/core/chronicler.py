@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .llm import LLMMessage, LLMRequest
-from .memory import MemoryConflictError, MemoryWriter
+from .memory import MemoryConflictError, MemoryWriter, tokenize
 
 EVENT_KINDS = ("conflict", "discovery", "reveal", "turning_point", "dialogue", "departure")
 
@@ -66,6 +66,8 @@ class ChroniclerReport:
     events: list[ExtractedEvent] = field(default_factory=list)
     # 世界状态变更（B-STATE）：char_id -> 本轮合并进 worldstate 的字段
     state_updates: dict[str, dict] = field(default_factory=dict)
+    # 伏笔流转（暗线）：本轮 planted→active 的伏笔数
+    threads_activated: int = 0
 
     @property
     def ok(self) -> bool:
@@ -174,6 +176,48 @@ class Chronicler:
         return out, state_changes
 
     # ---- 写入（含冲突双检）----
+    def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int) -> int:
+        """暗线关联（讨论第 6 轮）：伏笔↔事件关联 + 状态流转 planted→active。
+
+        - 用伏笔 desc 的关键词（token 交集）匹配事件摘要，命中即填 affected_threads；
+        - 被匹配的 planted 伏笔推进为 active（写回 bible/plot_threads.json）——
+          这给 plot_threads 装上闭环：不再只是"登记 + 注入提醒"。
+        - 返回本次推进（planted→active）的伏笔数。
+        """
+        p = self.ws._abs(f"{self.project_id}/bible/plot_threads.json")
+        if not p.exists() or not events:
+            return 0
+        try:
+            threads = json.loads(p.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return 0
+        if not isinstance(threads, list):
+            return 0
+
+        activated = 0
+        for ev in events:
+            if ev.threads:  # 已有显式关联（细纲/LLM 给出）则跳过
+                continue
+            ev_tokens = set(tokenize(ev.summary))
+            if not ev_tokens:
+                continue
+            for t in threads:
+                if not isinstance(t, dict) or not t.get("id"):
+                    continue
+                t_tokens = set(tokenize(f"{t.get('id')} {t.get('desc', '')}"))
+                if t_tokens and ev_tokens & t_tokens:
+                    if t["id"] not in ev.threads:
+                        ev.threads.append(t["id"])
+                    if t.get("status") == "planted":
+                        t["status"] = "active"
+                        activated += 1
+        if activated:
+            try:
+                p.write_text(json.dumps(threads, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:  # pragma: no cover
+                pass
+        return activated
+
     def commit(self, events: list[ExtractedEvent], vol: int, ch: int, *, project_id: str = "",
                state_changes: list[tuple[str, dict]] | None = None,
                tag: str = "c") -> ChroniclerReport:
@@ -187,6 +231,9 @@ class Chronicler:
         deltas_by_char: dict[str, dict] = {}
         for cid, delta in (state_changes or []):
             deltas_by_char.setdefault(cid, {}).update(delta)
+
+        # 暗线：先做伏笔↔事件关联与状态流转，再写入（affected_threads 非空才有闭环）
+        report.threads_activated = self._link_threads(events, vol, ch)
 
         for i, ev in enumerate(events, 1):
             try:
