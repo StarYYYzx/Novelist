@@ -98,8 +98,8 @@ def test_context_injects_worldview_style_and_cast(tmp_path):
     assert "炼气、筑基、金丹、元婴" in sp, "境界体系必须进上下文"
     assert "修士不可对凡人出手" in sp, "世界铁律必须进上下文"
     assert "第三人称限知" in sp and "冷峻" in sp, "文风必须进上下文"
-    assert "苏晚（男" in sp and "铁无涯（男" in sp, "人物卡（含性别）必须进上下文"
-    assert "赵虎（男" in sp, "细纲点名的人物应出场"
+    assert "苏晚" in sp and "铁无涯" in sp, "人物名单（防造人）必须进上下文"
+    assert "赵虎" in sp, "细纲点名的人物应出场"
     assert "系统" in sp and "签到" in sp, "禁用词必须进上下文"
     assert "苏晚" in ctx.user_goal and "赵虎抢玉佩" in ctx.user_goal, "细纲必须进 user goal"
 

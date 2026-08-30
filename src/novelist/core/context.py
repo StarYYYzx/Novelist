@@ -34,7 +34,7 @@ DISCIPLINE = [
                "读者不该看到它们。章节标题只在第一行出现一次。"),
     ("完整性", "必须在结尾写一个完整的收束句，以句号、问号、感叹号或引号结尾。"
                "宁可压缩内容，也严禁写到一半停下。"),
-    ("人物边界", "只能使用下面「本章出场人物」里给出的人物，不得引入新名字；"
+    ("人物边界", "只能使用「人物名单」与「本事件相关人物」里给出的人物，不得引入新名字；"
                  "不得改变任何人的性别、境界、阵营。"),
     ("事实一致", "时间、地点、物品去向、人物伤势必须与前情提要保持连续；"
                  "前情里已发生的事不得重复发生或自相矛盾。"),
@@ -175,9 +175,7 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             L.append(f"- 境界体系：{'、'.join(levels)}（表述必须统一，不得混用「层」「重」等不同划分）")
         for r in rules:
             L.append(f"- 铁律：{r}")
-        for f in (wv.get("factions") or [])[:6]:
-            if isinstance(f, dict) and f.get("faction"):
-                L.append(f"- 势力：{f['faction']}——{f.get('note', '')}")
+        # 势力不在此全量注入（讨论第 8 轮 RAG）：按事件相关性由知识层检索，事件级注入
 
     if st:
         L.append("")
@@ -205,59 +203,18 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
 
     if cast:
         L.append("")
-        L.append("【本章出场人物】（严格按卡片写，不得增删）")
-        for c in cast:
-            gender = GENDER_CN.get(c.get("gender"), "未知")
-            pw = c.get("power") or {}
-            bits = [f"{c.get('name', '?')}（{gender}"]
-            if pw.get("level"):
-                bits.append(f"，{pw['level']}")
-            if pw.get("faction"):
-                bits.append(f"，{pw['faction']}")
-            bits.append("）")
-            line = "".join(bits)
-            if c.get("core_traits"):
-                line += f"：性格{'、'.join(c['core_traits'])}"
-            if c.get("arc"):
-                line += f"；弧线：{c['arc']}"
-            # 首次出场提示（讨论第 6 轮）：人物介绍靠行动自然带出，不硬交代
-            fa = c.get("first_appear") or {}
-            if int(fa.get("vol", 0) or 0) == vol and int(fa.get("ch", 0) or 0) == ch:
-                line += "（本章首次出场：让读者通过他的行动/对白自然认识他，不要写成人物简介）"
-            L.append(f"- {line}")
-
+    # 全员名单（防造人）：只给名字+境界一行；人物细节由知识层按事件相关性检索，
+    # 事件级注入相关人物卡（讨论第 8 轮 RAG——system 不再全量塞人物卡）
     if cast:
-        # 世界状态（B-STATE）：人物**当前**修为/位置/持有物/伤势。
-        # 人物卡是"应然"（设定），这里是"实然"（故事进行到的状态）——战力对比以此为准。
-        # 它是战力/物品类跨章矛盾的硬约束：模型被告知谁在哪、什么修为、带什么伤。
-        try:
-            from .worldstate import snapshot_lines
-
-            ids = [c.get("id") for c in cast if c.get("id")]
-            state_lines = snapshot_lines(bible.get("worldstate") or {}, ids)
-            if state_lines:
-                L.append("")
-                L.append("【人物当前状态】（截至上一章结束的实然状态，不得与之矛盾；"
-                         "战力对比以此为准——修为低者不得凭空碾压修为高者，"
-                         "除非正文明确写出越级之战的代价与机缘）")
-                L.extend(state_lines)
-        except Exception:  # noqa: BLE001 - worldstate 缺失时静默跳过
-            pass
-
-    # 伏笔（暗线，讨论第 6 轮）：planted（未展开）与 active（已推进）都注入，
-    # 提醒模型推进伏笔但不草率回收
-    open_threads = [t for t in threads if isinstance(t, dict)
-                    and t.get("status") in ("planted", "active")]
-    if open_threads:
+        names = "、".join(
+            f"{c.get('name', '?')}（{((c.get('power') or {}).get('level') or '?')}）"
+            for c in cast)
         L.append("")
-        L.append("【未回收的伏笔】（可推进，但不要在本章草率回收）")
-        for t in open_threads[:5]:
-            L.append(f"- {t.get('id')}：{t.get('desc', '')}")
+        L.append(f"【人物名单】（只能使用下列人物，不得新造名字；本事件相关人物的"
+                 f"性格/弧线卡片见本事件提示）：{names}")
 
-    if lessons:
-        L.append("")
-        L.append("【历史教训】（此前审校发现的问题，本条禁止重犯）")
-        L.extend(lessons[:5])
+    # 伏笔与历史教训不在此注入（讨论第 8 轮 RAG）：由知识层按事件相关性检索，
+    # 事件级注入【相关知识·伏笔/教训】段（related.thread / related.lesson）
 
     L.append("")
     L.append("【输出纪律】")

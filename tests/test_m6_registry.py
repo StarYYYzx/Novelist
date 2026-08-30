@@ -199,7 +199,7 @@ def test_event_loop_injects_pending_settings_and_verifies(tmp_path):
     ])
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True, inject_bible=False, event_loop=True,
-        commit_chapter_event=False, direct_words_floor=5,
+        commit_chapter_event=False, direct_words_floor=5, knowledge_llm=False,
         session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
 

@@ -144,10 +144,39 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> l
         return []
 
 
+def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: int = 3) -> list[str]:
+    """最近 1 章固定回退（讨论第 8 轮·用户拍板）：相关检索召回的是语义相似事件，
+    未必是时间上最近的事件——长卷下模型容易忘了刚发生的事。直接带最近一章事件。
+    """
+    try:
+        import json as _json
+
+        p = ws._abs(f"{project_id}/memory/plot_events.json")
+        if not p.exists():
+            return []
+        events = _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    prev = [(e, (e.get("at") or {}).get("ch", 0)) for e in events
+            if isinstance(e, dict) and int((e.get("at") or {}).get("vol", 0) or 0) == vol
+            and int((e.get("at") or {}).get("ch", 0) or 0) < ch]
+    if not prev:
+        return []
+    latest_ch = max(c for _, c in prev)
+    out = [f"- [最近 {latest_ch} 章] {e.get('summary', '')}"
+           for e, c in prev if c == latest_ch]
+    return out[:max_items]
+
+
 def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piece: str,
                 seam_chars: int, memories: list[str], is_last: bool,
-                setting_lines: list[str] | None = None) -> str:
-    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆 + 待交代设定）。"""
+                setting_lines: list[str] | None = None,
+                related: dict | None = None) -> str:
+    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆 + 待交代设定 + RAG 知识）。
+
+    `related`：知识层检索结果注入行（讨论第 8 轮 RAG）——
+    {"character": [...], "setting": [...], "thread": [...], "lesson": [...], "faction": [...]}
+    """
     parts = [f"{chapter_goal}", "",
              f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
     if prev_piece:
@@ -158,6 +187,17 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
     if setting_lines:
         parts += ["", "【本事件首次出现的设定】（以下设定此前未在正文交代过，"
                       "必须在本次事件里自然带出，让读者第一次见到就明白：）", *setting_lines]
+    if related:
+        char_lines = related.get("character") or []
+        if char_lines:
+            parts += ["", "【本事件相关人物】（按其性格/弧线/当前状态写）：", *char_lines]
+        set_lines = related.get("setting") or []
+        if set_lines:
+            parts += ["", "【相关知识·设定】（与本次事件相关的世界设定，须一致）：", *set_lines]
+        for key, label in (("thread", "伏笔"), ("lesson", "教训"), ("faction", "势力")):
+            ls = related.get(key) or []
+            if ls:
+                parts += ["", f"【相关知识·{label}】（本事件相关的{label}，保持连续）：", *ls]
     parts += ["", "篇幅约 300–600 字。" + ("这是本章最后一个事件，结尾必须是一个完整的收束句。"
                                          if is_last else
                                          "不要写本章其他事件的内容，写到本事件结束即停。")]
@@ -181,6 +221,16 @@ def _load_settings(ws, project_id: str):
 
         idx = SettingIndex.load(ws, project_id)
         return idx if idx.entries else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _make_knowledge(ws, project_id: str, embedding):
+    """构造知识检索层（讨论第 8 轮 RAG）；失败返回 None（生成照常，只少知识注入）。"""
+    try:
+        from .knowledge import KnowledgeBase
+
+        return KnowledgeBase(ws, project_id, embedding=embedding)
     except Exception:  # noqa: BLE001
         return None
 
@@ -332,6 +382,7 @@ def produce_chapter(
     max_continuations: int = 2,
     settings=None,
     event_review: bool = True,   # 每事件审校+修订（讨论第 7 轮）；仅事件循环生效
+    knowledge_llm: bool = True,  # RAG LLM 查询生成（讨论第 8 轮·用户设想）；False 退化为事件文本检索
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -415,15 +466,35 @@ def produce_chapter(
                 seam = max(200, min(400, _SEAM_CHARS))
                 settings_idx = (settings if settings is not None
                                 else _load_settings(ws, project_id))
+                # 知识检索层（讨论第 8 轮 RAG）：每章构建一次（语义向量化秒级），
+                # 每事件按 LLM 生成的查询 + 事件文本检索相关知识注入
+                knowledge = _make_knowledge(ws, project_id, embedding)
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
                     memories_ev = _recall_for(ws, project_id, ev_text, embedding)
+                    # 最近 1 章固定回退（讨论第 8 轮·用户拍板）
+                    recent_ev = _recent_chapter_memory(ws, project_id, vol, ch)
+                    if recent_ev:
+                        memories_ev = recent_ev + memories_ev
                     # 设定按需注入：本事件命中且未交代的条目（首次交代状态机，讨论决策）
                     setting_lines = (settings_idx.pending_lines(goal, ev_text, ch=ch)
                                      if settings_idx is not None else [])
+                    # RAG：LLM 查询生成 → 融合检索 → 事件级注入行
+                    related: dict = {}
+                    if knowledge is not None:
+                        queries = knowledge.plan_queries(
+                            ev_text, provider if knowledge_llm else None)
+                        items: list = []
+                        for q in queries:
+                            for it in knowledge.retrieve(q):
+                                if it.id not in {x.id for x in items}:
+                                    items.append(it)
+                        related = {k: knowledge.lines(items, k, vol=vol, ch=ch)
+                                   for k in ("setting", "character", "thread", "lesson", "faction")
+                                   if knowledge.lines(items, k, vol=vol, ch=ch)}
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
-                                         memories_ev, is_last, setting_lines)
+                                         memories_ev, is_last, setting_lines, related)
                     piece = _generate_with_continuation(
                         provider, system_prompt or "", prompt, generation_tokens,
                         max_continuations)

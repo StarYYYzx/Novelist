@@ -210,9 +210,11 @@ def test_context_injects_worldstate(tmp_path):
     init_from_bible(ws, pid)
     apply_delta(ws, pid, "char:lf", {"修为": "炼气四层", "位置": "藏经阁", "获得": "残篇"}, at={"vol": 1, "ch": 1})
     sp = build_chapter_context(ws, pid, 1, 2).system_prompt
-    assert "人物当前状态" in sp
-    assert "炼气四层" in sp and "藏经阁" in sp, "当前状态必须注入生成上下文（B-STATE）"
-    assert "不得凭空碾压" in sp, "战力对比约束必须写入"
+    assert "人物当前状态" not in sp, "RAG 化后状态不再全量进 system（讨论第 8 轮）"
+    from novelist.core.knowledge import KnowledgeBase
+    kb = KnowledgeBase(ws, pid)
+    ch_items = [it for it in kb._items if it.kind == "character" and "苏晚" in it.text]
+    assert ch_items and "炼气四层" in ch_items[0].payload.get("state", ""), "状态随人物卡事件级注入"
 
 
 # ---------------------------------------------------------------- 编纂员状态回写
@@ -259,7 +261,7 @@ def test_event_loop_generates_per_event_and_writes_back(tmp_path):
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
-        session=SessionInfo(project_id=pid, agent="t"))
+        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
     final = ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")
     assert "逐出内门" in final and "焦黑玉佩" in final

@@ -102,11 +102,13 @@ def test_first_appear_marked(tmp_path):
     from novelist.core.context import build_chapter_context
 
     ctx = build_chapter_context(ws, pid, 1, 2)  # 沈青梧 first_appear = 1:2
-    assert "沈青梧" in ctx.system_prompt
-    assert "本章首次出场" in ctx.system_prompt
-    # 主角 ch1 已出场，ch2 不再标记
-    ctx1 = build_chapter_context(ws, pid, 1, 1)
-    assert "首次出场" in ctx1.system_prompt  # 主角也是 ch1 首次
+    assert "沈青梧" in ctx.system_prompt  # 名单行（防造人）
+    assert "本章首次出场" not in ctx.system_prompt  # 首现标记移到事件级（知识层）
+    from novelist.core.knowledge import KnowledgeBase
+    kb = KnowledgeBase(ws, pid)
+    items = [it for it in kb._items if it.kind == "character" and "沈青梧" in it.text]
+    lines = kb.lines(items, "character", vol=1, ch=2)
+    assert lines and "本章首次出场" in lines[0]
 
 
 # ---------------------------------------------------------------- 伏笔关联+流转
@@ -162,7 +164,7 @@ def test_event_review_revises_block_and_sinks_lessons(tmp_path):
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True, inject_bible=False,
         event_loop=True, commit_chapter_event=False, direct_words_floor=5,
-        session=SessionInfo(project_id=pid, agent="t"))
+        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
     assert res.events_revised == 1, "block 应触发 1 次事件重写"
     assert res.review_blocks == 1
@@ -187,8 +189,10 @@ def test_lessons_injected_into_next_context(tmp_path):
     lines = _lesson_lines(ws, pid)
     assert lines and any("战力越级" in l for l in lines)
 
-    from novelist.core.context import build_chapter_context
+    # RAG 化后（M3i）：教训不再进 system，由知识层按事件相关性检索注入
+    from novelist.core.knowledge import KnowledgeBase
 
-    ctx = build_chapter_context(ws, pid, 1, 2, lessons=lines)
-    assert "历史教训" in ctx.system_prompt
-    assert "战力越级" in ctx.system_prompt
+    kb = KnowledgeBase(ws, pid)
+    hits = kb.retrieve("叶岚修为越级碾压筑基高手")
+    lesson_lines = kb.lines(hits, "lesson")
+    assert lesson_lines and any("碾压" in l for l in lesson_lines)
