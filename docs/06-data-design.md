@@ -24,7 +24,8 @@ novel_workspace/
     │   ├── worldstate.json           # 世界状态（硬状态层）：人物当前修为/位置/持有物/伤势
     │   ├── items.json                # 物品注册表（可持有实体，游戏式资产登记）
     │   ├── skills.json               # 功法/技能注册表（可学习实体，与物品分离）
-    │   └── settings.json             # 设定条目库（按知识单元切块 + 首次交代状态）
+    │   ├── settings.json             # 设定条目库（按知识单元切块 + 首次交代状态）
+    │   └── review_lessons.json       # 审校历史教训（block 沉淀，生成时注入防重犯）
     ├── outline/                      # 大纲（结构化）
     │   ├── volumes.json              # 卷级大纲
     │   └── chapters/<vol>-<ch>.md    # 章节细纲（每章一文件）

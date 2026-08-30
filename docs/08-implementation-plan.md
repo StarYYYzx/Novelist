@@ -237,6 +237,29 @@ novelist/
   （「忘情录」⊂「太上忘情录」直接匹配会误报）。
 - 测试：`tests/test_m6_registry.py` 10 个用例。全量 167 passed。
 
+#### M3h — 明暗线闭环 / 审校闭环 / 人物首现提示 ✅ 已完成
+
+> 讨论第 6、7 轮落地（首次介绍/明暗线/递归评估/审校处理链路）。
+
+- **明线（第 6 轮）** ✅ `context.py`：`build_chapter_context` 读 `outline/volumes.json`，
+  把当前卷 `summary` 注入 system prompt【本卷主线】——每章须服务主线而非只有细纲要点
+  （此前卷主线从不进生成上下文，主线靠细纲人工对齐）。
+- **暗线（第 6 轮）** ✅ `chronicler.py`：`_link_threads` 用伏笔 desc 关键词（token 交集）
+  匹配事件摘要，填充 `affected_threads`，并把 `planted` 伏笔推进为 `active`（写回
+  `plot_threads.json`）。plot_threads 从"登记+注入提醒"装上闭环；事件↔伏笔有数据关联。
+- **审校闭环（第 7 轮）** ✅ `orchestrator.py`：事件循环里每事件生成后调 `Reviewer`
+  审校该片段，block 级问题**带审校建议重写该事件**（限 1 次，只修订不整章重来——
+  此前审校是"只记录不处理"，`ReviewIssue.suggestion` 从未被使用）；block 沉淀到
+  `bible/review_lessons.json`（项目级独立文件，去重、上限 30 条），后续生成注入
+  【历史教训】段——问题不重复发生（经验回灌）。
+- **人物首次出场提示（第 6 轮）** ✅ `context.py`：`first_appear == 本章` 的人物卡标注
+  「本章首次出场：通过行动/对白自然认识，不写成人物简介」——人物介绍靠行动带出
+  （硬交代会变说明书腔），组织/设定走 settings 状态机。
+- **深度优先递归（第 6 轮评估）**：**未实装**——采用声明式 key_events（第二批第 2 条
+  决策）。评估结论：3–5 章规模声明式够用；重场戏想写厚时可做"受控一层递归"
+  （细纲标记可展开 → 一次 LLM 子事件清单 ≤3 个），优先级低于前四项。
+- 测试：`tests/test_m7_plotline.py` 7 个用例。全量 173 passed。
+
 #### 待办
 - **角色演员**：actor 提示词模板 + `write_take` 工具 + 多角"排演→整合"流程（ADR-012）。
   `core/scene.py`（SceneBus）与 `core/scene_tools.py`（join/say/leave）已就绪，**尚未接入编排流**。
