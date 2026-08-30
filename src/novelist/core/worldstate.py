@@ -33,9 +33,13 @@ from pathlib import Path
 WORLDSTATE_REL = "bible/worldstate.json"
 
 # 状态行里允许的键 -> apply_delta 处理分支
+# 修为/境界/实力/战力/等级 都归 realm（跨类型适配：都市高武没有"修为"，只有实力等级）
 _STATE_KEYS = {
     "修为": "realm",
     "境界": "realm",
+    "实力": "realm",
+    "战力": "realm",
+    "等级": "realm",
     "位置": "location",
     "所在地": "location",
     "获得": "items_add",
@@ -121,8 +125,17 @@ def init_from_bible(ws, project_id: str) -> dict:
     return state
 
 
-def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None = None) -> dict:
-    """把一次状态变更合并进世界状态，并记录历史（R-STATE 依据历史校验单调性）。"""
+def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None = None,
+                registry=None) -> dict:
+    """把一次状态变更合并进世界状态，并记录历史（R-STATE 依据历史校验单调性）。
+
+    `registry`：物品/功法注册表（core/registry.Registry）。给出时，"获得/失去"里的
+    异名（残篇/残卷）归一化为规范名再入库——解决同物异名堆积（讨论决策）。
+    """
+    if registry is None:
+        from .registry import Registry
+
+        registry = Registry.load(ws, project_id)
     state = load(ws, project_id)
     cur = state["characters"].setdefault(char_id, {"name": "", "realm": "", "location": "",
                                                    "items": [], "injuries": [],
@@ -140,9 +153,12 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
             if value != cur.get("location"):
                 cur["location"], recorded["location"] = value, value
         elif field == "items_add":
-            # LLM 常在一行里塞多个物品（「A、B，C」），且同物异名——拆开逐条去重
+            # LLM 常在一行里塞多个物品（「A、B，C」），且同物异名——拆开逐条去重 + 注册表归一化
             for it in re.split(r"[、，,;；]", value):
                 it = it.strip()
+                if not it or it in NOOP_VALUES:
+                    continue
+                it = registry.canonical(it)  # 异名 → 规范名（找不到原样返回）
                 if not it or it in NOOP_VALUES:
                     continue
                 if it not in cur["items"]:
@@ -151,6 +167,7 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
             if value not in NOOP_VALUES:
                 recorded["获得"] = value
         elif field == "items_remove":
+            value = registry.canonical(value)
             if value in cur["items"]:
                 cur["items"].remove(value)
                 recorded["失去"] = value

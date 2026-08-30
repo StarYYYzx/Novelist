@@ -155,7 +155,7 @@ def test_retrieval_ranks_relevant_fragment_first(tmp_path):
     assert "断玉佩" in hits[0].text
     assert hits[0].kind == "plot_event"
     # 命中带来源定位与 bible 引用（docs/07 §7.1）
-    assert hits[0].source == {"vol": 1, "ch": 1}
+    assert hits[0].source["vol"] == 1 and hits[0].source["ch"] == 1
     assert "char:cz7" in hits[0].refs
     assert hits[0].score > 0
 
@@ -182,7 +182,7 @@ def test_retrieval_filters_by_chapter_scope(tmp_path):
     idx = MemoryIndex()
     idx.rebuild(ws, pid)
     hits = MemoryRetriever(idx).query(MemoryQuery(query="苏晚", filters={"chapter_scope": {"vol": 1, "ch": 2}}, top_k=10))
-    assert all(h.source == {"vol": 1, "ch": 2} for h in hits)
+    assert all(h.source["vol"] == 1 and h.source["ch"] == 2 for h in hits)
 
 
 def test_query_works_without_any_vector_cache(tmp_path):
@@ -294,7 +294,8 @@ def test_query_memory_tool_returns_hits(tmp_path):
     res = _invoke(ws, pid, "query_memory", {"query": "断玉佩", "top_k": 3})
     assert res.status == "ok", res.data
     assert res.data["hits"], "先忆必须能召回（F3.4）"
-    assert res.data["hits"][0]["source"] == {"vol": 1, "ch": 1}
+    assert res.data["hits"][0]["source"]["vol"] == 1
+    assert res.data["hits"][0]["source"]["ch"] == 1
     assert res.data["mode"] == "keyword-hash"
 
 

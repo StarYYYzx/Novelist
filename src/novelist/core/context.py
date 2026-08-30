@@ -70,6 +70,9 @@ def load_bible(ws, project_id: str) -> dict:
         "locations": _read_json(ws, project_id, "bible/locations.json", []) or [],
         "plot_threads": _read_json(ws, project_id, "bible/plot_threads.json", []) or [],
         "worldstate": _read_json(ws, project_id, "bible/worldstate.json", {}) or {"characters": {}},
+        "items": _read_json(ws, project_id, "bible/items.json", []) or [],
+        "skills": _read_json(ws, project_id, "bible/skills.json", []) or [],
+        "settings": _read_json(ws, project_id, "bible/settings.json", []) or [],
     }
 
 

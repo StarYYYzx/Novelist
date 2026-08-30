@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://novelist.dev/schemas/bible/items.schema.json",
+  "title": "ItemRegistryEntry",
+  "description": "物品注册表条目（游戏式资产登记）。物品 = 可持有的实体（丹药/灵石/法器/杂物）。功法见 skills.json。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "type"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^item:" },
+    "name": { "type": "string", "description": "规范名（正文与 worldstate 一律使用此名）" },
+    "type": {
+      "type": "string",
+      "enum": ["consumable", "equipment", "artifact", "material", "currency", "other"]
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "别名表：编纂员把正文出现的异名（残篇/残卷）归一化到本条目"
+    },
+    "state": {
+      "type": "string",
+      "description": "当前状态（如 完整/残篇/圆满），可与 name 配合；缺省表示无状态维度"
+    },
+    "note": { "type": "string", "description": "一句话说明（可注入生成上下文）" }
+  }
+}

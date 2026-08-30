@@ -141,6 +141,8 @@ def harvest_fragments(ws, project_id: str) -> list[MemoryFragment]:
             if not text:
                 continue
             source = _src(e.get("at"))
+            # 事件类型进 source（分级检索：大事高权重、日常低权重，讨论决策）
+            source = {**source, "type": str(e.get("type") or "")}
             frs.append(
                 MemoryFragment(
                     sig=_sig("plot_event", source, text),
@@ -290,7 +292,20 @@ class MemoryRetriever:
 
     语义检索经 EmbeddingProvider；无 embedding 时退化为 `KeywordEmbedding`
     （docs/07 §8 降级总表 / F9.4）。两条路径共用余弦打分，调用方无感。
+
+    分级检索（讨论决策）：plot_event 碎片按事件类型加权——转折/揭秘等大事
+    权重更高、日常对话更低，让"先忆"天然偏重关键情节而非流水账。
     """
+
+    # 事件类型 -> 检索权重（大事高、日常低）
+    _TYPE_WEIGHT = {
+        "turning_point": 1.30,
+        "reveal": 1.30,
+        "departure": 1.15,
+        "conflict": 1.10,
+        "discovery": 1.00,
+        "dialogue": 0.80,
+    }
 
     def __init__(self, index: MemoryIndex, embedding=None, min_score: float = 0.0) -> None:
         self.index = index
@@ -387,7 +402,7 @@ class MemoryRetriever:
                 text=f.text,
                 source=dict(f.source),
                 refs=list(f.refs),
-                score=round(scores[f.sig], 6),
+                score=round(scores[f.sig] * self._TYPE_WEIGHT.get(f.source.get("type", ""), 1.0), 6),
             )
             for f in cand
         ]

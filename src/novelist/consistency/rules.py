@@ -118,8 +118,9 @@ def _power_system_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
 
 
 def run_lexicon_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """只跑正文相关规则（R-LEX / R-PWR），供审校流程单独调用。"""
-    return _lexicon_check(ws, project_id) + _power_system_check(ws, project_id)
+    """只跑正文相关规则（R-LEX / R-PWR / R-ITEM），供审校流程单独调用。"""
+    return (_lexicon_check(ws, project_id) + _power_system_check(ws, project_id)
+            + _item_check(ws, project_id))
 
 
 @dataclass
@@ -128,6 +129,54 @@ class RuleAlert:
     rule_id: str
     object_ref: str
     detail: str
+
+
+def _item_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-ITEM：注册表物品/功法的正文一致性（讨论决策——物品无唯一身份是奖励倒退的根因）。
+
+    - 同一物品在正文出现 ≥2 种叫法（规范名 + 别名/带状态形态）→ warn（同物异名）
+    - 正文出现注册表物品，但 worldstate 没有任何人物持有/曾持有 → warn（凭空出现；
+      若为首次获得的当前章，编纂尚未回写属正常，warn 供人工复核）
+    """
+    try:
+        from ..core.registry import Registry
+    except Exception:  # pragma: no cover
+        return []
+    alerts: list[RuleAlert] = []
+    reg = Registry.load(ws, project_id)
+    if not reg.all_entries():
+        return alerts
+    full = "\n".join(text for _n, text in _iter_chapters(ws, project_id))
+    st = _read_json(ws._abs(f"{project_id}/bible/worldstate.json")) or {}
+    chars = st.get("characters") if isinstance(st, dict) else {}
+    held: set[str] = set()
+    for cur in (chars or {}).values():
+        if isinstance(cur, dict):
+            for x in cur.get("items") or []:
+                if isinstance(x, str):
+                    held.add(x)
+    for e in reg.all_entries():
+        forms = {e.name}
+        if e.state:
+            forms.add(f"{e.name}{e.state}")
+            forms.add(f"{e.name}（{e.state}）")
+        forms.update(a for a in e.aliases if a)
+        # 同物异名：规范名与「别名/带状态形态」同时出现。
+        # 关键：别名可能是规范名的子串（「忘情录」⊂「太上忘情录」），
+        # 直接子串匹配会误报——先剔除全部规范名出现，再查其他形态。
+        stripped = full.replace(e.name, "")
+        other_forms = [f for f in forms if f != e.name and f and f in stripped]
+        if e.name in full and other_forms:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-ITEM", object_ref=e.name,
+                detail=f"同一物品出现多种叫法：{sorted({e.name, *other_forms})}"
+                       f"（应统一用注册表规范名「{e.name}」）"))
+        if e.name not in held and e.name in full:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-ITEM", object_ref=e.name,
+                detail=f"正文出现「{e.name}」，但 worldstate 无任何人持有/曾持有。"
+                       "若为本章首次获得，编纂回写后应出现；否则是凭空获得或漏记"))
+    return alerts
 
 
 def _load(ws: Workspace, project_id: str, rel: str) -> dict | list:

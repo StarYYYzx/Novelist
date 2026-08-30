@@ -131,8 +131,9 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> l
 
 
 def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piece: str,
-                seam_chars: int, memories: list[str], is_last: bool) -> str:
-    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆）。"""
+                seam_chars: int, memories: list[str], is_last: bool,
+                setting_lines: list[str] | None = None) -> str:
+    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆 + 待交代设定）。"""
     parts = [f"{chapter_goal}", "",
              f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
     if prev_piece:
@@ -140,6 +141,9 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                   "…" + prev_piece[-seam_chars:]]
     if memories:
         parts += ["", "【相关前情】（先忆，保持一致）：", *memories]
+    if setting_lines:
+        parts += ["", "【本事件首次出现的设定】（以下设定此前未在正文交代过，"
+                      "必须在本次事件里自然带出，让读者第一次见到就明白：）", *setting_lines]
     parts += ["", "篇幅约 300–600 字。" + ("这是本章最后一个事件，结尾必须是一个完整的收束句。"
                                          if is_last else
                                          "不要写本章其他事件的内容，写到本事件结束即停。")]
@@ -152,6 +156,17 @@ def _make_chronicler(ws, project_id: str, provider, embedding, semantic_checker)
 
         return Chronicler(ws, project_id, llm=provider, embedding=embedding,
                           semantic_checker=semantic_checker)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_settings(ws, project_id: str):
+    """加载设定条目库；文件不存在返回 None（不启用首次交代状态机）。"""
+    try:
+        from .settings import SettingIndex
+
+        idx = SettingIndex.load(ws, project_id)
+        return idx if idx.entries else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -202,6 +217,7 @@ def produce_chapter(
     event_loop: bool = False,
     screenplay: bool = False,
     max_continuations: int = 2,
+    settings=None,
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -277,12 +293,17 @@ def produce_chapter(
                 # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
                 pieces: list[str] = []
                 seam = max(200, min(400, _SEAM_CHARS))
+                settings_idx = (settings if settings is not None
+                                else _load_settings(ws, project_id))
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
                     memories_ev = _recall_for(ws, project_id, ev_text, embedding)
+                    # 设定按需注入：本事件命中且未交代的条目（首次交代状态机，讨论决策）
+                    setting_lines = (settings_idx.pending_lines(goal, ev_text, ch=ch)
+                                     if settings_idx is not None else [])
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
-                                         memories_ev, is_last)
+                                         memories_ev, is_last, setting_lines)
                     piece = _generate_with_continuation(
                         provider, system_prompt or "", prompt, generation_tokens,
                         max_continuations)
@@ -374,6 +395,20 @@ def produce_chapter(
                     polish_res = None
         except Exception:  # noqa: BLE001 - 润色失败不阻断，保留原稿
             polish_res = None
+
+    # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
+    # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
+    # 未命中的保留 false，下一章继续注入。
+    settings_revealed = 0
+    try:
+        settings_idx = settings if settings is not None else _load_settings(ws, project_id)
+        if settings_idx is not None:
+            verify_text = draft.read_text(encoding="utf-8") if draft.exists() else final
+            settings_revealed = len(settings_idx.verify(verify_text))
+            if settings_revealed:
+                settings_idx.save()
+    except Exception:  # noqa: BLE001 - 交代验证失败不影响成稿
+        settings_revealed = 0
 
     # ---- 5) 事件回写（真实事件走编纂员，B-03）----
     events = 0
