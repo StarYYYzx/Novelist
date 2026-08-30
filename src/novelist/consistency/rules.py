@@ -67,12 +67,25 @@ def _banned_words(ws: Workspace, project_id: str) -> list[str]:
     return [w for w in (words or []) if isinstance(w, str) and w]
 
 
+def _modern_words(ws: Workspace, project_id: str) -> tuple[str, ...]:
+    """现代词表按类型可配：都市/现代背景里「电梯/手机/公司」都正常。
+
+    默认词表是修仙/古风导向（实测「厚眼镜」出戏）；worldview.json 可给
+    `modern_words` 覆盖（都市文传空列表，只留真正出戏的词）。
+    """
+    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    if isinstance(wv, dict) and isinstance(wv.get("modern_words"), list):
+        return tuple(str(x) for x in wv["modern_words"])
+    return MODERN_WORDS
+
+
 def _lexicon_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     """R-LEX：正文用词纪律（现代词 / 西方典故 / style.json 禁用词）。"""
     alerts: list[RuleAlert] = []
     banned = _banned_words(ws, project_id)
+    modern = _modern_words(ws, project_id)
     for name, text in _iter_chapters(ws, project_id):
-        for w in MODERN_WORDS:
+        for w in modern:
             if w in text:
                 i = text.index(w)
                 alerts.append(RuleAlert(
@@ -171,7 +184,9 @@ def _item_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
                 level="warn", rule_id="R-ITEM", object_ref=e.name,
                 detail=f"同一物品出现多种叫法：{sorted({e.name, *other_forms})}"
                        f"（应统一用注册表规范名「{e.name}」）"))
-        if e.name not in held and e.name in full:
+        # 技能/功法条目不查"持有"（技能是学会的不是持有的，正文出现正常）
+        if e.name not in held and e.name in full and e.type not in (
+                "cultivation", "secret", "technique", "combat"):
             alerts.append(RuleAlert(
                 level="warn", rule_id="R-ITEM", object_ref=e.name,
                 detail=f"正文出现「{e.name}」，但 worldstate 无任何人持有/曾持有。"
@@ -256,7 +271,16 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
             if parsed is None:
                 continue
             if prev is not None:
-                if parsed < prev:
+                # 倒退判定要区分「大境界」与「细分」：
+                # - 大境界倒退（a < p）→ block；
+                # - 细分倒退（a == p 且 b < q）→ 仅当双方都有细分才判（无细分如「内劲」
+                #   可能是「内劲中期」的简写，误判倒退——实测许晴 内劲中期→内劲 被误报）。
+                if parsed[0] < prev[0]:
+                    alerts.append(RuleAlert(
+                        level="block", rule_id="R-STATE", object_ref=name,
+                        detail=(f"境界倒退：{prev} → {parsed}（{str(new_realm)}，at {at[0]}:{at[1]}）。"
+                                "若无「跌境/自废修为」情节则为编纂错误")))
+                elif parsed[0] == prev[0] and parsed[1] and prev[1] and parsed[1] < prev[1]:
                     alerts.append(RuleAlert(
                         level="block", rule_id="R-STATE", object_ref=name,
                         detail=(f"境界倒退：{prev} → {parsed}（{str(new_realm)}，at {at[0]}:{at[1]}）。"

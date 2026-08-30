@@ -71,6 +71,10 @@ class Registry:
     def all_entries(self) -> list[RegistryEntry]:
         return list(self.items.values()) + list(self.skills.values())
 
+    def all_entries_name(self) -> set[str]:
+        """全部规范名集合（快速成员判断用）。"""
+        return {e.name for e in self.all_entries()}
+
     def find_by_name(self, name: str) -> RegistryEntry | None:
         """按规范名或别名查找条目（先精确名，再别名）。"""
         if not name:

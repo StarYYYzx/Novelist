@@ -31,6 +31,7 @@ CHARACTERS = [
      "core_traits": ["温和", "低调", "演技惊人"], "power": {"level": "诡王（武圣之上）", "faction": "无"},
      "arc": "至强的诡王缚苍伪装成普通大学生，想安安静静读完大学，却被缚灵司一步步盯上",
      "first_appear": {"vol": 1, "ch": 1},
+     "possessions": ["残玉"],   # 固有物品（非"获得"，worldstate 初始化时登记）
      "relationships": [{"target": "char:xu", "type": "被调查"}, {"target": "char:zhao", "type": "室友"},
                        {"target": "char:xie", "type": "敌对"}]},
 
@@ -98,6 +99,8 @@ WORLDVIEW = {
         "武者与诡异不得在凡人面前展露超凡，违者由缚灵司追责",
         "诡异以凡人精气为食，食之必留痕迹",
     ],
+    # 都市高武：默认现代词表是修仙导向（电梯/手机…在此都正常），覆盖为空仅留默认西方典故
+    "modern_words": [],
 }
 
 STYLE = {

@@ -106,7 +106,11 @@ def save(ws, project_id: str, data: dict) -> None:
 
 
 def init_from_bible(ws, project_id: str) -> dict:
-    """从 bible/characters.json 初始化（power.level → realm），不覆盖已有状态。"""
+    """从 bible/characters.json 初始化（power.level → realm），不覆盖已有状态。
+
+    `possessions`：人物卡可声明"固有物品"（陈默的残玉锚点），初始化时登记进 items
+    ——正文反复出现但"非获得"的物品不会因此漏记（R-ITEM 未持有告警的源头）。
+    """
     chars = _read(ws._abs(f"{project_id}/bible/characters.json")) or []
     state = load(ws, project_id)
     for c in chars if isinstance(chars, list) else []:
@@ -121,6 +125,9 @@ def init_from_bible(ws, project_id: str) -> dict:
         cur.setdefault("injuries", [])
         cur.setdefault("dead", c.get("status") == "dead")
         cur.setdefault("history", [])
+        for pos in c.get("possessions") or []:
+            if pos and pos not in cur["items"]:
+                cur["items"].append(pos)
     save(ws, project_id, state)
     return state
 
@@ -160,6 +167,10 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
                     continue
                 it = registry.canonical(it)  # 异名 → 规范名（找不到原样返回）
                 if not it or it in NOOP_VALUES:
+                    continue
+                # 抽象词过滤：未注册且过长的词多是编纂噪声（实测「缚灵司巡查员关注」），
+                # 具象物品名通常较短（丹/符/石/玉/书/卡…）；宁丢勿污染
+                if it not in registry.all_entries_name() and len(it) > 6:
                     continue
                 if it not in cur["items"]:
                     cur["items"].append(it)
