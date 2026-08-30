@@ -49,6 +49,11 @@ _STATE_KEYS = {
 _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 _SUB_ORDER = {"初期": 1, "中期": 2, "后期": 3, "大圆满": 4, "巅峰": 5}
 
+# 状态行里的占位词——LLM 常输出「修为：无变化」「受伤：无」表示"没有变更"，
+# 必须当作 NO-OP 跳过，否则会把真实状态覆盖成占位词（实测林峯修为被写成"无变化"）。
+NOOP_VALUES = {"无", "无变化", "未变", "不变", "无碍", "无伤", "没变", "同上",
+               "-", "—", "/", "~", "暂无", "无异常"}
+
 
 def parse_realm(realm: str, levels: list[str]) -> tuple[int, int] | None:
     """把「炼气三层」「筑基大圆满」解析成（大境界序号, 细分序号），用于单调性比较。
@@ -120,8 +125,8 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
     for key, value in (delta or {}).items():
         field = _STATE_KEYS.get(key, key)
         value = str(value or "").strip()
-        if not value:
-            continue
+        if not value or value in NOOP_VALUES:
+            continue  # 占位词（无/无变化…）不是变更，跳过
         if field == "realm":
             if value and value != cur.get("realm"):
                 cur["realm"], recorded["realm"] = value, value
@@ -129,8 +134,15 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
             if value != cur.get("location"):
                 cur["location"], recorded["location"] = value, value
         elif field == "items_add":
-            if value not in cur["items"]:
-                cur["items"].append(value)
+            # LLM 常在一行里塞多个物品（「A、B，C」），且同物异名——拆开逐条去重
+            for it in re.split(r"[、，,;；]", value):
+                it = it.strip()
+                if not it or it in NOOP_VALUES:
+                    continue
+                if it not in cur["items"]:
+                    cur["items"].append(it)
+            cur["items"] = cur["items"][-20:]  # 上限防噪声无限堆积
+            if value not in NOOP_VALUES:
                 recorded["获得"] = value
         elif field == "items_remove":
             if value in cur["items"]:
@@ -202,7 +214,7 @@ def parse_state_lines(text: str, name_to_id: dict[str, str]) -> list[tuple[str, 
             if len(pieces) < 2:
                 continue
             k, v = pieces[0].strip(), pieces[1].strip()
-            if k in _STATE_KEYS and v:
+            if k in _STATE_KEYS and v and v not in NOOP_VALUES:
                 delta[k] = v
         if delta:
             out.append((cid, delta))
