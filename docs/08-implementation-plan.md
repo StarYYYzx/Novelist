@@ -212,6 +212,31 @@ novelist/
 - CLI：`chapter --event-loop / --screenplay`；测试：`tests/test_m5_adv.py` 17 个用例。
   全量 157 passed。
 
+#### M3g — 注册表体系 / 设定条目库 / 分级检索 / 类型适配 ✅ 已完成
+
+> 第三轮讨论落地（物品/功法注册表、首次交代状态机、记忆分级、跨类型适配）。
+
+- **物品/功法注册表（讨论·游戏式资产登记）** ✅ `schemas/bible/items.schema.json` +
+  `skills.schema.json` + `core/registry.py`：唯一 id（`item:`/`skill:`）+ 规范名 + 别名表。
+  `canonical()` 把「残篇/残卷/忘情录」归一化为规范名——物品是最后一种没有"唯一身份"
+  的实体，注册表从根上消除同物异名（奖励倒退的直接根源）。
+- **设定条目库 + 首次交代状态机（讨论·世界观缺失）** ✅ `schemas/bible/settings.schema.json`
+  + `core/settings.py`：世界观按独立知识单元切块（境界体系/势力…），每条 `keywords[] +
+  revealed`。生成前**提及检测**（事件文本命中关键词）→ 只注入**未交代**条目到事件 prompt
+  （"首次出现，须在正文自然带出"）；章末**交代验证**（正文关键词扫描）→ 命中置
+  `revealed=true` 写回，未命中保留 false 下章继续注入。注入走 prompt 引导而非代码插入
+  （避免说明书腔），确定性由验证闭环保证（首次交代是硬状态，不是模型自觉）。
+- **分级检索（讨论·角色分级记忆）** ✅ `core/memory.py`：plot_event 碎片带事件 type，
+  检索按类型加权（turning_point/reveal ×1.30、conflict ×1.10、dialogue ×0.80）——
+  "先忆"天然偏重关键情节而非流水账。长期记忆仍"只存不注入"，人物卡核心字段代表。
+- **跨类型适配（讨论·都市高武）** ✅ `core/worldstate.py`：`_STATE_KEYS` 扩展
+  实力/战力/等级 → realm。境界层级本就由 worldview.power_system.levels 配置驱动，
+  换类型只需重写 bible（世界观/人物/细纲），系统代码零改动。
+- **R-ITEM 规则** ✅ `consistency/rules.py`：正文同一物品多种叫法 → warn；正文出现
+  注册表物品但 worldstate 无人持有 → warn。子串陷阱：先剔除规范名出现再查别名
+  （「忘情录」⊂「太上忘情录」直接匹配会误报）。
+- 测试：`tests/test_m6_registry.py` 10 个用例。全量 167 passed。
+
 #### 待办
 - **角色演员**：actor 提示词模板 + `write_take` 工具 + 多角"排演→整合"流程（ADR-012）。
   `core/scene.py`（SceneBus）与 `core/scene_tools.py`（join/say/leave）已就绪，**尚未接入编排流**。

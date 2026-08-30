@@ -21,7 +21,10 @@ novel_workspace/
     │   ├── timeline.json             # 时间线事件
     │   ├── plot_threads.json         # 伏笔登记与回收
     │   ├── style.json                # 文风约束、禁用词、术语表、叙述偏好
-    │   └── worldstate.json           # 世界状态（硬状态层）：人物当前修为/位置/持有物/伤势
+    │   ├── worldstate.json           # 世界状态（硬状态层）：人物当前修为/位置/持有物/伤势
+    │   ├── items.json                # 物品注册表（可持有实体，游戏式资产登记）
+    │   ├── skills.json               # 功法/技能注册表（可学习实体，与物品分离）
+    │   └── settings.json             # 设定条目库（按知识单元切块 + 首次交代状态）
     ├── outline/                      # 大纲（结构化）
     │   ├── volumes.json              # 卷级大纲
     │   └── chapters/<vol>-<ch>.md    # 章节细纲（每章一文件）
