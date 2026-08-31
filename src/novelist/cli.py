@@ -237,7 +237,13 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "
                f"attempts={res.attempts})")
+    click.echo(f"phase: {res.phase}" + (f" ({res.phase_reason})" if res.phase_reason else ""))
     click.echo(f"events committed: {res.events_committed}")
+    if res.entity_new or res.entity_alerts:
+        click.echo(f"entities: +{res.entity_new}"
+                   + (f", alerts: {len(res.entity_alerts)}" if res.entity_alerts else ""))
+        for a in res.entity_alerts:
+            click.echo(f"  [entity] {a}")
     if res.completeness:
         c = res.completeness
         flag = "ok" if c.get("ends_properly") and not c.get("meta_narration") else "CHECK"

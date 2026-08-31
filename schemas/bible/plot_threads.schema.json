@@ -2,19 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/plot_threads.schema.json",
   "title": "plot_threads",
-  "description": "伏笔登记与回收（单一事实源）。见 docs/06 §3.2。",
+  "description": "伏笔登记与回收（单一事实源）。见 docs/06 §3.2。第九批：加 scope/target_vol（卷级收尾工作流判定输入）；status 补 active/paid_off（与代码实际流转 planted→active→paid_off 对齐）。",
   "type": "object",
   "required": ["id", "desc", "status"],
   "properties": {
-    "id": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" },
+    "id": { "type": "string", "pattern": "^(pt|thread):[A-Za-z0-9_-]+$" },
     "desc": { "type": "string", "minLength": 1 },
+    "scope": {
+      "type": "string",
+      "enum": ["volume", "book"],
+      "description": "volume=卷内线（默认，须在 target_vol 卷末回收）；book=全书主线跨卷。缺省按 volume 处理。"
+    },
+    "target_vol": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "本线应在第几卷回收；缺省取 planted.vol。"
+    },
     "planted": {
       "type": "object",
       "required": ["vol", "ch"],
       "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
       "additionalProperties": false
     },
-    "status": { "enum": ["unplanned", "planted", "pending_return", "returned"] },
+    "status": { "enum": ["unplanned", "planted", "active", "paid_off", "pending_return", "returned"] },
     "report_deadline": {
       "type": "object",
       "required": ["vol", "ch"],

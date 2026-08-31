@@ -181,13 +181,15 @@ class Chronicler:
         return out, state_changes
 
     # ---- 写入（含冲突双检）----
-    def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int) -> int:
-        """暗线关联（讨论第 6 轮）：伏笔↔事件关联 + 状态流转 planted→active。
+    def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int,
+                      *, payoff: bool = False) -> int:
+        """暗线关联（讨论第 6 轮）：伏笔↔事件关联 + 状态流转。
 
         - 用伏笔 desc 的关键词（token 交集）匹配事件摘要，命中即填 affected_threads；
-        - 被匹配的 planted 伏笔推进为 active（写回 bible/plot_threads.json）——
-          这给 plot_threads 装上闭环：不再只是"登记 + 注入提醒"。
-        - 返回本次推进（planted→active）的伏笔数。
+        - 行文期：planted → active（装上闭环：不再只是"登记 + 注入提醒"）；
+        - **收尾期（`payoff=True`，第九批）**：命中事件的 active 伏笔 → `paid_off`，
+          并记 `returned` 落点——"收尾期回收清单"的自动兑现判定。
+        - 返回本次状态流转的伏笔数。
         """
         p = self.ws._abs(f"{self.project_id}/bible/plot_threads.json")
         if not p.exists() or not events:
@@ -200,6 +202,7 @@ class Chronicler:
             return 0
 
         activated = 0
+        paid_off = 0
         for ev in events:
             if ev.threads:  # 已有显式关联（细纲/LLM 给出）则跳过
                 continue
@@ -216,20 +219,30 @@ class Chronicler:
                     if t.get("status") == "planted":
                         t["status"] = "active"
                         activated += 1
-        if activated:
+                    elif payoff and t.get("status") == "active" \
+                            and str(t.get("scope") or "volume") != "book":
+                        # 收尾期自动回收只判**卷内线**；book 线是全书主线跨卷，
+                        # 卷末事件与其关键词重合（如"血祭图谋被遏制"）不等于
+                        # 主使落网——误判会把下卷钩子提前抹掉（proj-t5 实测）。
+                        t["status"] = "paid_off"
+                        t["returned"] = {"vol": vol, "ch": ch}
+                        paid_off += 1
+        if activated or paid_off:
             try:
-                p.write_text(json.dumps(threads, ensure_ascii=False, indent=2), encoding="utf-8")
+                p.write_text(json.dumps(threads, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
             except OSError:  # pragma: no cover
                 pass
-        return activated
+        return activated + paid_off
 
     def commit(self, events: list[ExtractedEvent], vol: int, ch: int, *, project_id: str = "",
                state_changes: list[tuple[str, dict]] | None = None,
-               tag: str = "c") -> ChroniclerReport:
+               tag: str = "c", payoff: bool = False) -> ChroniclerReport:
         """逐条写入；冲突回退并记入 report，不静默入库（docs/06 §4.4）。
 
         `state_changes` 非空时同步更新世界状态（B-STATE），
         并把 delta 写进对应人物经历的 `state_delta` 字段（docs/06 §3.5 预留字段）。
+        `payoff=True`（收尾期，第九批）：命中事件的 active 伏笔自动判 paid_off。
         """
         report = ChroniclerReport(extracted=len(events), events=list(events))
         pid = project_id or self.project_id
@@ -238,7 +251,7 @@ class Chronicler:
             deltas_by_char.setdefault(cid, {}).update(delta)
 
         # 暗线：先做伏笔↔事件关联与状态流转，再写入（affected_threads 非空才有闭环）
-        report.threads_activated = self._link_threads(events, vol, ch)
+        report.threads_activated = self._link_threads(events, vol, ch, payoff=payoff)
 
         for i, ev in enumerate(events, 1):
             try:
@@ -277,11 +290,13 @@ class Chronicler:
         return report
 
     def run(self, chapter_text: str, vol: int, ch: int, *, max_events: int = 3,
-            tag: str = "c") -> ChroniclerReport:
+            tag: str = "c", payoff: bool = False) -> ChroniclerReport:
         """一次性完成抽取 + 双检 + 写入 + 状态更新（编排层的主要入口）。
 
         `tag` 用于事件 id 命名空间：事件循环逐事件调用时传 e1/e2/…，
         避免同一章内不同片段抽出的事件 id 撞名。
+        `payoff`：收尾期传 True，命中事件的 active 伏笔判 paid_off（第九批）。
         """
         events, state_changes = self.extract(chapter_text, max_events=max_events)
-        return self.commit(events, vol, ch, state_changes=state_changes, tag=tag)
+        return self.commit(events, vol, ch, state_changes=state_changes, tag=tag,
+                           payoff=payoff)

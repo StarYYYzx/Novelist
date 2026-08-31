@@ -230,6 +230,50 @@ def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
     alerts += _timeline_monotonic(ws, project_id)
     alerts += run_lexicon_checks(ws, project_id)
     alerts += run_state_checks(ws, project_id)
+    alerts += _thread_payoff_check(ws, project_id)
+    return alerts
+
+
+def _thread_payoff_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-THREAD：卷末伏笔回收检查（第九批·收尾工作流的确定性校验层）。
+
+    - 收尾期（卷剩余章数 ≤ tail_chapters）仍 active/planted 的**卷内**伏笔 → warn
+      （该开始兑现了）；
+    - 卷末最后一章仍 active/planted 的卷内伏笔 → block（本卷一条都没收）。
+    scope=="book"（全书主线跨卷）不检查——那不是本卷的责任。
+    """
+    from ..core.phase import Phase, PhasePolicy, VolumeContext, payoff_checklist
+
+    alerts: list[RuleAlert] = []
+    # 找出已写到的最后一章（R-THREAD 只对"已到收尾期"的卷做判定）
+    chapters = _iter_chapters(ws, project_id)
+    if not chapters:
+        return alerts
+    last_stem = chapters[-1][0]
+    try:
+        vol_s, ch_s = last_stem.split("-")[:2]
+        vol, ch = int(vol_s), int(ch_s)
+    except ValueError:  # pragma: no cover
+        return alerts
+    policy = PhasePolicy.load(ws, project_id)
+    vctx = VolumeContext.load(ws, project_id, vol)
+    phase, _reason = policy.judge(vctx, ch)
+    if phase is not Phase.TAIL:
+        return alerts
+    is_final = vctx.end and ch >= vctx.end
+    checklist = payoff_checklist(ws, project_id, vol, ch)
+    for t in checklist.get("threads") or []:
+        tid = t.get("id") or "?"
+        if is_final:
+            alerts.append(RuleAlert(
+                level="block", rule_id="R-THREAD", object_ref=tid,
+                detail=f"卷末最后一章，卷内伏笔「{t.get('desc', '')[:30]}」仍为 "
+                       f"{t.get('status')}——本卷暗线未回收（收尾工作流要求最后一章给出交代）"))
+        else:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-THREAD", object_ref=tid,
+                detail=f"卷剩余 {vctx.chapters_left(ch)} 章，伏笔「{t.get('desc', '')[:30]}」"
+                       f"仍为 {t.get('status')}——收尾期该开始兑现（回收清单已注入生成提示）"))
     return alerts
 
 

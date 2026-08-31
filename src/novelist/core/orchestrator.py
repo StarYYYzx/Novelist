@@ -32,7 +32,9 @@ class ProductionResult:
                  mode: str = "tool", *, bible_injected: bool = False, attempts: int = 1,
                  completeness: dict | None = None, polish=None, chronicle=None,
                  review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0,
-                 jit_added: int = 0, settings_added: int = 0):
+                 jit_added: int = 0, settings_added: int = 0,
+                 entity_new: int = 0, entity_alerts: list[str] | None = None,
+                 phase: str = "writing", phase_reason: str = ""):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -48,6 +50,10 @@ class ProductionResult:
         self.lessons_added = lessons_added      # 本轮沉淀的历史教训数
         self.jit_added = jit_added              # 本轮 JIT 补卡数（递归分层 A）
         self.settings_added = settings_added    # 本轮设定补充数（递归分层 B）
+        self.entity_new = entity_new            # 本轮新增实体数（统一实体追踪）
+        self.entity_alerts = entity_alerts or []  # 本轮实体预算告警
+        self.phase = phase                      # 本卷阶段：opening | writing | tail（第九批）
+        self.phase_reason = phase_reason        # 阶段判定依据（确定性规则可解释）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -493,6 +499,16 @@ def _load_settings(ws, project_id: str):
         return None
 
 
+def _load_entity_tracker(ws, project_id: str):
+    """加载统一实体追踪层（第八批）；失败返回 None（不启用，向后兼容）。"""
+    try:
+        from .entity import EntityTracker
+
+        return EntityTracker.load(ws, project_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _make_knowledge(ws, project_id: str, embedding):
     """构造知识检索层（讨论第 8 轮 RAG）；失败返回 None（生成照常，只少知识注入）。"""
     try:
@@ -833,6 +849,34 @@ def produce_chapter(
     else:
         goal = final_goal
 
+    # ---- 1.5) 阶段判定（第九批：开篇/行文/收尾，确定性规则不调 LLM）----
+    # 判据：tail=卷剩余章数≤K（硬时间约束，优先）；opening=卷内章号≤N 或 established 占比低。
+    # 差异四维度：实体配额 / 篇幅系数 / 设定分批 / 校验强度——见 core/phase.py。
+    from .phase import (Phase, PhasePolicy, VolumeContext, established_ratio,
+                        payoff_checklist, payoff_prompt_lines)
+    phase = Phase.WRITING
+    phase_reason = ""
+    phase_policy = None
+    vctx = None
+    entity_tracker = None
+    payoff_lines: list[str] = []
+    try:
+        phase_policy = PhasePolicy.load(ws, project_id)
+        vctx = VolumeContext.load(ws, project_id, vol)
+        entity_tracker = _load_entity_tracker(ws, project_id)
+        phase, phase_reason = phase_policy.judge(vctx, ch, established_ratio(entity_tracker))
+        if phase is Phase.TAIL:
+            checklist = payoff_checklist(ws, project_id, vol, ch, tracker=entity_tracker)
+            payoff_lines = payoff_prompt_lines(
+                checklist, is_final=bool(vctx.end and ch >= vctx.end))
+    except Exception:  # noqa: BLE001 - 阶段判定失败退回行文期行为，不阻断写章
+        phase, phase_reason, payoff_lines = Phase.WRITING, "", []
+    if phase_policy is not None and phase is not Phase.WRITING:
+        # 篇幅阶段系数：开篇该从容展开（×1.3），收尾按回收清单定
+        generation_tokens = phase_policy.generation_tokens(generation_tokens, phase)
+    if payoff_lines:
+        goal = goal + "\n\n" + "\n".join(payoff_lines)
+
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
@@ -875,6 +919,8 @@ def produce_chapter(
                 knowledge = _make_knowledge(ws, project_id, embedding)
                 readback_text = (_prior_chapter_text(ws, project_id, vol, ch)
                                  if readback else "")
+                # 统一实体追踪（第八批：四阶段 + 别名消歧 + 松预算）
+                entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
                     memories_ev = _recall_for(ws, project_id, ev_text, embedding)
@@ -883,8 +929,35 @@ def produce_chapter(
                     if recent_ev:
                         memories_ev = recent_ev + memories_ev
                     # 设定按需注入：本事件命中且未交代的条目（首次交代状态机，讨论决策）
-                    setting_lines = (settings_idx.pending_lines(goal, ev_text, ch=ch)
-                                     if settings_idx is not None else [])
+                    # 开篇期分批（第九批）：每事件最多注入 opening_settings_max 条
+                    if settings_idx is not None:
+                        setting_lines = settings_idx.pending_lines(goal, ev_text, ch=ch)
+                        if phase is Phase.OPENING and phase_policy is not None:
+                            setting_lines = settings_idx.pending_lines(
+                                goal, ev_text, ch=ch,
+                                max_entries=phase_policy.opening_settings_max)
+                    else:
+                        setting_lines = []
+                    # 开篇期（第九批）：新名字配额纪律 + 上章推迟实体优先介绍
+                    if phase is Phase.OPENING and phase_policy is not None \
+                            and entity_tracker is not None:
+                        deferred = entity_tracker.deferred_names()
+                        if deferred:
+                            setting_lines = list(setting_lines) + [
+                                "- 上章被推迟的实体，本章优先安排出场/介绍："
+                                + "、".join(deferred[:4])]
+                        setting_lines = list(setting_lines) + [
+                            f"- 本章新名字配额：至多 {phase_policy.opening_quota} 个；"
+                            "细纲未声明的实体宁可不出现，留到后续章节"]
+                    # 实体按阶段差异化注入（第八批）：stage 不足 described 的命中实体
+                    # → 提示展开介绍；已 established 的名字行防重复介绍
+                    if entity_tracker is not None:
+                        expand = entity_tracker.needs_expansion(ev_text, ch=ch)
+                        if expand:
+                            setting_lines = list(setting_lines) + [
+                                f"- 实体「{e.name}」首次/再度出场：通过行动/对白自然展开"
+                                f"介绍（身份、与主角的关系），不要写成人物简介"
+                                for e in expand[:3]]
                     # RAG：LLM 查询生成 → 融合检索 → 事件级注入行
                     related: dict = {}
                     if knowledge is not None:
@@ -987,7 +1060,8 @@ def produce_chapter(
                         try:
                             chronic_reports.append(
                                 chronicler.run(piece, vol, ch, max_events=2,
-                                               tag=f"e{idx}"))
+                                               tag=f"e{idx}",
+                                               payoff=(phase is Phase.TAIL)))
                         except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             pass
                 final = _dedupe_chapter_titles("\n".join(pieces))
@@ -1028,7 +1102,8 @@ def produce_chapter(
                 comp = completeness(final)
     except Exception as e:  # noqa: BLE001 - 循环/生成异常统一收敛为失败
         return ProductionResult(ok=False, result=str(e), mode=mode, bible_injected=bible_injected,
-                                attempts=attempts, completeness=comp)
+                                attempts=attempts, completeness=comp,
+                                phase=getattr(phase, "value", phase), phase_reason=phase_reason)
 
     if not comp and final:
         comp = completeness(final)
@@ -1079,6 +1154,28 @@ def produce_chapter(
     except Exception:  # noqa: BLE001 - 交代验证失败不影响成稿
         settings_revealed = 0
 
+    # ---- 4.6) 实体进度更新（第八批：四阶段 + 别名消歧 + 松预算）----
+    # 扫正文更新 stage/mentions/last_ch（别名共指消歧），超预算记告警。
+    # 第九批：开篇期按配额判定，超出部分推迟（deferred 持久化，下章优先注入）。
+    entity_alerts: list[str] = []
+    entity_new = 0
+    try:
+        tracker = entity_tracker or _load_entity_tracker(ws, project_id)
+        if tracker is not None:
+            verify_text = draft.read_text(encoding="utf-8") if draft.exists() else final
+            upd = tracker.update_from_chapter(verify_text, vol, ch)
+            entity_new = len(upd.get("new") or [])
+            if phase is Phase.OPENING and phase_policy is not None:
+                entity_alerts = tracker.budget_check(
+                    upd.get("new") or [], quota=phase_policy.opening_quota,
+                    defer_over=True)
+                tracker.clear_deferred(upd.get("new") or [])  # 已介绍的推迟项出队
+            else:
+                entity_alerts = tracker.budget_check(upd.get("new") or [])
+            tracker.save()
+    except Exception:  # noqa: BLE001 - 实体进度失败不影响成稿
+        entity_alerts = []
+
     # ---- 5) 事件回写（真实事件走编纂员，B-03）----
     events = 0
     chronicle = None
@@ -1097,7 +1194,8 @@ def produce_chapter(
                     chronicler = Chronicler(ws, project_id, llm=provider, embedding=embedding,
                                             semantic_checker=semantic_checker)
                 if chronicler is not None:
-                    chronicle = chronicler.run(text_for_chronicle, vol, ch)
+                    chronicle = chronicler.run(text_for_chronicle, vol, ch,
+                                               payoff=(phase is Phase.TAIL))
                     events = chronicle.written
     except Exception:  # noqa: BLE001 - 编纂失败不影响草稿已落盘
         chronicle = None
@@ -1121,4 +1219,6 @@ def produce_chapter(
                             completeness=comp, polish=polish_res, chronicle=chronicle,
                             review_blocks=review_blocks, events_revised=events_revised,
                             lessons_added=lessons_added, jit_added=jit_added,
-                            settings_added=settings_added)
+                            settings_added=settings_added,
+                            entity_new=entity_new, entity_alerts=entity_alerts,
+                            phase=getattr(phase, "value", phase), phase_reason=phase_reason)

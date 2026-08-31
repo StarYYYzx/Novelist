@@ -1,7 +1,12 @@
-"""AutoDL 常驻隧道：本地 127.0.0.1:6006 → 容器内 llama-server 6006。
+"""AutoDL 常驻隧道：本地端口 → 容器内 llama-server。
 
-供 20 章测试使用：隧道常驻后，LMStudioProvider(base_url="http://127.0.0.1:6006",
-enable_thinking=False) 即可直连云端 9B。后台运行：python tunnel_autodl.py
+6006 → LLM（Qwen3.5-9B-Q8_0，ctx 16384）
+6008 → embedding（nomic-embed-text-v1.5 Q8_0，--embeddings --no-warmup，CPU）
+
+隧道常驻后，本地即可直连：
+  LMStudioProvider(base_url="http://127.0.0.1:6006", enable_thinking=False)
+  OpenAIEmbedding(model="nomic-embed-text-v1.5", base_url="http://127.0.0.1:6008/v1", api_key="none")
+后台运行：python tunnel_autodl.py
 """
 
 from __future__ import annotations
@@ -14,8 +19,10 @@ import paramiko
 
 HERE = Path(__file__).resolve().parent
 
-LOCAL_PORT = 6006
-REMOTE = ("127.0.0.1", 6006)
+TUNNELS = [
+    (6006, ("127.0.0.1", 6006)),  # LLM
+    (6008, ("127.0.0.1", 6008)),  # embedding
+]
 
 
 def creds() -> dict:
@@ -33,18 +40,23 @@ def main() -> None:
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(c["SSH_HOST"], port=int(c["SSH_PORT"]), username=c["SSH_USER"],
-                password=c["SSH_PASSWORD"], timeout=25)
+                password=c["SSH_PASSWORD"], timeout=25,
+                look_for_keys=False, allow_agent=False)
     transport = ssh.get_transport()
-    print(f"隧道建立：本地 {LOCAL_PORT} ← SSH → {REMOTE[0]}:{REMOTE[1]}", flush=True)
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", LOCAL_PORT))
-    listener.listen(16)
+    listeners: list[tuple[socket.socket, tuple[str, int]]] = []
 
-    def handle(conn: socket.socket) -> None:
+    def make_listener(local_port: int, remote: tuple[str, int]) -> socket.socket:
+        print(f"隧道建立：本地 127.0.0.1:{local_port} ← SSH → {remote[0]}:{remote[1]}", flush=True)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", local_port))
+        listener.listen(16)
+        return listener
+
+    def handle(conn: socket.socket, remote: tuple[str, int]) -> None:
         try:
-            chan = transport.open_channel("direct-tcpip", REMOTE, conn.getpeername())
+            chan = transport.open_channel("direct-tcpip", remote, conn.getpeername())
         except Exception:  # noqa: BLE001
             conn.close()
             return
@@ -70,9 +82,21 @@ def main() -> None:
         threading.Thread(target=pump, args=(conn, chan, conn, chan), daemon=True).start()
         threading.Thread(target=pump, args=(chan, conn, chan, conn), daemon=True).start()
 
-    while True:
-        conn, _ = listener.accept()
-        threading.Thread(target=handle, args=(conn,), daemon=True).start()
+    for port, remote in TUNNELS:
+        listeners.append((make_listener(port, remote), remote))
+
+    def accept_loop(listener: socket.socket, remote: tuple[str, int]) -> None:
+        while True:
+            conn, _ = listener.accept()
+            threading.Thread(target=handle, args=(conn, remote), daemon=True).start()
+
+    threads = [threading.Thread(target=accept_loop, args=(l, r), daemon=True)
+               for l, r in listeners]
+    for t in threads:
+        t.start()
+    print("隧道就绪（Ctrl+C 退出）", flush=True)
+    while transport.is_active():
+        threading.Event().wait(30)
 
 
 if __name__ == "__main__":
