@@ -31,7 +31,8 @@ class ProductionResult:
     def __init__(self, ok: bool, chapter_path: str | None = None, result: str = "", events_committed: int = 0,
                  mode: str = "tool", *, bible_injected: bool = False, attempts: int = 1,
                  completeness: dict | None = None, polish=None, chronicle=None,
-                 review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0):
+                 review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0,
+                 jit_added: int = 0, settings_added: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -45,6 +46,8 @@ class ProductionResult:
         self.review_blocks = review_blocks      # 事件级审校 block 数（讨论第 7 轮）
         self.events_revised = events_revised    # 因 block 重写的事件数
         self.lessons_added = lessons_added      # 本轮沉淀的历史教训数
+        self.jit_added = jit_added              # 本轮 JIT 补卡数（递归分层 A）
+        self.settings_added = settings_added    # 本轮设定补充数（递归分层 B）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -738,6 +741,7 @@ def produce_chapter(
     # 递归分层 A（第七批第 5 条·用户拍板）：人物 JIT 补卡——细纲声明出场但 bible 缺卡，
     # 生成前先补全（出场即建档，防造人红线）。补卡吸收前文实际发展（滚动设计）。
     jit_added = 0
+    settings_added = 0
     if jit_characters:
         jit_added = _jit_characters(ws, project_id, vol, ch, gist_text_for_events, provider)
     if system_prompt is None and final_goal is None and inject_bible:
@@ -832,7 +836,8 @@ def produce_chapter(
                     # 事件文本出现新专有名词 → LLM 补 settings 条目（后续事件可命中）。
                     if supplement_settings:
                         try:
-                            _supplement_settings(ws, project_id, ev_text, provider)
+                            settings_added += _supplement_settings(ws, project_id, ev_text,
+                                                                   provider)
                         except Exception:  # noqa: BLE001
                             pass
 
@@ -1041,4 +1046,5 @@ def produce_chapter(
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
                             completeness=comp, polish=polish_res, chronicle=chronicle,
                             review_blocks=review_blocks, events_revised=events_revised,
-                            lessons_added=lessons_added)
+                            lessons_added=lessons_added, jit_added=jit_added,
+                            settings_added=settings_added)

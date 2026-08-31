@@ -245,6 +245,12 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     alerts: list[RuleAlert] = []
     wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
     levels = ((wv.get("power_system") or {}).get("levels")) if isinstance(wv, dict) else None
+    # 绑定流角色豁免（v5 实测 P0-1 完整版）：realm 随绑定对象波动是**机制本身**，
+    # 编纂不是每次都带「借用/同步」标记——worldview.realm_fluctuates 列出的角色
+    # （按 id 或名字）跳过单调性比较，只保留死亡检查。
+    fluctuate: set[str] = set()
+    if isinstance(wv, dict) and isinstance(wv.get("realm_fluctuates"), list):
+        fluctuate = {str(x) for x in wv["realm_fluctuates"]}
     st = _read_json(ws._abs(f"{project_id}/bible/worldstate.json")) or {}
     chars = st.get("characters") if isinstance(st, dict) else None
     if not isinstance(chars, dict):
@@ -263,6 +269,8 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
         if not isinstance(cur, dict):
             continue
         name = cur.get("name") or cid
+        if cid in fluctuate or name in fluctuate:
+            continue  # 绑定流角色：境界波动是机制，不校验单调性
         seq = [h for h in (cur.get("history") or [])
                if isinstance(h, dict) and isinstance(h.get("at"), dict)]
         seq.sort(key=lambda h: (int(h["at"].get("vol", 0) or 0), int(h["at"].get("ch", 0) or 0)))
