@@ -85,6 +85,10 @@ class LMStudioProvider:
         上层只看 `len(content)`，无从判断"是预算不够"还是"模型真的没话说"。
         """
         budget = req.max_tokens_out or self.default_max_tokens
+        # 正文预算（第二批·人工审查）：max_content_tokens 是期望正文量，
+        # 总预算至少覆盖它——否则思考模型思考一长，正文必然被挤没。
+        if req.max_content_tokens and req.max_content_tokens > budget:
+            budget = req.max_content_tokens
         last: LLMResult | None = None
         retried = False
         for attempt in range(self.budget_retries + 1):

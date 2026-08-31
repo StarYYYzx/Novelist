@@ -32,6 +32,9 @@ class SecurityConfig:
 @dataclass
 class BudgetConfig:
     default_max_tokens_out: int = 4000
+    # 正文预算（第二批·人工审查）：期望正文输出量；适配层保证总预算至少覆盖它。
+    # 总预算（default_max_tokens_out）是硬顶，正文预算决定"该写多少"。
+    default_max_content_tokens: int = 3000
     default_max_cost: float | None = None
     default_max_rounds: int = 100
 
@@ -83,6 +86,7 @@ def load_config(path: str | None = None) -> Config:
         ),
         budget=BudgetConfig(
             default_max_tokens_out=b.get("default_max_tokens_out", 4000),
+            default_max_content_tokens=b.get("default_max_content_tokens", 3000),
             default_max_cost=b.get("default_max_cost"),
             default_max_rounds=b.get("default_max_rounds", 100),
         ),

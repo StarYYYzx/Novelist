@@ -71,6 +71,10 @@ class OpenAICompatibleProvider:
             payload["response_format"] = {"type": "json_object"}
         if req.max_tokens_out:
             payload["max_tokens"] = req.max_tokens_out
+        # 正文预算（第二批·人工审查）：openai 兼容端点可能是思考型模型
+        # （如云端 Qwen3.5），max_tokens 是总预算，正文目标须纳入其中。
+        if req.max_content_tokens and req.max_content_tokens > (req.max_tokens_out or 0):
+            payload["max_tokens"] = req.max_content_tokens
 
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:

@@ -164,8 +164,16 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
 @click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
 @click.option("--gen-tokens", type=int, default=None,
-              help="单次生成预算（B-05）。缺省时本地模型 400、其余 4000；"
+              help="单次生成总预算（B-05）。缺省时本地模型 400、其余 4000；"
                    "本地 9B 模型写满一章建议 1200–1500")
+@click.option("--content-tokens", type=int, default=None,
+              help="正文预算（第二批）：期望正文量；总预算至少覆盖它。缺省取配置或 3000")
+@click.option("--length-cap", type=int, default=None,
+              help="篇幅硬上限（字符，第七批）：超限截断到段落边界；缺省不截断")
+@click.option("--max-events", type=int, default=None,
+              help="每章事件数上限（第二批）：超限只取前 N 个；缺省不限制")
+@click.option("--min-event-words", type=int, default=120,
+              help="单事件最小篇幅（字符，第二批）：低于下限判失败；事件循环生效")
 @click.option("--polish/--no-polish", default=False,
               help="成章后追加一次 LLM 调用优化文风（降低 AI 味），并用确定性指标复核")
 @click.option("--no-bible", is_flag=True, default=False,
@@ -184,7 +192,9 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="关闭人物 JIT 补卡（默认开启，第七批第 5 条·递归分层 A）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
-            policy: str | None, gen_tokens: int | None, polish: bool, no_bible: bool,
+            policy: str | None, gen_tokens: int | None, content_tokens: int | None,
+            length_cap: int | None, max_events: int | None, min_event_words: int,
+            polish: bool, no_bible: bool,
             event_loop: bool, screenplay: bool, readback: bool, event_polish: bool,
             supplement_settings: bool, no_jit: bool) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
@@ -228,7 +238,10 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     # 先忆结果交给编排层注入圣经上下文（B-02）；关闭注入时仍可用于旧链路
     memories = _recall_lines(ws, project_id, vol, ch, embedding=emb)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
-                          generation_tokens=gen_tokens, embedding=emb,
+                          generation_tokens=gen_tokens, content_tokens=content_tokens,
+                          length_cap_chars=length_cap, max_events_per_chapter=max_events,
+                          min_event_words=min_event_words,
+                          embedding=emb,
                           inject_bible=not no_bible, memories=memories or None, polish=polish,
                           event_loop=event_loop, screenplay=screenplay,
                           readback=readback, event_polish=event_polish,
@@ -250,6 +263,11 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
         click.echo(f"completeness: {flag} ({c.get('chars')} 字, 末字「{c.get('last_char')}」"
                    + (f", 元叙事={c['meta_narration']}" if c.get("meta_narration") else "")
                    + (f", 未解决={c['_unresolved']}" if c.get("_unresolved") else "") + ")")
+    if res.length_truncated:
+        click.echo(f"length: TRUNCATED (超 {res.completeness.get('chars', '?')} 字上限，已截断到段落边界)")
+    if res.events_capped:
+        click.echo(f"events: capped（细纲 {res.events_capped + res.events_committed} 个事件超上限，"
+                   f"取前 {res.events_committed} 个）")
     if res.polish is not None:
         p = res.polish
         click.echo(f"polish: {'applied' if p.changed else 'kept original'} "

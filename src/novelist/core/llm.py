@@ -56,6 +56,10 @@ class LLMRequest:
     temperature: float | None = None
     response_format: str = "text"  # "json_object" | "text"
     max_tokens_out: int | None = None
+    # 正文预算（第二批·人工审查）：max_tokens_out 是**总输出预算**（思考+正文），
+    # max_content_tokens 是**期望正文量**——适配层保证正文预算不被思考吃掉
+    # （budget = max(总预算, 正文预算)），也供 reasoning_aware 判据使用。
+    max_content_tokens: int | None = None
     thinking: bool | None = None
     # 思考模式按请求控制（讨论：云端 llama.cpp 认 chat_template_kwargs.enable_thinking，
     # 判断类任务如审校开思考提 recall，生成类任务关思考保正文预算）：

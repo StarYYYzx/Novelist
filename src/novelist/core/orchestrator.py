@@ -34,7 +34,8 @@ class ProductionResult:
                  review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0,
                  jit_added: int = 0, settings_added: int = 0,
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
-                 phase: str = "writing", phase_reason: str = ""):
+                 phase: str = "writing", phase_reason: str = "",
+                 length_truncated: bool = False, events_capped: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -54,6 +55,8 @@ class ProductionResult:
         self.entity_alerts = entity_alerts or []  # 本轮实体预算告警
         self.phase = phase                      # 本卷阶段：opening | writing | tail（第九批）
         self.phase_reason = phase_reason        # 阶段判定依据（确定性规则可解释）
+        self.length_truncated = length_truncated  # 篇幅硬上限截断（第七批）
+        self.events_capped = events_capped        # 每章事件数超限截掉的事件数（第二批）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -170,16 +173,18 @@ def strip_seam_overlap(prev: str, piece: str, window: int = 900,
 
 
 def _generate_with_continuation(provider, system_prompt: str, prompt: str,
-                                budget: int, max_continuations: int) -> str:
+                                budget: int, max_continuations: int,
+                                content_tokens: int | None = None) -> str:
     """生成一次；若被 length 截断则**续写**而不是整章重来（第二批第 1 条·第 2 层修复）。
 
     重来一遍要重新付思考开销，且已生成的好内容可能被换掉；续写把已有文本作为前缀，
     只补齐剩余部分。返回拼接后的完整文本。
+    `content_tokens`：正文预算（第二批·人工审查），适配层保证总预算覆盖它。
     """
     res = provider.complete(
         LLMRequest(messages=[LLMMessage(role="system", content=system_prompt),
                              LLMMessage(role="user", content=prompt)],
-                   max_tokens_out=budget)
+                   max_tokens_out=budget, max_content_tokens=content_tokens)
     )
     text = res.content or ""
     for _ in range(max(0, max_continuations)):
@@ -193,7 +198,7 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
                     "不要总结，直到写完一个完整的收束句为止。\n\n"
                     "已写部分：\n" + text[-1500:])),
             ],
-                max_tokens_out=budget)
+                max_tokens_out=budget, max_content_tokens=content_tokens)
         )
         piece = (res.content or "").strip()
         if not piece:
@@ -201,6 +206,22 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
         # 续写同样会把已写部分复述一遍（同根因）——确定性去重后再拼接
         text = text.rstrip() + strip_seam_overlap(text, piece)
     return text
+
+
+def _truncate_to_boundary(text: str, cap: int) -> str:
+    """篇幅硬上限（第七批）：超限时截断到最近的段落/句子边界，不在句中腰斩。
+
+    优先级：空行（\\n\\n）> 行末（\\n）> 句末标点；按序取第一个满足的最近边界。
+    未超限原样返回；无合适边界（都在前半段）时硬切兜底。上限按字符计。
+    """
+    if cap is None or cap <= 0 or len(text) <= cap:
+        return text
+    head = text[:cap]
+    for marker in ("\n\n", "\n", "。", "！", "？", "…", "；", "，"):
+        pos = head.rfind(marker)
+        if pos > cap * 0.5:  # 边界至少要落在后半段，避免切在开头
+            return head[: pos + len(marker)]
+    return head  # 无合适边界 → 硬切兜底
 
 
 def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> list[str]:
@@ -352,7 +373,8 @@ def _strip_expanded_tag(ev_text: str) -> str:
 def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                     memories: list[str], setting_lines: list[str], related: dict,
                     readback_text: str, generation_tokens: int,
-                    max_continuations: int, direct_words_floor: int) -> tuple[str, int] | None:
+                    max_continuations: int, direct_words_floor: int,
+                    content_tokens: int | None = None) -> tuple[str, int] | None:
     """重场戏拍展开（递归分层 C）：事件 → ≤3 拍逐拍生成。
 
     拍级生成带上一拍全文 + 前情摘要（非截断接缝——同一场景的连续动作）。
@@ -402,7 +424,7 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                              else "写到本拍结束即停，不要提前写下一拍内容。")]
             piece = _generate_with_continuation(
                 provider, system_prompt or "", "\n".join(parts),
-                generation_tokens, max_continuations)
+                generation_tokens, max_continuations, content_tokens=content_tokens)
             if len(piece) < direct_words_floor:
                 return None  # 单拍失败 → 回退事件级
             # 拍级拼接同样要去掉复述（拍级上下文是上一拍全文，复述风险更高）
@@ -774,6 +796,11 @@ def produce_chapter(
     direct_words_floor: int = 20,
     prefer_direct: bool = False,
     generation_tokens: int = 4000,
+    # ---- 第二批·人工审查：预算分离与篇幅治理 ----
+    content_tokens: int | None = None,   # 正文预算（期望正文量）；None = 不额外约束
+    length_cap_chars: int | None = None,  # 篇幅硬上限（字符）；None = 不截断
+    max_events_per_chapter: int | None = None,  # 每章事件数上限；None = 不限制
+    min_event_words: int | None = None,  # 单事件最小篇幅（字符，事件循环生效）；None = 沿用 direct_words_floor
     embedding=None,
     semantic_checker=None,
     # ---- 新增：质量保障开关 ----
@@ -884,6 +911,7 @@ def produce_chapter(
     chronic_reports: list = []
     review_blocks = 0       # 事件级审校 block 数（讨论第 7 轮）
     events_revised = 0      # 因 block 重写的事件数
+    events_capped = 0       # 每章事件数超限截掉的事件数（第二批·人工审查）
     lessons_added = 0       # 本轮沉淀的历史教训数
     try:
         if prefer_direct:
@@ -907,6 +935,12 @@ def produce_chapter(
                             + script_text)
 
             key_events = parse_key_events(gist_text_for_events) if event_loop else []
+            # 每章事件数上限（第二批·人工审查）：思考开销按次付，事件切太细单位成本
+            # 反而上升。超限只取前 N 个，多余事件记入 events_capped（告警可见）。
+            events_capped = 0
+            if key_events and max_events_per_chapter:
+                events_capped = max(0, len(key_events) - max_events_per_chapter)
+                key_events = key_events[:max_events_per_chapter]
             if key_events:
                 # 事件循环（第二批第 2 条）：按声明式 key_events 逐事件推进、逐事件回写。
                 # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
@@ -993,15 +1027,19 @@ def produce_chapter(
                             provider, system_prompt or "", goal,
                             _strip_expanded_tag(ev_text),
                             memories_ev, setting_lines, related, readback_text,
-                            generation_tokens, max_continuations, direct_words_floor)
+                            generation_tokens, max_continuations, direct_words_floor,
+                            content_tokens=content_tokens)
                         if beat_res is not None:
                             piece, beats_used = beat_res
 
                     if not beats_used:
                         piece = _generate_with_continuation(
                             provider, system_prompt or "", prompt, generation_tokens,
-                            max_continuations)
-                    if len(piece) < direct_words_floor:
+                            max_continuations, content_tokens=content_tokens)
+                    # 单事件最小篇幅（第二批·人工审查）：低于下限即失败重试，
+                    # 避免"草草两句话一个事件"稀释正文密度
+                    event_floor = max(direct_words_floor, min_event_words or 0)
+                    if len(piece) < event_floor:
                         raise RuntimeError(
                             f"event {idx}/{len(key_events)} too short ({len(piece)} chars)")
 
@@ -1025,7 +1063,8 @@ def produce_chapter(
                                 revised = _generate_with_continuation(
                                     provider, system_prompt or "",
                                     prompt + _REVISE_HINT.format(problems=problems),
-                                    generation_tokens, max_continuations)
+                                    generation_tokens, max_continuations,
+                                    content_tokens=content_tokens)
                                 if len(revised) >= direct_words_floor:
                                     piece = revised
                                     events_revised += 1
@@ -1073,7 +1112,7 @@ def produce_chapter(
                                      if last_problems else "")
                     final = _generate_with_continuation(
                         provider, system_prompt or "", prompt, generation_tokens,
-                        max_continuations)
+                        max_continuations, content_tokens=content_tokens)
                     if len(final) < direct_words_floor:
                         raise RuntimeError(f"direct generation too short ({len(final)} chars)")
                     comp = completeness(final)
@@ -1103,7 +1142,8 @@ def produce_chapter(
     except Exception as e:  # noqa: BLE001 - 循环/生成异常统一收敛为失败
         return ProductionResult(ok=False, result=str(e), mode=mode, bible_injected=bible_injected,
                                 attempts=attempts, completeness=comp,
-                                phase=getattr(phase, "value", phase), phase_reason=phase_reason)
+                                phase=getattr(phase, "value", phase), phase_reason=phase_reason,
+                                events_capped=events_capped)
 
     if not comp and final:
         comp = completeness(final)
@@ -1139,6 +1179,21 @@ def produce_chapter(
                     polish_res = None
         except Exception:  # noqa: BLE001 - 润色失败不阻断，保留原稿
             polish_res = None
+
+    # ---- 4.4) 篇幅硬上限（第七批·用户拍板）----
+    # 超限截断到段落边界（不在句中腰斩），止损膨胀失控（v5 ch16 曾 7890 字）；
+    # 截断标记进 result，CLI 可见。截断在 polish 之后——润色可能加长。
+    length_truncated = False
+    if length_cap_chars and final and mode == "direct":
+        capped = _truncate_to_boundary(final, length_cap_chars)
+        if len(capped) < len(final):
+            length_truncated = True
+            final = capped
+            if mode == "direct":
+                try:
+                    ws.write_text(draft, final + "\n")
+                except OSError:  # pragma: no cover
+                    pass
 
     # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
     # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
@@ -1221,4 +1276,5 @@ def produce_chapter(
                             lessons_added=lessons_added, jit_added=jit_added,
                             settings_added=settings_added,
                             entity_new=entity_new, entity_alerts=entity_alerts,
-                            phase=getattr(phase, "value", phase), phase_reason=phase_reason)
+                            phase=getattr(phase, "value", phase), phase_reason=phase_reason,
+                            length_truncated=length_truncated, events_capped=events_capped)
