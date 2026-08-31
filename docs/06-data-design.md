@@ -103,6 +103,7 @@ ch: 3
 title: 断玉
 pov: demo
 key_events: [接受试炼, 发现断玉佩, 卷入宗门内斗]
+出场人物: [赵铁山, 鬼面]        # 递归分层 A（JIT 补卡触发器）：生成前扫描缺卡并补全
 turns: [opening-hook, setup, conflict, cliffhanger]
 threads_involved: ["pt:V017"]
 ---
@@ -112,6 +113,12 @@ threads_involved: ["pt:V017"]
 - 冲突主线段落：……
 - 结尾悬念/钩子：……
 ```
+
+> 约定（递归分层，M3k）：
+> - `key_events` 是**声明式事件清单**，事件文本带 `[expanded]` 后缀 = 重场戏，
+>   递归拆 ≤3 拍逐拍生成（拍级带上一拍全文，失败回退事件级）；
+> - `出场人物:` 声明本章新出场人物——bible 缺卡时由 `_jit_characters` 在生成前
+>   LLM 补全（吸收前文实际发展，滚动设计；出场即建档，防造人红线）；
 
 ### 3.5 记忆层数据模型（ADR-011，事实演进·实然）
 

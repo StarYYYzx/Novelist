@@ -22,12 +22,32 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from novelist.consistency.reviewer import Reviewer  # noqa: E402
-from novelist.core.embedding import OpenAIEmbedding  # noqa: E402
+from novelist.core.embedding import OpenAIEmbedding, make_embedding  # noqa: E402
 from novelist.core.memory import MemoryIndex, MemoryQuery, MemoryRetriever, rollback_chapter  # noqa: E402
 from novelist.core.orchestrator import produce_chapter  # noqa: E402
 from novelist.core.session import SessionInfo  # noqa: E402
 from novelist.providers.lmstudio import LMStudioProvider  # noqa: E402
 from novelist.storage.workspace import Workspace  # noqa: E402
+
+
+def _make_embedding():
+    """语义 embedding 优先本地 nomic（LM-Studio 1234）；不可达退化为关键词模式。
+
+    云端只做 LLM（llama-server 无 embedding 能力），本地 LM-Studio 若已关闭，
+    检索走 keyword 兜底（MemoryRetriever/KnowledgeBase 均支持）。
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:1234/v1/models", timeout=3) as r:
+            if r.status == 200:
+                return OpenAIEmbedding(
+                    model="text-embedding-nomic-embed-text-v1.5",
+                    base_url="http://127.0.0.1:1234/v1", api_key="lmstudio")
+    except Exception:  # noqa: BLE001
+        pass
+    print("本地 embedding 不可达 → 关键词检索模式", flush=True)
+    return make_embedding("keyword-fallback")
 
 PID = "proj-yelan"
 CLOUD_BASE = "http://127.0.0.1:6006"          # 隧道本地端口（tunnel_autodl.py 常驻）
@@ -88,6 +108,9 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         event_loop=True, screenplay=heavyweight,
         polish=True, max_retries=1, commit_chapter_event=None,
         knowledge_llm=True, event_review=True,
+        # M3j/M3k（第七批）：事件级润色 + 回读 + 递归分层全开
+        event_polish=True, readback=True,
+        jit_characters=True, supplement_settings=True,
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:200], "secs": round(time.time() - t0)}
@@ -110,6 +133,8 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         "review_blocks": res.review_blocks,
         "events_revised": res.events_revised,
         "lessons_added": res.lessons_added,
+        "jit_added": res.jit_added,
+        "settings_added": res.settings_added,
     }
 
     draft = ws.draft_path(PID, 1, ch)
@@ -131,9 +156,7 @@ def main() -> None:
 
     provider = LMStudioProvider(base_url=CLOUD_BASE, model=CLOUD_MODEL,
                                 enable_thinking=False, timeout_s=600)
-    embedding = OpenAIEmbedding(
-        model="text-embedding-nomic-embed-text-v1.5",
-        base_url="http://127.0.0.1:1234/v1", api_key="lmstudio")
+    embedding = _make_embedding()
     tally = {"events": 0, "blocks": 0, "revised": 0, "truncated": 0, "polished": 0, "threads": 0}
 
     for ch in range(args.from_ch, args.from_ch + args.chapters):
