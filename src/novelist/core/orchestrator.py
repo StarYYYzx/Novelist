@@ -96,6 +96,73 @@ _SCRIPT_INSTRUCTION = ("""
 """)
 
 
+# 句末标点后可跟右引号/右括号（中文引号 ” 常出现在句中，不能单独当切分点）
+_SENT_RE = re.compile(r"[^。！？…]*[。！？…][”\"）】]*")
+
+
+def _ngram_sim(a: str, b: str, n: int = 3) -> float:
+    """`a` 的字符 n-gram 被 `b` 覆盖的比例（不对称）。
+
+    **不用 Jaccard**：与长文本（上文接缝）比较时会被稀释——实测一句 54 字的复述
+    对比 250 字上文，Jaccard 仅 0.16（上文大量无关 3-gram 撑大了并集），判不出重复。
+    覆盖率（|A∩B| / |A|）才是"这句话有多少内容已在上文出现过"的正确度量。
+    """
+    if not a or not b:
+        return 0.0
+    A = {a[i:i + n] for i in range(len(a) - n + 1)}
+    B = {b[i:i + n] for i in range(len(b) - n + 1)}
+    if not A or not B:
+        return 0.0
+    return len(A & B) / len(A)
+
+
+def strip_seam_overlap(prev: str, piece: str, window: int = 900,
+                       sim: float = 0.70, scan_sents: int = 12,
+                       min_sent: int = 12) -> str:
+    """去掉 `piece` 开头与 `prev` 尾部重复的片段（确定性去重）。
+
+    **根因**：小模型拿到接缝上下文后，习惯性先把接缝**复述一遍**再续写
+    ——实测 v5 ch1 事件 1 结尾与事件 2 开头重复整段（对白字符串完全一致），
+    跨 v2→v5 一直存在（此前误记为"剧本草稿重复"）。prompt 里写了"不要重复"
+    对 9B 无效，只能做确定性去重。
+
+    策略：只扫描开头的 `scan_sents` 句，删掉与上文尾部重复（精确包含或
+    n-gram 相似 ≥ sim）的句子；**不要求连续**——实测重复常与新增信息交错
+    （第 1 句纯复述、第 2 句含新信息、第 3 句又复述）。
+    兜底：去重后过短（<30 字）保留原文。
+    """
+    prev = (prev or "").strip()
+    piece = (piece or "").strip()
+    if not prev or not piece:
+        return piece
+    tail = prev[-window:]
+    sents = [m.group(0) for m in _SENT_RE.finditer(piece) if m.group(0).strip()]
+    rest_start = sum(len(s) for s in sents)
+    tail_part = piece[rest_start:]
+    if tail_part.strip():
+        sents.append(tail_part)  # 末尾半句（未以句末标点结束）
+    if not sents:
+        return piece
+    kept, dropped = [], 0
+    for i, s in enumerate(sents):
+        s_strip = s.strip()
+        # 只扫描开头若干句，其后内容一律保留（防误删正文）
+        if i < scan_sents and dropped < scan_sents and len(s_strip) >= min_sent:
+            dup = (s_strip in tail) or (_ngram_sim(s_strip, tail) >= sim)
+            if not dup and i == 0 and len(s_strip) >= 12:
+                dup = s_strip[:12] in tail  # 首句可能是半句（无句末标点）
+            if dup:
+                dropped += 1
+                continue
+        kept.append(s)
+    out = "".join(kept).strip()
+    # 兜底：去重后过短（空/仅残片）→ 保留原文。**不用删除比例**——高复述片段
+    # （实测 v5 ch1 事件 2 开头 80% 是复述）删掉 70% 恰恰是正确结果，按比例兜底会误拦。
+    if len(out) < 30:
+        return piece
+    return out
+
+
 def _generate_with_continuation(provider, system_prompt: str, prompt: str,
                                 budget: int, max_continuations: int) -> str:
     """生成一次；若被 length 截断则**续写**而不是整章重来（第二批第 1 条·第 2 层修复）。
@@ -125,7 +192,8 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
         piece = (res.content or "").strip()
         if not piece:
             break
-        text = text.rstrip() + piece
+        # 续写同样会把已写部分复述一遍（同根因）——确定性去重后再拼接
+        text = text.rstrip() + strip_seam_overlap(text, piece)
     return text
 
 
@@ -331,6 +399,9 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                 generation_tokens, max_continuations)
             if len(piece) < direct_words_floor:
                 return None  # 单拍失败 → 回退事件级
+            # 拍级拼接同样要去掉复述（拍级上下文是上一拍全文，复述风险更高）
+            if pieces:
+                piece = strip_seam_overlap(pieces[-1], piece)
             pieces.append(piece)
         return "\n".join(pieces), len(beats)
     except Exception:  # noqa: BLE001
@@ -903,6 +974,9 @@ def produce_chapter(
                         except Exception:  # noqa: BLE001 - 润色失败保留原文
                             pass
 
+                    # 事件拼接去重：模型常把接缝复述一遍（跨 v2→v5 老 bug）
+                    if pieces:
+                        piece = strip_seam_overlap(pieces[-1], piece)
                     pieces.append(piece)
                     attempts += 1
                     # 逐事件回写（ADR-013）；失败不阻断，交由章级兜底

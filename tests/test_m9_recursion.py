@@ -285,3 +285,46 @@ def test_produce_chapter_with_recursion_switches(tmp_path):
     assert res.ok, res.result
     final = ws.draft_path(pid, 1, 2).read_text(encoding="utf-8")
     assert "赵铁山" in final
+
+
+# ---------------------------------------------------------------- 接缝复述去重（v5 ch1 实测 bug）
+
+def test_strip_seam_overlap_removes_repetition():
+    """接缝复述去重：模型把接缝复述一遍再续写（跨 v2→v5 老 bug）。"""
+    from novelist.core.orchestrator import strip_seam_overlap
+
+    prev = ("就在这时，门外传来粗重的脚步声。几个杂役弟子压低声音交谈："
+            "“听说内门那位云师姐今日路过柴房附近，陈师兄可是专门去‘拜访’了。”\n\n"
+            "叶岚瞳孔微缩。现在还不能暴露自己已经觉醒系统的事实。"
+            "他深吸一口气，将悸压了下去。")
+    piece = ("“听说内门那位云师姐今日路过柴房附近，陈师兄可是专门去‘拜访’了。”\n\n"
+             "叶岚瞳孔微缩。云清瑶站在柴房门口，周身灵气凝而不散。\n\n"
+             "不过现在，他还不能暴露自己已经觉醒系统的事实。他推门而出。")
+    out = strip_seam_overlap(prev, piece)
+    # 纯重复对白被删；新信息保留
+    assert "师兄可是专门去" not in out
+    assert "柴房门口" in out
+    assert "不能暴露自己已经觉醒" not in out  # 复述句（prev 有同义句）被删
+    assert "推门而出" in out  # 新内容保留
+
+
+def test_strip_seam_overlap_keeps_normal_text():
+    """无重复的正常续写不受影响（防误删）。"""
+    from novelist.core.orchestrator import strip_seam_overlap
+
+    prev = "叶岚在柴房里打坐，窗外的月光渐渐西斜。"
+    piece = "他推门而出，院子里月光如水。远处的藏经阁灯火通明，似乎今夜有人值守。"
+    out = strip_seam_overlap(prev, piece)
+    assert "藏经阁" in out and "推门而出" in out
+    assert len(out) >= len(piece.strip()) * 0.8
+
+
+def test_ngram_sim_coverage_not_jaccard():
+    """覆盖率而非 Jaccard：短句对比长上文不被稀释。"""
+    from novelist.core.orchestrator import _ngram_sim
+
+    sent = "不过现在，他还不能暴露自己已经觉醒系统的事实。"
+    long_prev = "叶岚瞳孔微缩。" * 5 + "现在还不能暴露自己已经觉醒系统的事实。" + "他深吸一口气。" * 5
+    assert _ngram_sim(sent, long_prev) > 0.6  # 覆盖率高
+    unrelated = "窗外下起了大雨，雨点敲打着屋檐。"
+    assert _ngram_sim(unrelated, long_prev) < 0.2
