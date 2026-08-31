@@ -174,10 +174,19 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="按细纲 key_events 逐事件生成、逐事件回写（ADR-013 落地，第二批第 2 条）")
 @click.option("--screenplay", is_flag=True, default=False,
               help="重场戏：先剧本体写对白交锋，再叙事化成小说（第三批第 2 条·档 2，两遍生成）")
+@click.option("--readback", is_flag=True, default=False,
+              help="回读机制：生成前注入前 1 章正文原文（第七批第 4 条）")
+@click.option("--event-polish", is_flag=True, default=False,
+              help="事件级润色：每事件写完即润色，源头统一风格（第七批第 2 条）")
+@click.option("--supplement-settings", is_flag=True, default=False,
+              help="世界观滚动补充：事件新名词补 settings 条目（第七批第 5 条·递归分层 B）")
+@click.option("--no-jit", is_flag=True, default=False,
+              help="关闭人物 JIT 补卡（默认开启，第七批第 5 条·递归分层 A）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
             policy: str | None, gen_tokens: int | None, polish: bool, no_bible: bool,
-            event_loop: bool, screenplay: bool) -> None:
+            event_loop: bool, screenplay: bool, readback: bool, event_polish: bool,
+            supplement_settings: bool, no_jit: bool) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
@@ -221,7 +230,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
                           generation_tokens=gen_tokens, embedding=emb,
                           inject_bible=not no_bible, memories=memories or None, polish=polish,
-                          event_loop=event_loop, screenplay=screenplay)
+                          event_loop=event_loop, screenplay=screenplay,
+                          readback=readback, event_polish=event_polish,
+                          supplement_settings=supplement_settings, jit_characters=not no_jit)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "

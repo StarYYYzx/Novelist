@@ -56,7 +56,14 @@ _SUB_ORDER = {"初期": 1, "中期": 2, "后期": 3, "大圆满": 4, "巅峰": 5
 # 状态行里的占位词——LLM 常输出「修为：无变化」「受伤：无」表示"没有变更"，
 # 必须当作 NO-OP 跳过，否则会把真实状态覆盖成占位词（实测林峯修为被写成"无变化"）。
 NOOP_VALUES = {"无", "无变化", "未变", "不变", "无碍", "无伤", "没变", "同上",
-               "-", "—", "/", "~", "暂无", "无异常"}
+               "-", "—", "/", "~", "暂无", "无异常",
+               # 绑定流噪声（v5 实测 P0-2）：这些不是状态变化，是编纂抽的机制词
+               "借用", "被封锁", "封锁", "恢复", "解放", "解绑", "同步中", "激活"}
+
+# 能力/抽象词后缀（v5 实测 P0-2）：「系统绑定权/云清瑶力量/警告信息」是能力不是物品。
+# items_add 命中这些后缀（且不在注册表规范名里）→ 丢弃。
+_CAPABILITY_SUFFIXES = ("力量", "能力", "权", "权限", "警告", "信息", "提示",
+                        "关注", "气息", "感应", "状态", "权限", "使用权")
 
 
 def parse_realm(realm: str, levels: list[str]) -> tuple[int, int] | None:
@@ -171,6 +178,10 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
                 # 抽象词过滤：未注册且过长的词多是编纂噪声（实测「缚灵司巡查员关注」），
                 # 具象物品名通常较短（丹/符/石/玉/书/卡…）；宁丢勿污染
                 if it not in registry.all_entries_name() and len(it) > 6:
+                    continue
+                # 能力/抽象词过滤（v5 实测 P0-2）：「系统绑定权/云清瑶力量」是能力不是物品
+                if it not in registry.all_entries_name() and \
+                        any(it.endswith(sfx) for sfx in _CAPABILITY_SUFFIXES):
                     continue
                 if it not in cur["items"]:
                     cur["items"].append(it)

@@ -168,17 +168,211 @@ def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: in
     return out[:max_items]
 
 
+# ---------------------------------------------------------------- 递归分层 B：世界观滚动补充
+
+def _known_setting_terms(ws, project_id: str) -> set[str]:
+    """已知设定名词集合（人物名/别名/地名/设定条目关键词/注册表规范名）。"""
+    terms: set[str] = set()
+    try:
+        import json as _json
+
+        def _load(rel: str):
+            p = ws._abs(f"{project_id}/bible/{rel}")
+            return _json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+        for c in (_load("characters.json") or []):
+            if isinstance(c, dict):
+                if c.get("name"):
+                    terms.add(str(c["name"]))
+                for a in (c.get("aliases") or []):
+                    terms.add(str(a))
+        for loc in (_load("locations.json") or []):
+            if isinstance(loc, dict) and loc.get("name"):
+                terms.add(str(loc["name"]))
+        for s in (_load("settings.json") or []):
+            if isinstance(s, dict):
+                for kw in (s.get("keywords") or []):
+                    terms.add(str(kw))
+                if s.get("term"):
+                    terms.add(str(s["term"]))
+        from .registry import Registry
+
+        for e in Registry.load(ws, project_id).all_entries():
+            terms.add(e.name)
+    except Exception:  # noqa: BLE001
+        pass
+    return terms
+
+
+def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
+    """世界观滚动补充（递归分层 B）：事件文本中出现的新专有名词 → LLM 补 settings 条目。
+
+    与首次交代状态机互补：状态机管"已建条目何时交代"，这里管"条目本身何时补全"。
+    失败静默返回 0。
+    """
+    if provider is None or not ev_text.strip():
+        return 0
+    try:
+        import json as _json
+
+        known = _known_setting_terms(ws, project_id)
+        known_block = "、".join(sorted(known)[:120]) if known else "（无）"
+        prompt = (
+            f"你是设定编辑。下面是一段正文节选，其中可能提到**此前从未出现过的专有名词**"
+            f"（地点/组织/功法/种族/规则/势力等需要读者理解的设定）。\n"
+            f"已知设定（不要提取这些）：{known_block}\n\n"
+            f"正文：{ev_text[-800:]}\n\n"
+            f"输出 JSON 数组，每项：{{\"term\": \"新名词\", \"text\": \"一句话设定说明（30字内）\", "
+            f"\"keywords\": [\"检索用关键词1\", \"关键词2\"]}}\n"
+            f"只输出真正的新设定名词，最多 3 条，没有就输出 []。只输出 JSON。"
+        )
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="user", content=prompt)],
+            max_tokens_out=400, temperature=0.3, response_format="json_object"))
+        if res.blocked or not (res.content or "").strip():
+            return 0
+        data = _json.loads(res.content.strip())
+        if not isinstance(data, list):
+            return 0
+        path = ws._abs(f"{project_id}/bible/settings.json")
+        entries = _json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        n = 0
+        for item in data:
+            if not isinstance(item, dict) or not item.get("term"):
+                continue
+            term = str(item["term"]).strip()
+            if not term or term in known or any(e.get("term") == term for e in entries):
+                continue
+            entries.append({
+                "id": f"setting:jit{len(entries) + 1}",
+                "term": term,
+                "text": str(item.get("text") or f"关于{term}的设定")[:80],
+                "keywords": [str(k) for k in (item.get("keywords") or []) if k][:4],
+                "revealed": False,
+            })
+            n += 1
+        if n:
+            path.write_text(_json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        return n
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+# ---------------------------------------------------------------- 递归分层 C：重场戏拍展开
+
+_EXPANDED_TAG = re.compile(r"\s*\[expanded\]\s*$")
+
+
+def is_expanded_event(ev_text: str) -> bool:
+    """细纲事件文本带 `[expanded]` 后缀 → 重场戏，递归拆拍（递归分层 C）。"""
+    return bool(_EXPANDED_TAG.search(ev_text or ""))
+
+
+def _strip_expanded_tag(ev_text: str) -> str:
+    return _EXPANDED_TAG.sub("", ev_text or "").strip()
+
+
+def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
+                    memories: list[str], setting_lines: list[str], related: dict,
+                    readback_text: str, generation_tokens: int,
+                    max_continuations: int, direct_words_floor: int) -> tuple[str, int] | None:
+    """重场戏拍展开（递归分层 C）：事件 → ≤3 拍逐拍生成。
+
+    拍级生成带上一拍全文 + 前情摘要（非截断接缝——同一场景的连续动作）。
+    任何拍失败返回 None（调用方回退事件级文本）。返回 (拼好的正文, 拍数)。
+    """
+    try:
+        plan_prompt = (
+            f"{goal}\n\n【重场戏拆解】事件「{_strip_expanded_tag(ev_text)}」需要拆成 2–3 个"
+            f"连续拍（beat）来写厚，每拍一句话（15–40 字），覆盖：前奏 → 交锋/推进 → 收束。\n"
+            f"只输出拍清单，每行一个，格式「N. 拍内容」。不要输出其他内容。"
+        )
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="system", content=system_prompt or ""),
+                      LLMMessage(role="user", content=plan_prompt)],
+            max_tokens_out=200, temperature=0.4))
+        if res.blocked or not (res.content or "").strip():
+            return None
+        beats = []
+        for ln in res.content.splitlines():
+            ln = ln.strip().lstrip("-•*").strip()
+            m = re.match(r"^(\d+)[.、)．]\s*(.+)$", ln)
+            beats.append((m.group(2) if m else ln).strip())
+        beats = [b for b in beats if b and len(b) <= 60][:3]
+        if len(beats) < 2:
+            return None  # 拆解失败 → 回退事件级
+
+        pieces: list[str] = []
+        for bi, btext in enumerate(beats, 1):
+            parts = [f"{goal}", "",
+                     f"【重场戏·拍 {bi}/{len(beats)}】{btext}"]
+            if readback_text and bi == 1:
+                parts += ["", readback_text]
+            if pieces:
+                # 拍级上下文：上一拍**全文**（非截断接缝）——同一场景的连续动作
+                parts += ["", "【上一拍全文】（自然续写，不重复）：",
+                          "…" + pieces[-1][-1500:]]
+            if memories:
+                parts += ["", "【相关前情】：", *memories]
+            if setting_lines and bi == 1:
+                parts += ["", "【本事件首次出现的设定】（自然带出）：", *setting_lines]
+            if related:
+                for k, lines in related.items():
+                    if lines:
+                        parts += ["", f"【相关{k}】", *lines[:4]]
+            parts += ["", "篇幅约 150–300 字。"
+                          + ("这是最后一个拍，须把该事件完整收束。" if bi == len(beats)
+                             else "写到本拍结束即停，不要提前写下一拍内容。")]
+            piece = _generate_with_continuation(
+                provider, system_prompt or "", "\n".join(parts),
+                generation_tokens, max_continuations)
+            if len(piece) < direct_words_floor:
+                return None  # 单拍失败 → 回退事件级
+            pieces.append(piece)
+        return "\n".join(pieces), len(beats)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prior_chapter_text(ws, project_id: str, vol: int, ch: int, max_chars: int = 1200) -> str:
+    """回读机制（第七批第 4 条·用户拍板）：取前 1 章正文**原文**尾部（非摘要）。
+
+    记忆摘要会丢细节（"赵铁山被问话时手抖了一下"这类伏笔级细节），
+    回读原文补上；与最近章记忆回退互补——原文给细节、摘要给跨章语义。
+    """
+    try:
+        prev_ch = ch - 1
+        if prev_ch < 1:
+            return ""
+        for base in (ws.chapter_path, ws.draft_path):
+            p = base(project_id, vol, prev_ch)
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8").strip()
+            if not text:
+                return ""
+            if len(text) > max_chars:
+                text = "…（前章节选）\n" + text[-max_chars:]
+            return f"【上一章正文】（回读原文，延续其细节与节奏；不要重复已写内容）：\n{text}"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piece: str,
                 seam_chars: int, memories: list[str], is_last: bool,
                 setting_lines: list[str] | None = None,
-                related: dict | None = None) -> str:
+                related: dict | None = None,
+                readback_text: str = "") -> str:
     """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆 + 待交代设定 + RAG 知识）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）——
     {"character": [...], "setting": [...], "thread": [...], "lesson": [...], "faction": [...]}
+    `readback_text`：前章正文原文（回读机制），只在第一个事件注入。
     """
     parts = [f"{chapter_goal}", "",
              f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
+    if readback_text and idx == 1:
+        parts += ["", readback_text]
     if prev_piece:
         parts += ["", f"【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
                   "…" + prev_piece[-seam_chars:]]
@@ -243,6 +437,131 @@ def _make_reviewer(ws, project_id: str, provider):
         return Reviewer(ws, project_id, llm=provider)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _style_tone(ws, project_id: str) -> str | None:
+    """读 style.json 的 tone（语言风格 skill，第七批第 2 条）；无则 None。"""
+    try:
+        import json
+
+        p = ws._abs(f"{project_id}/bible/style.json")
+        if not p.exists():
+            return None
+        st = json.loads(p.read_text(encoding="utf-8"))
+        tone = st.get("tone") if isinstance(st, dict) else None
+        return tone if isinstance(tone, str) and tone else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ---------------------------------------------------------------- 递归分层 A：人物 JIT 补卡
+
+def parse_cast_decl(gist_text: str) -> list[str]:
+    """解析细纲 front-matter 的出场人物声明（递归分层 A 的确定性触发信号）。
+
+    格式：`出场人物: [名字, 名字]` 或 `cast: [名字, 名字]`。
+    细纲声明了谁出场，生成前就补谁的卡——出场即建档，防造人红线。
+    """
+    m = re.search(r"^(?:出场人物|cast):\s*\[(.*)\]\s*$", gist_text or "", re.M)
+    if not m:
+        return []
+    out = []
+    for piece in m.group(1).split(","):
+        piece = piece.strip().strip("'\"").strip()
+        if piece:
+            out.append(piece)
+    return out
+
+
+def _jit_characters(ws, project_id: str, vol: int, ch: int, gist_text: str, provider):
+    """人物 JIT 补卡（递归分层 A）：细纲声明出场但 bible 缺卡 → LLM 补全并写入。
+
+    - 补卡吸收前文实际发展（arc 基于已有事件滚动，而非 setup 时预测）；
+    - 补卡走 schema（id/name/status/gender/power/arc/first_appear…）；
+    - 失败静默返回 0（不阻断生成）。
+    """
+    names = parse_cast_decl(gist_text)
+    if not names or provider is None:
+        return 0
+    try:
+        import json as _json
+
+        chars_path = ws._abs(f"{project_id}/bible/characters.json")
+        chars = []
+        if chars_path.exists():
+            chars = _json.loads(chars_path.read_text(encoding="utf-8")) or []
+        existing = set()
+        for c in chars if isinstance(chars, list) else []:
+            if isinstance(c, dict) and c.get("name"):
+                existing.add(str(c["name"]))
+                for a in (c.get("aliases") or []):
+                    existing.add(str(a))
+        missing = [n for n in names if n not in existing]
+        if not missing:
+            return 0
+
+        # 前情摘要：让补卡吸收前文实际发展（滚动设计）
+        recall = _recall_for(ws, project_id, "，".join(missing), None, top_k=3)
+        recall_block = "\n".join(recall) if recall else "（无前情记录，人物首秀）"
+        prompt = (
+            f"你是人物设定师。为下面的角色补全人物卡（他们将在第 {vol} 卷第 {ch} 章首次出场）："
+            f"【{'、'.join(missing)}】\n"
+            f"前情（已发生的事件，人物卡须与之不冲突）：\n{recall_block}\n\n"
+            f"输出 JSON 数组，每个元素一张人物卡，字段：\n"
+            f'{{"name": "角色名", "gender": "male|female|unknown", "age": 数字或null, '
+            f'"species": "种族（如人族/妖族）", "core_traits": ["性格1","性格2"], '
+            f'"power": {{"level": "境界或实力", "faction": "阵营"}}, '
+            f'"arc": "一句话人物弧线（基于前情，可滚动）", '
+            f'"first_appear": {{"vol": {vol}, "ch": {ch}}}, '
+            f'"status": "active", "aliases": []}}\n'
+            f"只输出 JSON 数组，不要解释。"
+        )
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="user", content=prompt)],
+            max_tokens_out=800, temperature=0.5, response_format="json_object"))
+        if res.blocked or not (res.content or "").strip():
+            return 0
+        data = _json.loads(res.content.strip())
+        if not isinstance(data, list):
+            data = [data]
+        n = 0
+        for card in data:
+            if not isinstance(card, dict) or not card.get("name"):
+                continue
+            if str(card["name"]) in existing:
+                continue
+            cid = f"char:jit{len(chars) + n + 1}"
+            new_card = {
+                "id": cid,
+                "name": str(card["name"]),
+                "aliases": [str(a) for a in (card.get("aliases") or [])],
+                "gender": card.get("gender") if card.get("gender") in ("male", "female") else "unknown",
+                "species": str(card.get("species") or "人族"),
+                "age": card.get("age"),
+                "core_traits": [str(x) for x in (card.get("core_traits") or [])][:5],
+                "power": {"level": str(card.get("power", {}).get("level") or ""),
+                          "faction": str(card.get("power", {}).get("faction") or "")},
+                "arc": str(card.get("arc") or ""),
+                "first_appear": {"vol": vol, "ch": ch},
+                "status": "active",
+                "relationships": [],
+            }
+            chars.append(new_card)
+            existing.add(str(card["name"]))
+            n += 1
+        if n:
+            chars_path.write_text(_json.dumps(chars, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+            # 新人物进 worldstate（init_from_bible 不覆盖已有状态）
+            try:
+                from .worldstate import init_from_bible
+
+                init_from_bible(ws, project_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return n
+    except Exception:  # noqa: BLE001 - 补卡失败不阻断生成
+        return 0
 
 
 _LESSONS_MAX = 30  # review_lessons.json 上限，防无限膨胀
@@ -382,7 +701,11 @@ def produce_chapter(
     max_continuations: int = 2,
     settings=None,
     event_review: bool = True,   # 每事件审校+修订（讨论第 7 轮）；仅事件循环生效
+    event_polish: bool = False,  # 每事件润色（第七批·用户拍板）；仅事件循环生效
     knowledge_llm: bool = True,  # RAG LLM 查询生成（讨论第 8 轮·用户设想）；False 退化为事件文本检索
+    readback: bool = False,      # 回读机制（第七批第 4 条·用户拍板）：前 1 章正文原文注入
+    jit_characters: bool = True,     # 递归分层 A：人物 JIT 补卡（第七批·用户拍板）
+    supplement_settings: bool = False,  # 递归分层 B：世界观滚动补充（第七批·用户拍板）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -402,6 +725,21 @@ def produce_chapter(
 
     # ---- 1) 圣经注入（B-02）----
     bible_injected = False
+    # 声明式事件清单（第二批第 2 条）：key_events 写在细纲 front-matter，生成期直接迭代
+    # （提前读取——JIT 补卡与事件循环都要用细纲文本）
+    gist_text_for_events = ""
+    try:
+        _gist_p = ws.outline_chapter_path(project_id, vol, ch)
+        if _gist_p.exists():
+            gist_text_for_events = _gist_p.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        gist_text_for_events = ""
+
+    # 递归分层 A（第七批第 5 条·用户拍板）：人物 JIT 补卡——细纲声明出场但 bible 缺卡，
+    # 生成前先补全（出场即建档，防造人红线）。补卡吸收前文实际发展（滚动设计）。
+    jit_added = 0
+    if jit_characters:
+        jit_added = _jit_characters(ws, project_id, vol, ch, gist_text_for_events, provider)
     if system_prompt is None and final_goal is None and inject_bible:
         try:
             # 历史教训（讨论第 7 轮）：此前审校 block 沉淀的纪律，随圣经注入
@@ -419,15 +757,6 @@ def produce_chapter(
         goal = f"{goal_prefix}：第 {vol} 卷第 {ch} 章（project={project_id}）"
     else:
         goal = final_goal
-
-    # 声明式事件清单（第二批第 2 条）：key_events 写在细纲 front-matter，生成期直接迭代
-    gist_text_for_events = ""
-    try:
-        _gist_p = ws.outline_chapter_path(project_id, vol, ch)
-        if _gist_p.exists():
-            gist_text_for_events = _gist_p.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        gist_text_for_events = ""
 
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
@@ -469,6 +798,8 @@ def produce_chapter(
                 # 知识检索层（讨论第 8 轮 RAG）：每章构建一次（语义向量化秒级），
                 # 每事件按 LLM 生成的查询 + 事件文本检索相关知识注入
                 knowledge = _make_knowledge(ws, project_id, embedding)
+                readback_text = (_prior_chapter_text(ws, project_id, vol, ch)
+                                 if readback else "")
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
                     memories_ev = _recall_for(ws, project_id, ev_text, embedding)
@@ -494,10 +825,33 @@ def produce_chapter(
                                    if knowledge.lines(items, k, vol=vol, ch=ch)}
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
-                                         memories_ev, is_last, setting_lines, related)
-                    piece = _generate_with_continuation(
-                        provider, system_prompt or "", prompt, generation_tokens,
-                        max_continuations)
+                                         memories_ev, is_last, setting_lines, related,
+                                         readback_text)
+
+                    # 递归分层 B（第七批第 5 条·用户拍板）：世界观滚动补充——
+                    # 事件文本出现新专有名词 → LLM 补 settings 条目（后续事件可命中）。
+                    if supplement_settings:
+                        try:
+                            _supplement_settings(ws, project_id, ev_text, provider)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    # 递归分层 C（第七批第 5 条·用户拍板）：重场戏拍展开——
+                    # 细纲事件标 [expanded] → 拆 ≤3 拍逐拍生成；任何拍失败回退事件级。
+                    beats_used = 0
+                    if is_expanded_event(ev_text):
+                        beat_res = _generate_beats(
+                            provider, system_prompt or "", goal,
+                            _strip_expanded_tag(ev_text),
+                            memories_ev, setting_lines, related, readback_text,
+                            generation_tokens, max_continuations, direct_words_floor)
+                        if beat_res is not None:
+                            piece, beats_used = beat_res
+
+                    if not beats_used:
+                        piece = _generate_with_continuation(
+                            provider, system_prompt or "", prompt, generation_tokens,
+                            max_continuations)
                     if len(piece) < direct_words_floor:
                         raise RuntimeError(
                             f"event {idx}/{len(key_events)} too short ({len(piece)} chars)")
@@ -527,6 +881,22 @@ def produce_chapter(
                                     piece = revised
                                     events_revised += 1
                                 lessons_added += _append_lessons(ws, project_id, blocks, vol, ch)
+
+                    # 事件级润色（人工审查第七批第 2 条·用户拍板）：写完即润色，
+                    # 润色后的文本进接缝和记忆——后续事件继承润色风格，源头统一。
+                    if event_polish:
+                        from .polish import polish_chapter
+
+                        try:
+                            pr = polish_chapter(
+                                piece, provider,
+                                tone=_style_tone(ws, project_id),
+                                max_tokens=min(1500, max(generation_tokens * 2, 800)),
+                                is_chapter=False)
+                            if pr.changed:
+                                piece = pr.text
+                        except Exception:  # noqa: BLE001 - 润色失败保留原文
+                            pass
 
                     pieces.append(piece)
                     attempts += 1
@@ -600,11 +970,13 @@ def produce_chapter(
         except OSError:  # pragma: no cover
             comp = {}
 
-    # ---- 4) 文风润色（成章后额外一次 LLM 调用）----
+    # ---- 4) 文风润色（成章后额外一次 LLM 调用；tone 驱动，第七批第 2 条）----
     polish_res = None
     if polish and mode == "direct":
         try:
-            polish_res = polish_chapter(final, provider, vol=vol, ch=ch)
+            polish_res = polish_chapter(final, provider, vol=vol, ch=ch,
+                                        tone=_style_tone(ws, project_id),
+                                        is_chapter=True)
             if polish_res.changed:
                 final = polish_res.text
                 try:

@@ -79,13 +79,26 @@ def _modern_words(ws: Workspace, project_id: str) -> tuple[str, ...]:
     return MODERN_WORDS
 
 
+def _modern_words_exempt(ws: Workspace, project_id: str) -> tuple[str, ...]:
+    """现代词豁免表（v5 实测 P1-1）：穿越文里「前世作为程序员的直觉」语境合理。
+
+    命中豁免词的现代词不再告警；worldview.json 的 `modern_words_exempt` 声明。
+    """
+    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    if isinstance(wv, dict) and isinstance(wv.get("modern_words_exempt"), list):
+        return tuple(str(x) for x in wv["modern_words_exempt"])
+    return ()
+
+
 def _lexicon_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     """R-LEX：正文用词纪律（现代词 / 西方典故 / style.json 禁用词）。"""
     alerts: list[RuleAlert] = []
     banned = _banned_words(ws, project_id)
     modern = _modern_words(ws, project_id)
+    exempt = _modern_words_exempt(ws, project_id)
+    modern_active = [w for w in modern if w not in exempt]
     for name, text in _iter_chapters(ws, project_id):
-        for w in modern:
+        for w in modern_active:
             if w in text:
                 i = text.index(w)
                 alerts.append(RuleAlert(
@@ -269,6 +282,12 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
                 continue
             parsed = parse_realm(str(new_realm), [str(x) for x in levels])
             if parsed is None:
+                continue
+            # 绑定流豁免（v5 实测 P0-1）：realm 含「借用/同步/临时/绑定」等标记时，
+            # 修为是临时借用而非自身境界——跳过单调性比较，且不更新基线
+            # （否则绑定值被当成真实修为，解绑回落会被误报成倒退）。
+            realm_str = str(new_realm)
+            if any(mark in realm_str for mark in ("借用", "同步", "临时", "绑定", "附体", "借调")):
                 continue
             if prev is not None:
                 # 倒退判定要区分「大境界」与「细分」：

@@ -141,15 +141,53 @@ class PolishResult:
         return round(self.after.score - self.before.score, 2)
 
 
-POLISH_RULES = """你要改写下面这一章的**文风**，让它读起来像人写的，而不是大模型生成的。
+# 语言风格模板（人工审查第七批第 2 条：风格 skill）——style.json.tone 指定，
+# 润色 prompt 的【要达到的效果】段据此生成。首版四套，至少覆盖严谨冷肃/诙谐幽默。
+TONE_TEMPLATES: dict[str, str] = {
+    "严谨冷肃": (
+        "【要达到的风格：严谨冷肃】\n"
+        "- 句式短促克制，多用陈述句与冷峻动作，少抒情\n"
+        "- 情绪藏在动作与细节里，不直接写「他感到恐惧/愤怒」\n"
+        "- 修辞克制：一个比喻句顶一个画面，杜绝排比堆砌\n"
+        "- 对话简练，符合人物的身份与城府，不留废话\n"
+        "- 节奏以顿挫为主：句号多、逗号少，段落短而密"
+    ),
+    "诙谐幽默": (
+        "【要达到的风格：诙谐幽默】\n"
+        "- 节奏轻快，允许口语化表达与适度的自我调侃\n"
+        "- 用反差制造笑点：正经场景里插入一句不合时宜的内心吐槽\n"
+        "- 比喻可俏皮，但必须落在画面里，不落俗套\n"
+        "- 对话鲜活，允许俏皮话、双关与语气词，但符合人物性格\n"
+        "- 收尾常带余味：一个机锋、一个反转，或一句淡去的玩笑"
+    ),
+    "热血激昂": (
+        "【要达到的风格：热血激昂】\n"
+        "- 节奏递进：短句起势，关键处允许长句如浪潮推高\n"
+        "- 情绪外放但克制口号腔：用行动与对白的热度代替形容词\n"
+        "- 对白有力，关键时刻句子斩钉截铁，喊得出声\n"
+        "- 允许必要的排比与顿挫，但只用在情感最高点\n"
+        "- 结尾常有上扬的余韵：不是总结，是下一场战斗的号角"
+    ),
+    "温柔细腻": (
+        "【要达到的风格：温柔细腻】\n"
+        "- 节奏舒缓，句与句之间留有余白\n"
+        "- 感官细节优先：光、气味、触感、温度，用细微之物托住情绪\n"
+        "- 情绪隐而不发：写到七分，留三分给读者\n"
+        "- 对白含蓄，字少情多，留白胜过直白\n"
+        "- 结尾常落在静物或远景上，余韵绵长"
+    ),
+}
+
+
+POLISH_RULES = """你要改写下面这一段的**文风**，让它读起来像人写的，而不是大模型生成的。
 
 【绝对不能改的】
 - 情节、事件顺序、人物行为动机：一个字都不能改
 - 对白内容：可微调语气词，但不得改变意思
-- 章节标题（第一行）：原样保留
 - 出场人物姓名与称谓：不得增删人物
+- 章节标题（若有，第一行）：原样保留
 
-【必须消除的 AI 腔调】(括号内是本章实测命中次数)
+【必须消除的 AI 腔调】(括号内是本段实测命中次数)
 - 「不是…而是…」式对比排比（{n_对比排比}）
 - 「仿佛 / 似乎 / 宛如」这类模糊比喻（{n_模糊比喻}）
 - 「X 如 Y」式比喻模板，如"锐利如刀""深邃如渊"（{n_如字模板}）
@@ -164,17 +202,28 @@ POLISH_RULES = """你要改写下面这一章的**文风**，让它读起来像�
 - 段落长短不均：允许出现单句成段，也允许出现较长段落（当前段落长度标准差 {stdev} 字，目标 > 30）
 - 多用具体动作、名词、对白推进，少用形容词与心理旁白
 - 该省略就省略，不要解释清楚每一个因果
-- 保留原文的冷峻节奏
-
-【输出】只输出改写后的完整正文，第一行是章节标题。不要写任何说明、注释或前后对比。
+{tone_block}
+【输出】只输出改写后的完整正文{heading_tail}。不要写任何说明、注释或前后对比。
 """
 
 
-def build_polish_prompt(text: str, metrics: StyleMetrics | None = None) -> str:
-    """装配润色 prompt：把本章实测到的 AI 味信号次数喂给模型，做定向改写。"""
+def build_polish_prompt(text: str, metrics: StyleMetrics | None = None,
+                        tone: str | None = None,
+                        is_chapter: bool = False) -> str:
+    """装配润色 prompt：把本段实测到的 AI 味信号次数喂给模型，做定向改写。
+
+    `tone`：style.json.tone 指定的风格（严谨冷肃/诙谐幽默/…），命中模板则追加风格段；
+    `is_chapter=False`：事件级润色——不要求章节标题，输出指令相应调整。
+    """
     m = metrics or measure(text)
+    tone_block = ""
+    if tone and tone in TONE_TEMPLATES:
+        tone_block = "\n" + TONE_TEMPLATES[tone] + "\n"
+    heading_tail = "，第一行是章节标题" if is_chapter else "（不要加标题，直接给正文片段）"
     rules = POLISH_RULES.format(
         stdev=m.para_len_stdev,
+        tone_block=tone_block,
+        heading_tail=heading_tail,
         **{f"n_{k}": m.signals.get(k, 0) for k in SIGNAL_PATTERNS},
     )
     return f"{rules}\n原文（第 {m.chars} 字）：\n\n{text}"
@@ -187,11 +236,16 @@ def polish_chapter(
     vol: int | None = None,
     ch: int | None = None,
     max_tokens: int = 4000,   # 云篇章 3800 字 2200 token 会截断（M5i 实测）
+    tone: str | None = None,
+    is_chapter: bool = False,
 ) -> PolishResult:
     """在成章之后**额外追加一次** LLM 调用专门优化文风。
 
     这是"多次调用换质量"的最后一环：生成时保情节，润色时保情节、改文风。
     润色后用同一套确定性指标复核；若分数反而变差则保留原文（`changed=False`）。
+
+    `tone`：语言风格（style.json.tone）；`is_chapter=True` 用于整章润色（要求保留
+    章节标题），False 用于事件级片段润色（不要标题）。
     """
     before = measure(text)
     if llm is None:
@@ -200,7 +254,9 @@ def polish_chapter(
 
     res = llm.complete(
         LLMRequest(
-            messages=[LLMMessage(role="user", content=build_polish_prompt(text, before))],
+            messages=[LLMMessage(role="user",
+                                 content=build_polish_prompt(text, before, tone=tone,
+                                                             is_chapter=is_chapter))],
             max_tokens_out=max_tokens,
             temperature=0.6,
         )
