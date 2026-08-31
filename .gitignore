@@ -20,3 +20,7 @@ novel_workspace/*
 
 # AutoDL 云端 SSH 凭据（含明文密码，绝不入库）
 novel_workspace/_harness/autodl_ssh.txt
+
+# v5 运行产物（锁与日志不入库）
+novel_workspace/_harness/.v5.lock
+novel_workspace/_harness/run_v5_log.jsonl
