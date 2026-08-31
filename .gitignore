@@ -17,3 +17,6 @@ novel_workspace/*
 
 # 会话记忆（本项目工作日志，非源码）
 .workbuddy/
+
+# AutoDL 云端 SSH 凭据（含明文密码，绝不入库）
+novel_workspace/_harness/autodl_ssh.txt

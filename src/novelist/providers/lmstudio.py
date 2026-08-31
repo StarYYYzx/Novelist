@@ -47,6 +47,9 @@ class LMStudioProvider:
         min_content_tokens: int = 120,
         budget_retries: int = 2,
         default_max_tokens: int = 1200,
+        # 关闭思考（云端 llama.cpp 实测：chat_template_kwargs.enable_thinking=false 有效，
+        # 思考 0 token 直接出正文；LM-Studio 本地忽略该字段，行为不变）
+        enable_thinking: bool | None = None,
         _client: "httpx.Client | None" = None,
     ) -> None:
         if httpx is None:
@@ -62,6 +65,7 @@ class LMStudioProvider:
         self.min_content_tokens = min_content_tokens
         self.budget_retries = budget_retries
         self.default_max_tokens = default_max_tokens
+        self.enable_thinking = enable_thinking
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -118,6 +122,10 @@ class LMStudioProvider:
             payload["tools"] = req.tools
         if req.response_format == "json_object":
             payload["response_format"] = {"type": "json_object"}
+        if self.enable_thinking is not None:
+            # llama.cpp 服务器认 chat_template_kwargs（实测可关 Qwen3.5 思考）；
+            # LM-Studio 本地忽略该字段，不报错
+            payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
         if budget:
             payload["max_tokens"] = budget
 
