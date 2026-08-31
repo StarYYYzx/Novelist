@@ -113,7 +113,8 @@ class Reviewer:
         )
         res = self.llm.complete(
             LLMRequest(messages=[LLMMessage(role="user", content=prompt + text[-3000:])],
-                       max_tokens_out=500, temperature=0.2)
+                       max_tokens_out=800, temperature=0.2,
+                       thinking=True)  # 判断类任务开思考（讨论）：审校 recall 优先
         )
         if res.blocked or not res.content:
             return []

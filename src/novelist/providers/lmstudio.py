@@ -122,10 +122,11 @@ class LMStudioProvider:
             payload["tools"] = req.tools
         if req.response_format == "json_object":
             payload["response_format"] = {"type": "json_object"}
-        if self.enable_thinking is not None:
+        if self.enable_thinking is not None or req.thinking is not None:
             # llama.cpp 服务器认 chat_template_kwargs（实测可关 Qwen3.5 思考）；
-            # LM-Studio 本地忽略该字段，不报错
-            payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
+            # LM-Studio 本地忽略该字段，不报错。请求级 req.thinking 优先。
+            thinking = req.thinking if req.thinking is not None else self.enable_thinking
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
         if budget:
             payload["max_tokens"] = budget
 

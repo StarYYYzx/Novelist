@@ -56,6 +56,10 @@ class LLMRequest:
     temperature: float | None = None
     response_format: str = "text"  # "json_object" | "text"
     max_tokens_out: int | None = None
+    thinking: bool | None = None
+    # 思考模式按请求控制（讨论：云端 llama.cpp 认 chat_template_kwargs.enable_thinking，
+    # 判断类任务如审校开思考提 recall，生成类任务关思考保正文预算）：
+    # None = 跟随 Provider 默认（enable_thinking 参数）；True/False 显式覆盖。
 
 
 @dataclass
