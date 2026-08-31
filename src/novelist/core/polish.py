@@ -186,7 +186,7 @@ def polish_chapter(
     *,
     vol: int | None = None,
     ch: int | None = None,
-    max_tokens: int = 2200,
+    max_tokens: int = 4000,   # 云篇章 3800 字 2200 token 会截断（M5i 实测）
 ) -> PolishResult:
     """在成章之后**额外追加一次** LLM 调用专门优化文风。
 
