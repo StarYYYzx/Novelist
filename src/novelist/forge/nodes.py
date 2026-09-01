@@ -646,7 +646,10 @@ def synthesize_worldstate(bp: Blueprint) -> dict:
     """worldstate 确定性合成（docs/10 §7.5 末行，零 LLM、不进构建树）。
 
     time={now:0, origin_text}；characters 初始状态由蓝图 power/arc/faction 合成；
-    pending/unavailable 为空（构建期无定时事件登记）。
+    pending：细纲章 gist 可选 `after_days`（ADR-019，docs/10 §4.2）→ 定时事件登记
+    （M3m T4）：due = 此前各章 after_days 累计（相对天数轴，now 从 0 起），
+    id 用 `pd:ke-<vol>-<ch>` 与生成期数字 id（pd:N）不冲突。字段与
+    timeline.add_pending 对齐，渐进提醒分档开箱可用。
     """
     meta = bp.get("meta") or {}
     chars: dict[str, dict] = {}
@@ -665,8 +668,31 @@ def synthesize_worldstate(bp: Blueprint) -> dict:
             "history": [],
         }
         chars[cid] = entry
+    pending: list[dict] = []
+    t = 0
+    chapters = sorted(bp.section("chapters"),
+                      key=lambda x: (int(x.get("vol") or 1), int(x.get("ch") or 0)))
+    for g in chapters:
+        n = int(g.get("after_days") or 0)
+        t += n
+        if n <= 0:
+            continue
+        vol, ch = int(g.get("vol") or 1), int(g.get("ch") or 0)
+        events = [str(e) for e in (g.get("key_events") or []) if str(e).strip()]
+        pending.append({
+            "id": f"pd:ke-{vol}-{ch}",
+            "who": "",                                  # 世界级日程（schema 允许空串）
+            "what": events[0] if events else str(g.get("title") or f"第 {ch} 章"),
+            "due": t,
+            "span": max(t, 1),                          # 登记时 now=0 → 跨度=due
+            "created_t": 0,
+            "status": "scheduled",
+            "created_at": {"vol": vol, "ch": ch},
+            "overdue": 0,
+            "block_count": 0,
+        })
     return {
         "time": {"now": 0, "origin_text": meta.get("time_origin") or "开书之日"},
-        "pending": [],
+        "pending": pending,
         "characters": chars,
     }

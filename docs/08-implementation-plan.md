@@ -474,6 +474,22 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
   全链路 1 + dry_run 1 + interactive 回落 1 / 记忆初始化 2 / CLI 2），全量 **376 passed**
   （2 deselected 慢测试）。功能冒烟 `novel_workspace/_harness/f3_smoke.py`（FakeProvider 全链路）。
 
+**T4 落地记录（2026-09-01，Forge 联动，随 F3 实施）**：
+
+- **细纲 after_days → pending 登记**（M3m T4 主件）：`nodes.synthesize_worldstate` 遍历蓝图
+  `chapters` 按 (vol, ch) 排序累计 `after_days`（相对天数轴，now 从 0 起），>0 的章登记
+  pending（due=累计值，id `pd:ke-<vol>-<ch>` 与生成期数字 id `pd:N` 不冲突，what 取首个
+  key_event、空则回落章标题，字段与 `timeline.add_pending` 全对齐：span/created_t/status=
+  scheduled/overdue/block_count），渐进提醒分档开箱可用。build（engine finally）与 ingest
+  两条链路共用此合成，零 LLM。
+- **ingest 约定条目对齐**（F3 遗留 bug 修复）：ingest 抽取的「约定：」pending 曾写
+  `status: "pending"`——不在 worldstate schema 枚举（scheduled|fired|cancelled|expired），
+  且 timeline 下游 tick/软 block 只认 scheduled，导致 ingest 登记的定时事件**永远不会被
+  提醒/拦截**；改为 scheduled + 补齐 span/created_t/created_at/overdue/block_count。
+- 测试：`tests/test_m16_forge_t4.py` 6 用例（after_days 累计登记 / what 回落标题 /
+  无 after_days 兼容 ingest / 乱序章排序累计 / **jsonschema 校验 worldstate** /
+  ingest 行格式对齐），全量 **382 passed**。
+
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 
 > 设计：`docs/06` §3.3（含数据结构 / 抽取行 / 分档表）。用户提议、四项分支拍板
@@ -488,7 +504,7 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
 | T1 | `worldstate.json` 扩展（time/pending/unavailable_until + history.at 加 t）+ chronicler "时间：/约定："行抽取 + `timeline.json` 写入激活（量词归一、闪回/同日、dt 上限告警）+ **worldstate/timeline schema 同步修订**（AGENTS.md 约定：改 schema 须同步 docs/06）+ Genre Pack `unavailable_states` 词表 | ✅ 完成（core/timeline.py + chronicler Extraction + worldstate 扩展 + schema 同步） |
 | T2 | 渐进提醒分档注入（produce_chapter「临近事项」段，仿 PhasePolicy；与 payoff_checklist 同通道）+ 软 block 拦截 + 章末记账（fired/expired） | ✅ 完成（orchestrator §1.6 注入 / §2.1 软 block / §5.5 tick，result.pending_tick） |
 | T3 | R-TIME 新规则（到期 3 章 warn / 再 2 章 **软 block**：key_events 须引用该 pending / 连续 3 次 block 自动转 expired 放行 + report 留痕）+ R-TL 改按 t 单调 + R-STATE 不可出场告警 | ✅ 完成（rules.py R-TIME / R-TL at.t + 旧数据回退 / R-STATE unavailable） |
-| T4 | Forge 联动：细纲 `key_events` 可选 `after_days` 登记 pending + ingest 抽取"三个月后"类约定 + build 末尾 worldstate 确定性合成（`time={now:0, origin_text}`，人物初始状态从蓝图合成，零 LLM）（随 M3l F3/F4 实施） | 待做 |
+| T4 | Forge 联动：细纲 `key_events` 可选 `after_days` 登记 pending + ingest 抽取"三个月后"类约定 + build 末尾 worldstate 确定性合成（`time={now:0, origin_text}`，人物初始状态从蓝图合成，零 LLM）（随 M3l F3/F4 实施） | ✅ 完成（随 M3l F3 落地，见下） |
 
 **T1–T3 落地记录（2026-09-01）**：
 

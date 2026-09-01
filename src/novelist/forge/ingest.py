@@ -814,8 +814,13 @@ def run_ingest(ws: Workspace, project_id: str, source: str, *,
         parsed = parse_pending_line(line)
         if parsed:
             what, dt, _warn = parsed
-            pending_items.append({"id": f"pd:ingest{i}", "what": what,
-                                  "due": int(dt), "status": "pending"})
+            # 字段与 timeline.add_pending 对齐；status 必须是 schema 枚举 "scheduled"
+            # （曾误写 "pending"，timeline 下游 tick/软 block 只认 scheduled → 永远跳过）
+            pending_items.append({"id": f"pd:ingest{i}", "who": "", "what": what,
+                                  "due": int(dt), "span": max(int(dt), 1),
+                                  "created_t": 0, "status": "scheduled",
+                                  "created_at": {"vol": 1, "ch": 0},
+                                  "overdue": 0, "block_count": 0})
     if pending_items:
         ws_data["pending"] = pending_items
     ws.write_json(ws.bible_path(project_id, "worldstate"), ws_data)

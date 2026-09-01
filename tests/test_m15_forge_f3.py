@@ -331,7 +331,8 @@ def test_ingest_full_pipeline(ws_factory, tmp_path):
     assert ws.bible_path(pid, "entity_progress").exists()
     ws_data = ws.read_json(pid, ws.bible_path(pid, "worldstate"))
     pend = (ws_data or {}).get("pending") or []
-    assert any(p["what"] == "三日后闭关" and p["status"] == "pending" for p in pend)
+    assert any(p["what"] == "三日后闭关" and p["status"] == "scheduled"
+               and p["due"] == 3 for p in pend)
 
     # stage + transcript
     assert ForgeState.load(ws, pid).stage == "ingested"
