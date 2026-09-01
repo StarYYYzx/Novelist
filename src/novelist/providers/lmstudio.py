@@ -124,8 +124,11 @@ class LMStudioProvider:
         }
         if req.tools:
             payload["tools"] = req.tools
+        # 不传 response_format：LM-Studio 兼容层实测只接受 'json_schema'/'text'，
+        # json_object 直接 400（上游 llama.cpp 兼容性差异）。剥掉后靠 prompt
+        # 引导 JSON——forge/抽取层的解析器本就宽松（剥围栏/prose wrapper/兜底）。
         if req.response_format == "json_object":
-            payload["response_format"] = {"type": "json_object"}
+            pass
         if self.enable_thinking is not None or req.thinking is not None:
             # llama.cpp 服务器认 chat_template_kwargs（实测可关 Qwen3.5 思考）；
             # LM-Studio 本地忽略该字段，不报错。请求级 req.thinking 优先。

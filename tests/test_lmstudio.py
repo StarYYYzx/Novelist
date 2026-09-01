@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -70,6 +71,30 @@ def test_lmstudio_request_bypasses_auth_when_no_key(monkeypatch):
 
     p.complete(LLMRequest(messages=[LLMMessage(role="user", content="hi")]))
     assert not (headers_capture.get("authorization") or "")
+
+
+def test_lmstudio_json_object_drops_response_format(monkeypatch):
+    """LM-Studio 兼容层实测只接受 json_schema/text，json_object 会 400——
+    适配器必须剥掉 response_format，靠 prompt 引导 JSON（forge 真实链路教训）。
+    """
+    body_capture = {}
+
+    def handler(request):
+        body_capture["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"a": 1}'}, "finish_reason": "stop"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    p = LMStudioProvider(api_key="", model="qwen/qwen3.5-9b", _client=client)
+    from novelist.core.llm import LLMMessage, LLMRequest
+
+    p.complete(
+        LLMRequest(
+            messages=[LLMMessage(role="user", content="返回 JSON")],
+            max_tokens_out=128,
+            response_format="json_object",
+        )
+    )
+    assert "response_format" not in body_capture["json"], "LM-Studio 不接受 json_object，必须剥掉"
 
 
 # ---------- 集成：连通性（服务未运行/未授权则跳过） ----------

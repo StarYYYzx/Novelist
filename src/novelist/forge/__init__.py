@@ -1,13 +1,15 @@
 """构建层 Forge（docs/10）。
 
-对外入口：`show`（F0）/ 后续 F1–F5 补 run_seed / run_ingest / build / validate。
+对外入口：`show`（F0）/ `run_seed` + `build`（F1）/ F2–F5 补 ingest / ask / validate / report。
 模块布局见 docs/10 §11：state / slots / genres / ask / io_console / seed / ingest /
 engine / nodes / validate / report。
 """
 
 from __future__ import annotations
 
+from .engine import BuildResult, build
 from .genres import load_pack, load_pack_for, list_packs
+from .seed import SeedResult, SeedSpec, run_seed
 from .slots import Slot, detect_gaps, default_slots, group_slots, slots_for_genre
 from .state import Blueprint, ForgeState, append_transcript, read_transcript
 
@@ -24,6 +26,11 @@ __all__ = [
     "slots_for_genre",
     "detect_gaps",
     "group_slots",
+    "SeedSpec",
+    "SeedResult",
+    "run_seed",
+    "BuildResult",
+    "build",
 ]
 
 

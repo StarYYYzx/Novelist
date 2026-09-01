@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import click
 
 from .config import load_config
@@ -370,7 +372,10 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
     if provider in ("lmstudio", "local"):
         from novelist.providers.lmstudio import LMStudioProvider
 
-        return LMStudioProvider()  # 默认 http://127.0.0.1:1234, qwen/qwen3.5-9b
+        # 思考型模型（qwen3.5-9b）+ 大 prompt（forge 构建节点）单次调用可达 4-5 分钟
+        # （10 token/s × 2600 + 思考），默认 120s 会让 book 节点超时回退父层（实测）。
+        # 构建/写作场景统一放宽到 600s，超时仅作兜底保护。
+        return LMStudioProvider(timeout_s=600)
     # openai 等真实 provider（需 key/base_url，见 providers.openai）
     from novelist.providers.openai import OpenAICompatibleProvider
 
@@ -630,6 +635,141 @@ def forge_show(ctx: click.Context, directory: str | None) -> None:
     click.echo(f"== {project_id} ==")
     for line in show_summary(bp, state):
         click.echo(line)
+
+
+# forge seed 的 fake 演示回复（SeedSpec JSON；构建节点走宽容降级，链路完整可演示）
+_FAKE_SEED_REPLY = json.dumps({
+    "genre": "修仙", "template_suggestion": "修仙男频",
+    "logline": "五五开系统，绑定他人共享修炼",
+    "protagonist_hint": {"name": "叶蓝", "gender": "male", "cheat": "五五开系统"},
+    "conflict": "废柴逆袭",
+    "tone_hint": "热血激昂",
+    "scale_hint": {"volumes": 2, "chapters_per_volume": 3},
+    "time_origin": "叶蓝穿越之日",
+    "unknowns": [],
+}, ensure_ascii=False)
+
+
+@forge.command("seed")
+@click.argument("brief")
+@click.option("--dir", "directory", default=None, help="目标项目目录（缺省取 workspace 根下唯一项目）")
+@click.option("--mode", type=click.Choice(["auto", "interactive"]), default="auto",
+              help="interactive 会先展示提炼结果并授权询问；非 TTY 自动降级 auto")
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--genre-pack", default=None, help="类型包 id（缺省由提炼匹配，兜底通用包）")
+@click.option("--volumes", type=int, default=None, help="卷数（缺省由提炼/模板定）")
+@click.option("--chapters-per-volume", type=int, default=None, help="每卷章数")
+@click.option("--target-words", type=int, default=None, help="每章目标字数")
+@click.option("--max-calls", type=int, default=60, help="构建分阶段配额（build 卷 1 默认 60）")
+@click.option("--max-depth", type=int, default=4, help="递归最大深度")
+@click.option("--max-width", type=int, default=4, help="子节点宽度上限")
+@click.option("--smoke", is_flag=True, default=False, help="冒烟：只提炼 + 建蓝图，不跑构建")
+@click.pass_context
+def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
+               provider: str, genre_pack: str | None,
+               volumes: int | None, chapters_per_volume: int | None,
+               target_words: int | None,
+               max_calls: int, max_depth: int, max_width: int, smoke: bool) -> None:
+    """模式一：一句话创意 → 种子提炼 + 授权询问 → 全权构建（F1）。
+
+    产出：workspace/forge/blueprint.json + bible/* + outline/volumes.json +
+    outline/chapters/1-*.md + worldstate 确定性合成。之后可 `chapter 1 1` 直出正文。
+    """
+    from novelist.forge import ForgeState, run_seed
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    if provider == "fake":
+        from novelist.providers.fake import FakeProvider
+
+        prov = FakeProvider(reply=_FAKE_SEED_REPLY)  # 演示：固定 SeedSpec，链路可跑通
+    else:
+        prov = _make_cli_provider(provider)
+    state = ForgeState.load(ws, project_id)
+    if state.stage == "built" and not smoke:
+        click.echo(f"{project_id}: 已构建过（stage=built）。改动蓝图后重跑用 `forge build`；"
+                   f"强制重seed 请先手改 project.json。")
+    res = run_seed(ws, project_id, brief, provider=prov, mode=mode,
+                   genre_pack=genre_pack, volumes=volumes,
+                   chapters_per_volume=chapters_per_volume, target_words=target_words,
+                   max_calls=max_calls, max_depth=max_depth, max_width=max_width,
+                   smoke=smoke)
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    click.echo(f"seed done: mode={res.mode_used} calls={res.build.get('calls_used', 0)}")
+    if smoke:
+        click.echo("smoke 模式：仅提炼 + 建蓝图，未跑构建。可 `forge show` 查看后 `forge build`。")
+        return
+    click.echo(
+        f"build: 卷主线 {res.build.get('volumes_written', 0)} 卷 / 卷 1 细纲 "
+        f"{res.build.get('chapters_written', 0)} 章 / 调用 {res.build.get('calls_used', 0)}"
+        f"（配额 {res.build.get('budget_limit')}）"
+    )
+    if res.build.get("budget_exhausted"):
+        click.echo("预算耗尽：部分节点未生成，改动蓝图后 `forge resume` 续跑。", err=True)
+    if not res.ok:
+        raise click.ClickException("seed 构建未完成，见上方 warnings")
+    click.echo(f"下一步：`novelist chapter 1 1 --dir {project_id}` 或 `novelist forge show {project_id}`")
+
+
+@forge.command("build")
+@click.argument("directory", required=False, default=None)
+@click.option("--force", is_flag=True, default=False, help="已有 chapters/ 时强制（docs/10 §7.6）")
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
+@click.pass_context
+def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
+                max_calls: int) -> None:
+    """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
+
+    默认拒绝已有 chapters/ 的项目（先写正文或 ingest 的项目）；--force 放行。
+    """
+    from novelist.forge import Blueprint, build
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
+    chapters = list(ws._abs(f"{project_id}/chapters").glob("*.md"))  # noqa: SLF001
+    if chapters and not force:
+        raise click.ClickException(
+            f"{project_id}: 已有 {len(chapters)} 章正文（chapters/）——Forge 拒绝覆盖已有稿子；"
+            f"确认要继续请加 --force"
+        )
+    res = build(ws, project_id, provider=_make_cli_provider(provider),
+                max_calls=max_calls, resume=False)
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    click.echo(f"build done: calls={res.calls_used} nodes={res.nodes_done} "
+               f"卷={res.volumes_written} 章={res.chapters_written}")
+    if not res.ok:
+        raise click.ClickException("构建未完成，见上方 warnings")
+
+
+@forge.command("resume")
+@click.argument("directory", required=False, default=None)
+@click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
+@click.pass_context
+def forge_resume(ctx: click.Context, directory: str | None, max_calls: int) -> None:
+    """断点续跑：跳过已落盘节点（chapter 文件 / volumes 条目），从断点继续（幂等）。"""
+    from novelist.forge import Blueprint, build
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
+    res = build(ws, project_id, provider=_make_cli_provider("fake"),
+                max_calls=max_calls, resume=True)
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    click.echo(f"resume done: calls={res.calls_used} nodes={res.nodes_done} "
+               f"卷={res.volumes_written} 章={res.chapters_written}")
+    if not res.ok and not res.interrupted:
+        raise click.ClickException("续跑未完成，见上方 warnings")
 
 
 @cli.command()

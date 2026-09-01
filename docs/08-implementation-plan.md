@@ -320,7 +320,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | --- | --- | --- |
 | F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | ✅ 完成（契约校验层 core/bible.py + CLI validate + 5 项目全过，见下） |
 | F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | ✅ 完成（forge 包 + 2 类型包 + CLI show，见下） |
-| F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | 待做 |
+| F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | ✅ 完成（forge/seed+nodes+engine + CLI seed/build/resume，AG1 通过，见下） |
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | 待做 |
 | F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | 待做 |
 | F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | 待做 |
@@ -383,6 +383,40 @@ ingest = 30）。设计三轮敲定（2026-09-01），29 项分支决策见 `doc
   provenance 保护 / upsert 幂等 / ForgeState 往返 / transcript / CLI 集成）。全量 **314 passed**。
 - 注意：`Blueprint.filled()` 不认识 `characters[role:*]` 伪路径（缺口检测 `_resolve_key` 才解析）——
   引擎填充时应走 `bp.section("characters")` + role 过滤，勿直接 `bp.filled()`。
+
+**F1 落地记录（2026-09-01，模式一全权构建）**：`forge/seed.py` + `forge/nodes.py` + `forge/engine.py`，
+AG1（一句话 + FakeProvider → `chapter 1 1` 可直出且 `bible_injected=True`、cast 非空）端到端通过：
+
+- **seed.py（模式一入口）**：种子提炼（1 次 LLM）→ 蓝图初始化 → 授权询问 → 全权构建。
+  `SeedSpec`（genre/template_suggestion/logline/protagonist_hint/conflict/tone_hint/scale_hint/
+  time_origin/unknowns）；`_parse_seed_spec` 宽松解析（剥 ```json 围栏 / prose wrapper）；
+  解析失败走确定性兜底（`_fallback_spec`，仍可构建）。`--smoke` 只提炼建蓝图不构建。
+  interactive 非 TTY 自动降级 auto（写 `seed.downgrade` transcript）。
+- **蓝图初始化 provenance 分层**：CLI 显式参数→`user`（受保护，模型永不可覆盖）> 提炼→`llm` >
+  包默认→`template`；主角骨架建档（`char:{slug}`）。
+- **engine.py（递归最小树）**：DFS 确定性展开 book→volume→chapter，**卷闸门只展开 vol=1 的 chapter**
+  （B2 拍板）；硬边界 max_calls=60 / max_depth=4 / max_width=4 / 每节点 retry=1，失败回退父层产物，
+  预算耗尽停止并标红。`resume` 幂等续跑：已落盘节点跳过、calls_used 不增长；重跑覆盖写（人物/伏笔
+  按 id upsert）。节点协议 `{"artifact", "decide": done|expand, "reason", "children", "open_questions"}`
+  （非法 decide 兜底 done）。
+- **nodes.py（三节点 prompt + apply）**：`_book_prompt` 骨架+卷主线一次出齐；`_volume_prompt` →
+  `outline/volumes.json`（upsert by vol，chapter_range 确定性计算）；`_chapter_prompt` 含前一章因果
+  连续/after_days/directives → 细纲 md（悬空角色引用丢弃）。`_apply_book` 合并 worldview/characters/
+  threads/style/volumes 时逐键过 provenance 保护（power_system 二级路径也逐键检查）。
+- **细纲双通道**：front-matter JSON（`parse_gist` 消费）+ 行内 `key_events:`/`出场人物:`
+  （`parse_key_events`/`parse_cast_decl` 消费，JSON 引号格式兼容 regex 解析）。
+- **sync_bible**：蓝图→bible 全量重写（剥 role→is_protagonist、补 status/id/默认值、style 补
+  protagonist 引用）；`synthesize_worldstate` 确定性合成（time={now:0, origin_text}、characters
+  初始态、pending 空——零 LLM）。
+- **CLI**：`forge seed`（--provider/--smoke/--volumes/--chapters-per-volume/--max-calls）、
+  `forge build`（--provider/--force）、`forge resume`。fake provider 演示走固定 SeedSpec。
+- 测试：`tests/test_m13_forge_f1.py` 18 用例（提炼解析/兜底/非 TTY 降级/节点协议/双通道/apply 保护/
+  sync_bible 剥离/worldstate 确定性/AG1 端到端/resume 幂等/预算耗尽/解析失败回退/CLI smoke）。
+  全量 **332 passed**。CLI 冒烟（fake）：`init + forge seed --volumes 2 --chapters-per-volume 3` →
+  2 卷主线 + 3 细纲 + bible 5 文件 + worldstate，`forge show` 阶段=built、调用=6。
+- 真实链路修复：LM-Studio 冒烟暴露 `response_format.type=json_object` 400（兼容层只认
+  json_schema/text）。修复 `providers/lmstudio.py`：json_object 请求剥掉 response_format，
+  靠 prompt 引导 JSON（forge/抽取层解析器本就宽松兜底）。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 

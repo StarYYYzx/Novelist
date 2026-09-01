@@ -545,7 +545,7 @@ novelist forge rollback <dir>          # 回退到上次构建前快照
 novelist forge validate <dir>          # 只跑 V1–V6
 ```
 
-模块（**实现状态**：✅=F0 已建；其余待 F1–F5）：
+模块（**实现状态**：✅=已建；其余待 F1–F5）：
 
 ```
 src/novelist/forge/
@@ -555,10 +555,10 @@ src/novelist/forge/
   genres.py        # ✅ Genre Pack 装载（id/别名匹配，通用兜底，装载即自身 schema 校验）
   ask.py           # 问答协议（引擎侧：生成问题、解析回答、transcript）—— F2
   io_console.py    # 问答通道的终端实现（接口化，便于日后换 HTTP）—— F2
-  seed.py          # 模式一：种子提炼 + 授权询问 —— F1
+  seed.py          # ✅ 模式一：种子提炼 + 授权询问（docs/08 F1 落地记录）
   ingest.py        # 模式二：切片 / 抽取 / 消歧 / 文风画像 / 卷章编码 / 记忆初始化 —— F3
-  engine.py        # 递归构建引擎（调度 + 边界 + 落盘 + 续跑）—— F1
-  nodes.py         # 各节点类型的 prompt 装配 + artifact 解析 + 落盘 —— F1
+  engine.py        # ✅ 递归构建引擎（调度 + 边界 + 落盘 + 续跑）—— F1
+  nodes.py         # ✅ 各节点类型的 prompt 装配 + artifact 解析 + 落盘 —— F1
   genres/          # ✅ 修仙男频.json / 通用.json（Genre Pack，数据；新增类型=加 JSON 零改码）
   validate.py      # V1–V6 + 报告生成 —— F5
   report.py        # report.md 渲染 —— F5
