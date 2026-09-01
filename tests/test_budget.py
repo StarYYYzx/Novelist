@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import json
+
 from novelist.config import load_config
 from novelist.core.orchestrator import _truncate_to_boundary, produce_chapter
 from novelist.core.session import SessionInfo
@@ -167,3 +169,55 @@ def test_config_content_tokens_toml(tmp_path):
     cfg = load_config(str(p))
     assert cfg.budget.default_max_tokens_out == 2000
     assert cfg.budget.default_max_content_tokens == 1500
+
+
+# ---------------------------------------------------------------- F7.1 生成审计（reports/ + .index.db）
+
+
+def _audit_rows(ws, pid, kind="produce_chapter"):
+    """读 .index.db 审计日志中 kind 的全部行 [(ts, session, payload)]。"""
+    from novelist.storage.indexdb import IndexDb
+
+    db = IndexDb(str(ws.index_db_path(pid)))
+    db.init()
+    with db.connect() as conn:
+        return conn.execute(
+            "SELECT ts, session, payload FROM audit_log WHERE kind=? ORDER BY seq", (kind,)
+        ).fetchall()
+
+
+def test_generation_audit_dual_write(tmp_path):
+    ws, pid = _project(tmp_path)
+    prov = RecordingProvider(reply="这是正文内容。" * 30)
+    res = produce_chapter(ws, pid, 1, 1, prov, prefer_direct=True,
+                          jit_characters=False, validate=False)
+    assert res.ok, res.result
+    # reports/stats/generation-*.md（人读持久）
+    gens = sorted(ws._abs(f"{pid}/reports/stats").glob("generation-*.md"))
+    assert gens, "应写正文生成报告"
+    text = gens[-1].read_text(encoding="utf-8")
+    assert "正文生成报告 第 1 卷第 1 章" in text
+    assert "tokens" in text and "估算成本" in text
+    # .index.db audit_log（机器查，ADR-016 辅助索引）
+    rows = _audit_rows(ws, pid)
+    assert rows, "audit_log 应有 produce_chapter 记录"
+    payload = json.loads(rows[-1][2])
+    assert payload["ok"] is True and payload["calls"] >= 1
+    assert payload["tokens_in"] >= 0 and payload["tokens_out"] >= 0
+    assert payload["mode"] == "direct"
+
+
+def test_generation_audit_on_failure(tmp_path):
+    ws, pid = _project(tmp_path)
+
+    class BoomProvider(FakeProvider):
+        def complete(self, req):
+            raise RuntimeError("模型爆炸")
+
+    res = produce_chapter(ws, pid, 1, 1, BoomProvider(), prefer_direct=True,
+                          jit_characters=False, validate=False)
+    assert not res.ok
+    rows = _audit_rows(ws, pid)
+    assert rows, "失败路径也应写审计"
+    payload = json.loads(rows[-1][2])
+    assert payload["ok"] is False and "生成异常" in payload.get("note", "")

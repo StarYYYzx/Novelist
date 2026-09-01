@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass
@@ -55,5 +56,5 @@ class IndexDb:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO audit_log(ts,kind,session,payload) VALUES (?,?,?,?)",
-                ("now", kind, session or "", payload or ""),
+                (datetime.now().isoformat(timespec="seconds"), kind, session or "", payload or ""),
             )

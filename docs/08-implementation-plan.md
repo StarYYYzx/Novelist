@@ -304,7 +304,9 @@ novelist/
 - **大纲覆盖度检查**：~~docs/05 的「检查员」未实现；实测 22 建档人物中 3 人正文零出场且无告警~~ **已落地（R-CAST，提交 be3bc43 后）**：
   `consistency/rules.py::_cast_coverage_check`——建档人物在已写正文零出场 → warn；区分「计划出场（first_appear）已越过但跳票」（强信号）、
   「无 first_appear 无法判断」（弱信号）与「first_appear 在未来」（渐进写作正常，不告警）；单字名/已死亡退场人物跳过；无正文静默。
-- **审计日志完整**（F7.1）：事件与 token 计量尚未落 `reports/` 与 `.index.db`。
+- ~~审计日志完整（F7.1）~~ **已落地（提交 16dfa0f 后）**：produce_chapter 整章 LLM 用量聚合（`_UsageCounter` 包装 provider，
+  覆盖嵌套函数与编纂调用）→ 出口双落——`reports/stats/generation-<ts>.md`（人读持久，与 forge 报告同口径计价）
+  + `.index.db` `audit_log`（机器查，ADR-016 辅助索引；修复原 ts 写死 "now" 占位）。成功/软 block/异常/落盘失败四路径都写。
 - **围读会（档 3）**：SceneBus 已就绪，但按 ADR-014 接入编排流（主持人 + 结束判据）未做；
   档 2（剧本草稿）已先行落地，围读会定位为"探索 + 对白素材"，产出不直接进正文。
 

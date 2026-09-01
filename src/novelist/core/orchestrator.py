@@ -762,6 +762,75 @@ def _merge_reports(reports: list):
     return merged
 
 
+class _UsageCounter:
+    """F7.1：包装 provider 聚合一次 produce_chapter 的全部 LLM 用量。
+
+    produce_chapter 的 LLM 调用分散在嵌套函数（生成/续写/拍展开/JIT 补卡/编纂），
+    逐个收集易漏；入口把 provider 换成计数器，整章（含嵌套与编纂）的
+    `complete` 都经它过账，`__getattr__` 透明转发其余属性。
+    """
+
+    def __init__(self, provider):
+        object.__setattr__(self, "_inner", provider)
+        self.calls = 0
+        self.tokens_in = 0
+        self.tokens_out = 0
+
+    def complete(self, req, **kwargs):
+        self.calls += 1
+        res = self._inner.complete(req, **kwargs)
+        usage = getattr(res, "usage", None)
+        if usage is not None:
+            self.tokens_in += int(getattr(usage, "tokens_in", 0) or 0)
+            self.tokens_out += int(getattr(usage, "tokens_out", 0) or 0)
+        return res
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+
+def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _UsageCounter,
+                            *, ok: bool, mode: str = "tool", events: int = 0,
+                            phase: str = "", note: str = "", jit: int = 0, settings: int = 0) -> None:
+    """F7.1：正文生成审计双落——`reports/stats/generation-<ts>.md`（人读持久）+ `.index.db`
+    `audit_log`（机器查，ADR-016 辅助索引可重建）。先落报告文件、后同步索引（ADR-016
+    写操作先文件后索引）；审计失败静默——审计不该阻断写章。
+
+    计价与 forge 报告同口径（¥1/1M in + ¥2/1M out，DeepSeek 参考价）。
+    """
+    import json as _json
+    import time as _time
+
+    ts = _time.strftime("%Y%m%d-%H%M%S")
+    try:
+        rel = f"reports/stats/generation-{ts}.md"
+        p = ws._abs(f"{project_id}/{rel}")  # noqa: SLF001
+        p.parent.mkdir(parents=True, exist_ok=True)
+        status = "ok" if ok else "failed"
+        cost = counter.tokens_in / 1e6 * 1.0 + counter.tokens_out / 1e6 * 2.0
+        lines = [
+            f"# 正文生成报告 第 {vol} 卷第 {ch} 章（{ts}）",
+            f"- 结果：{status}（mode={mode}）" + (f"，{note}" if note else ""),
+            f"- 事件回写：{events} 条；JIT 补卡 {jit}；设定补充 {settings}；阶段 {phase or '-'}",
+            f"- LLM 调用 {counter.calls} 次：in={counter.tokens_in} / out={counter.tokens_out} tokens，"
+            f"估算成本 ¥{cost:.4f}",
+        ]
+        ws.write_text(p, "\n".join(lines) + "\n")
+        from ..storage.indexdb import IndexDb
+
+        db = IndexDb(str(ws.index_db_path(project_id)))
+        db.init()
+        db.write_audit("produce_chapter", f"{vol}-{ch}",
+                       _json.dumps({
+                           "ok": ok, "mode": mode, "events": events, "calls": counter.calls,
+                           "tokens_in": counter.tokens_in, "tokens_out": counter.tokens_out,
+                           "cost": round(cost, 6), "phase": phase, "jit": jit,
+                           "settings": settings, "note": note, "ts": ts,
+                       }, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - 审计失败不影响写章
+        pass
+
+
 _TITLE_RE = re.compile(r"^#{1,6}\s*第\s*[一二三四五六七八九十\d]+\s*章")
 
 
@@ -841,6 +910,8 @@ def produce_chapter(
     from .polish import completeness, polish_chapter
 
     sess = session or SessionInfo(project_id=project_id, agent="orchestrator")
+    # F7.1：整章 LLM 用量聚合（含嵌套函数与编纂），出口统一写审计
+    provider = _UsageCounter(provider)
 
     # ---- 1) 圣经注入（B-02）----
     bible_injected = False
@@ -933,6 +1004,8 @@ def produce_chapter(
         blocks = soft_block_check(ws, project_id, gist_text_for_events)
         if blocks:
             _timeline_tick(ws, project_id, vol=vol, ch=ch)
+            _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
+                                    phase=getattr(phase, "value", phase), note="soft-block 拦截")
             return ProductionResult(
                 ok=False, result="\n".join(blocks), mode=mode,
                 bible_injected=bible_injected,
@@ -1172,6 +1245,9 @@ def produce_chapter(
             if validate and len(final) >= direct_words_floor:
                 comp = completeness(final)
     except Exception as e:  # noqa: BLE001 - 循环/生成异常统一收敛为失败
+        _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
+                                phase=getattr(phase, "value", phase),
+                                note=f"生成异常：{str(e)[:60]}")
         return ProductionResult(ok=False, result=str(e), mode=mode, bible_injected=bible_injected,
                                 attempts=attempts, completeness=comp,
                                 phase=getattr(phase, "value", phase), phase_reason=phase_reason,
@@ -1187,6 +1263,8 @@ def produce_chapter(
             draft.parent.mkdir(parents=True, exist_ok=True)
             ws.write_text(draft, final + "\n")
         except Exception:  # noqa: BLE001
+            _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
+                                    phase=getattr(phase, "value", phase), note="草稿落盘失败")
             return ProductionResult(ok=False, result="cannot write draft", mode=mode,
                                     bible_injected=bible_injected, attempts=attempts, completeness=comp)
 
@@ -1313,6 +1391,11 @@ def produce_chapter(
                                       chapter_text=verify_text).as_dict()
     except Exception:  # noqa: BLE001 - 记账失败不影响成稿
         pending_tick = {}
+
+    # F7.1：正文生成审计（reports/ + .index.db audit_log）
+    _write_generation_audit(ws, project_id, vol, ch, provider, ok=True, mode=mode,
+                            events=events, phase=getattr(phase, "value", phase),
+                            jit=jit_added, settings=settings_added)
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
