@@ -436,6 +436,9 @@ L0 book（唯一根）── 主题/卖点/基调/规模
 | character_group / character | `bible/characters.json`（upsert by id） |
 | style | `bible/style.json`（含 protagonist） |
 | thread_set | `bible/plot_threads.json`（upsert by id） |
+| arc | `outline/arcs.json`（upsert by id；蓝图不存——schema additionalProperties:false） |
+| beat | 并入章细纲 front-matter `beats`（beat 属章，不单独建文件） |
+| （所有节点） | `workspace/forge/nodes/<node_id>.json` 增量落盘（decide/reason/artifact；resume 判据；node_id 的 `:` 净化为 `-` 适配 Windows） |
 | （非节点，build 末尾一步） | `bible/worldstate.json` **确定性合成**（2026-09-01 拍板）：`time = {now: 0, origin_text: meta.time_origin}`、characters 初始状态由蓝图 `power/arc/faction` 合成、pending/unavailable 为空——**零 LLM 调用**，不进构建树 |
 
 ### 7.6 重跑、修订与回滚（2026-09-01 拍板）

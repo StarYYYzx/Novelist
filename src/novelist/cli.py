@@ -720,9 +720,11 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 @click.option("--force", is_flag=True, default=False, help="已有 chapters/ 时强制（docs/10 §7.6）")
 @click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
+@click.option("--no-deepen", is_flag=True, default=False,
+              help="退化为 F1 最小树（跳过旁支递归深化与 arc/beat 层）")
 @click.pass_context
 def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
-                max_calls: int) -> None:
+                max_calls: int, no_deepen: bool) -> None:
     """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
 
     默认拒绝已有 chapters/ 的项目（先写正文或 ingest 的项目）；--force 放行。
@@ -742,7 +744,7 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
             f"确认要继续请加 --force"
         )
     res = build(ws, project_id, provider=_make_cli_provider(provider),
-                max_calls=max_calls, resume=False)
+                max_calls=max_calls, resume=False, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     click.echo(f"build done: calls={res.calls_used} nodes={res.nodes_done} "
@@ -751,12 +753,44 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
         raise click.ClickException("构建未完成，见上方 warnings")
 
 
+@forge.command("roll")
+@click.argument("vol", type=int)
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai")
+@click.option("--max-calls", type=int, default=40, help="roll 每卷分阶段配额（docs/10 §7.3）")
+@click.pass_context
+def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: str,
+               max_calls: int) -> None:
+    """滚动生成第 N 卷细纲（需前卷已有正文）：注入前卷事实四块上下文（docs/10 §7.7）。"""
+    from novelist.forge import Blueprint, roll
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
+    try:
+        res = roll(ws, project_id, provider=_make_cli_provider(provider),
+                   vol=vol, max_calls=max_calls)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    click.echo(f"roll vol {vol} done: calls={res.calls_used} 章={res.chapters_written} "
+               f"弧={res.arcs_written}")
+    if not res.ok:
+        raise click.ClickException("滚动生成未完成，见上方 warnings")
+
+
 @forge.command("resume")
 @click.argument("directory", required=False, default=None)
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
 @click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted（商讨续跑时生成候选）")
+@click.option("--no-deepen", is_flag=True, default=False, help="续跑构建时跳过旁支深化与 arc/beat 层")
 @click.pass_context
-def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, provider: str) -> None:
+def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, provider: str,
+                 no_deepen: bool) -> None:
     """断点续跑：商讨中断 → 续问答；构建中断 → 跳过已落盘节点续构建（幂等）。"""
     from novelist.forge import Blueprint, ForgeState, build, run_consult
 
@@ -784,7 +818,7 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
         click.echo(f"商讨完成。下一步：`forge build --dir {project_id}` 开始构建")
         return
     res = build(ws, project_id, provider=_make_cli_provider(provider),
-                max_calls=max_calls, resume=True)
+                max_calls=max_calls, resume=True, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     click.echo(f"resume done: calls={res.calls_used} nodes={res.nodes_done} "

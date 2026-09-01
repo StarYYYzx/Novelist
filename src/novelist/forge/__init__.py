@@ -8,7 +8,7 @@ engine / nodes / validate / report。
 from __future__ import annotations
 
 from .ask import ConsultResult, run_consult
-from .engine import BuildResult, build
+from .engine import BuildResult, RollResult, build, roll
 from .genres import load_pack, load_pack_for, list_packs
 from .ingest import IngestResult, run_ingest
 from .io_console import AnswerIO, ConsoleIO
@@ -34,6 +34,8 @@ __all__ = [
     "run_seed",
     "BuildResult",
     "build",
+    "RollResult",
+    "roll",
     "IngestResult",
     "run_ingest",
     "AnswerIO",

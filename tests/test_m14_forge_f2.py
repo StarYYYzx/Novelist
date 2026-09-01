@@ -393,7 +393,7 @@ def test_cli_resume_build_branch(ws_factory, monkeypatch):
                         lambda p: ScriptedProvider([{"final": book}, {"final": vol}, {"final": ch}]))
     runner = CliRunner()
     monkeypatch.chdir(str(ws._abs("")))  # noqa: SLF001
-    result = runner.invoke(cli, ["forge", "resume", pid, "--provider", "fake"])
+    result = runner.invoke(cli, ["forge", "resume", pid, "--provider", "fake", "--no-deepen"])
     assert result.exit_code == 0, result.output
     assert "resume done" in result.output
     assert ws.outline_chapter_path(pid, 1, 1).exists()

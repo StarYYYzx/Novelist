@@ -269,7 +269,7 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
              volumes: int | None = None, chapters_per_volume: int | None = None,
              target_words: int | None = None,
              max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
-             smoke: bool = False,
+             smoke: bool = False, deepen: bool = True,
              ask_fn: Callable[[Blueprint, SeedSpec, str], str] | None = None) -> SeedResult:
     """一句话 → 蓝图 → 构建。mode=interactive 且 TTY 时先授权询问。
 
@@ -373,7 +373,8 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
     from .engine import build  # 延迟导入，避免 seed↔engine 顶层循环
 
     build_res = build(ws, project_id, provider=provider,
-                      max_calls=max_calls, max_depth=max_depth, max_width=max_width)
+                      max_calls=max_calls, max_depth=max_depth, max_width=max_width,
+                      deepen=deepen)
     if not build_res.ok and not warnings and not build_res.warnings:
         warnings.append("构建未完成，见 build.warnings")
 

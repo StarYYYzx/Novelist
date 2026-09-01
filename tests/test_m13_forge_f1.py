@@ -299,7 +299,7 @@ def test_ag1_seed_to_chapter_production(ws_factory):
     ws, pid = ws_factory("proj-ag1")
     provider = ScriptedProvider(_ag1_script(volumes=2, chapters=2))
     res = run_seed(ws, pid, "五五开系统修仙文", provider=provider,
-                   volumes=2, chapters_per_volume=2, target_words=1000)
+                   volumes=2, chapters_per_volume=2, target_words=1000, deepen=False)
     assert res.ok, res.warnings
     b = res.build
     assert b["volumes_written"] == 2 and b["chapters_written"] == 2
@@ -352,12 +352,12 @@ def test_engine_resume_is_idempotent(ws_factory, capsys):
                          2, 2, 1000)
     bp.save(ws, pid)
     r1 = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)),
-               max_calls=60)
+               max_calls=60, deepen=False)
     assert r1.ok and r1.chapters_written == 2
     n1 = r1.calls_used
 
     # resume：全部节点已落盘 → 不再调用 LLM，calls_used 不增长
-    r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True)
+    r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True, deepen=False)
     assert r2.calls_used == n1  # 续跑零新调用
     assert r2.chapters_written == 0
     # 落盘内容未被破坏
@@ -375,7 +375,7 @@ def test_engine_budget_exhaustion(ws_factory, capsys):
                          2, 2, 1000)
     bp.save(ws, pid)
     r = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)),
-              max_calls=1)
+              max_calls=1, deepen=False)
     assert r.budget_exhausted is True
     assert any("预算耗尽" in w for w in r.warnings)
     assert r.calls_used <= 2  # 1 次调用 + 可能 1 次重试
@@ -394,7 +394,7 @@ def test_engine_parse_failure_falls_back_to_parent(ws_factory, capsys):
     bp.save(ws, pid)
     # book/volume 失败（垃圾回复）→ 用 seed 骨架继续；chapter 失败 → 不落盘
     r = build(ws, pid, provider=FakeProvider(reply="不是 JSON 的回复文本"),
-              max_calls=60)
+              max_calls=60, deepen=False)
     assert any("回退父层产物" in w or "重试" in w for w in r.warnings)
     # book 失败但 seed 骨架仍在（worldview/主角不丢）
     assert json.loads(ws.bible_path(pid, "worldview").read_text(encoding="utf-8")).get("id")

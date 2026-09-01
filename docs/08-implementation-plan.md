@@ -323,7 +323,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | ✅ 完成（forge/seed+nodes+engine + CLI seed/build/resume，AG1 通过，见下） |
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | ✅ 完成（forge/ask+io_console + CLI resume 分流，见下） |
 | F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | ✅ 完成（forge/ingest.py + CLI forge ingest，见下） |
-| F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | 待做 |
+| F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | ✅ 完成（2026-09-01，见下） |
 | F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | 待做 |
 
 验收：AG1 一句话 → 项目可直接 `chapter 1 1` 且 `bible_injected=True`；AG2 3 章样章 → 第 4 章起可接写
@@ -496,6 +496,34 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
 - 测试：`tests/test_m16_forge_t4.py` 6 用例（after_days 累计登记 / what 回落标题 /
   无 after_days 兼容 ingest / 乱序章排序累计 / **jsonschema 校验 worldstate** /
   ingest 行格式对齐），另 test_m15_forge_f3.py 增时间轴保留用例（now=60 不被覆盖、约定按各章 day 锚定），全量 **383 passed**。
+
+**F4 落地记录（2026-09-01，递归深化 + arc/beat + forge roll）**：
+
+- **旁支递归 DFS**（`engine.build(deepen=True)`，次序 worldview → character_group → style →
+  thread_set，自定决策：设定→人物→文风→伏笔，伏笔最后可引用前面产出）：每节点走 §7.2 协议
+  （decide/reason/children + 硬边界），worldview expand → system（settings 条目落库）→
+  setting_entry；character_group expand → character（骨架→完整卡，relationships 交叉引用
+  校验由 prompt 纪律约束）；style/thread_set 为叶。产物经蓝图 provenance 保护落 bible。
+- **节点增量落盘**（docs/10 §7.4 补齐）：每节点写 `nodes/<node_id>.json`
+  （kind/decide/reason/artifact）；node_id 含 `:` 在 Windows 文件名非法 → 净化为 `-`
+  （自定决策，文档未提）。resume 双判据：chapter/volume 用产物存在性，旁支/arc/beat 用 nodes/。
+- **arc/beat 层**（自定决策落盘位置，docs/10 §7.5 表原缺 arc/beat 行，已回填）：
+  volume expand → arc 节点 → `outline/arcs.json`（独立文件；blueprint schema
+  additionalProperties:false 不允许 arcs 段，arcs 不进蓝图）；chapter expand → beat 节点 →
+  gist.beats 并入细纲 front-matter（beat 属章，不单独建文件）。chapter prompt 注入本卷
+  arc（K 章均匀分配，确定性）。
+- **`forge roll <vol>`**（`engine.roll` + CLI）：前置 vol≥2 且前卷有正文；§7.7 四块注入
+  （前卷主线+伏笔兑现 / 前卷末 3 章实际发生 plot_events / worldstate 现状 / payoff_checklist）；
+  volume(expand→arc) → chapter×K（prev 链从前卷末章接起）→ beat?；预算 40/卷（§7.3）。
+  末尾幂等追加新卷 after_days → worldstate.pending（**不覆盖 time/characters**——ingest
+  时间轴修复同款纪律；due = 当前 now + 累计）。build/roll 前置文件快照推迟 F5（rollback 属
+  F5 范围，本版依赖版本轨 + nodes/ 增量落盘）。
+- **deepen 开关**：build/run_seed 默认 True；`--no-deepen`（build/resume）退化 F1 最小树。
+  存量 F1 行为测试显式 deepen=False。resume 顺手修复 F1 隐患：volume 已落盘时原 `continue`
+  会整卷跳过章循环，改为落入章循环逐章幂等检查。
+- 测试：`tests/test_m17_forge_f4.py` 8 用例（旁支 DFS 落库+计数 / nodes 落盘+resume 幂等 /
+  arc+beat 层 / max_width 截断告警 / roll 四块注入+pending 追加 / roll 幂等 / roll 前置拒绝 /
+  CLI roll），全量 **391 passed**（2 deselected）。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 
