@@ -486,9 +486,16 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
   `status: "pending"`——不在 worldstate schema 枚举（scheduled|fired|cancelled|expired），
   且 timeline 下游 tick/软 block 只认 scheduled，导致 ingest 登记的定时事件**永远不会被
   提醒/拦截**；改为 scheduled + 补齐 span/created_t/created_at/overdue/block_count。
+- **ingest 时间轴保留**（用户拍板「预计完成时间」语义，2026-09-01）：ingest 末尾曾用
+  `synthesize_worldstate(now=0)` 无条件覆盖 worldstate，把 chronicler 逐章推进的
+  time（「时间：」行 → advance）与按各章 day 锚定的 pending（「约定：」行 → add_pending）
+  全部抹掉。改为：**不覆盖时间轴**，仅把蓝图合成的人物初始态合并进去（保留 chronicler
+  打的 unavailable_*/history）；确定性正则抽「约定」降为无 LLM 兜底（due = 当前 day + dt）。
+  pending 统一语义：**全部条目 = 预计在 day:n 前后发生/完成的事**（细纲 after_days 条目
+  从生成期视角即未来日程，与编纂员「约定：」行同一语义池）。
 - 测试：`tests/test_m16_forge_t4.py` 6 用例（after_days 累计登记 / what 回落标题 /
   无 after_days 兼容 ingest / 乱序章排序累计 / **jsonschema 校验 worldstate** /
-  ingest 行格式对齐），全量 **382 passed**。
+  ingest 行格式对齐），另 test_m15_forge_f3.py 增时间轴保留用例（now=60 不被覆盖、约定按各章 day 锚定），全量 **383 passed**。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 

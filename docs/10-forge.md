@@ -134,8 +134,12 @@ SeedSpec（流派/卖点/主角雏形/规模）        │ I2 LLM 抽取（每�
   "chapters":  [ { "vol": 1, "ch": 1, "title": "玉牌发烫", "pov": "…",
                    "key_events": ["…", "…"], "turns": ["opening-hook", "conflict", "cliffhanger"],
                    "characters": ["char:luchen"], "threads_involved": ["pt:yupai"],
-                   "after_days": 90,             // 可选（ADR-019）：该事件距上一事件的相对天数，
-                                                  // 构建期据此登记 worldstate.pending（定时事件）
+                   "after_days": 90,             // 可选（ADR-019）：该章事件距上一事件的相对天数。
+                                                  // 构建期据此登记 worldstate.pending：due = 此前各章
+                                                  // after_days 累计（预计完成时间，day 轴绝对值）。
+                                                  // 从生成期视角（now=0）它是未来日程——临近时渐进提醒
+                                                  // 引出该事件，正文落地后 fired（与「约定：」行同一语义池，
+                                                  // 用户 2026-09-01 拍板统一为「预计完成时间」）
                    "done": false } ],         // done=true 表示已有正文（模式二），不再生成细纲
   "ingested":  { "source_files": ["…"], "chapter_count": 3, "encoded_as": "vol1 ch1-3" }
 }
@@ -323,6 +327,11 @@ SeedSpec（流派/卖点/主角雏形/规模）        │ I2 LLM 抽取（每�
    （`needs_expansion` 要求展开介绍、开篇配额误判、deferred 错误推迟）。
    与第 3 步 chronicler 同批执行。
 5. `bible/worldstate.json` 初始化为第 N 章末状态（谁在哪、什么境界、什么伤势）。
+   **时间轴由第 3 步 chronicler 逐章推进**（「时间：」行 → `advance`、「约定：」行 →
+   `add_pending`，约定 due 以各章当时 day 锚定——ADR-019「预计完成时间」语义，
+   用户 2026-09-01 拍板）；ingest 末尾只把蓝图合成的人物初始态**合并**进 chronicler
+   推进后的状态，不覆盖 time/pending（曾无条件覆盖 now=0，抹掉逐章推进结果——已修复）。
+   确定性正则抽「约定」仅作无 LLM 兜底（due = 当前 day + 持续时间）。
 
 ### 6.6 缺口检测 → 回落商讨
 

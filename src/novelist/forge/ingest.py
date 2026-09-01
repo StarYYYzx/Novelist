@@ -802,28 +802,50 @@ def run_ingest(ws: Workspace, project_id: str, source: str, *,
     calls_used += mem_used
     warnings += mem_warns
     warm = warmup_entities(ws, project_id, chapters, chapters_per_volume)
-    # worldstate：确定性合成 + pending 从确定性抽取填（第 N 章末状态）
-    from ..core.timeline import parse_pending_line
+    # worldstate：Chronicler 逐章推进的 time/pending 是事实源（「时间：/约定：」行，
+    # 约定 due 以各章当时 day 锚定——ADR-019「预计完成时间」语义，用户 2026-09-01 拍板）。
+    # 本步只把蓝图合成的人物初始态合并进去，**不覆盖时间轴**
+    # （曾用 synthesize_worldstate 无条件覆盖 now=0，抹掉逐章推进结果——修复点）。
+    # 确定性 pending_lines 仅作无 LLM 兜底（fake/降级链路 Chronicler 抽不出「约定：」行）。
+    from ..core.timeline import now_of, parse_pending_line
 
-    ws_data = synthesize_worldstate(bp)
-    pending_lines_all: list[str] = []
-    for c in chapters:
-        pending_lines_all.extend(extract_deterministic(c.text, lexicon)["pending_lines"])
-    pending_items = []
-    for i, line in enumerate(dict.fromkeys(pending_lines_all), 1):
-        parsed = parse_pending_line(line)
-        if parsed:
-            what, dt, _warn = parsed
-            # 字段与 timeline.add_pending 对齐；status 必须是 schema 枚举 "scheduled"
-            # （曾误写 "pending"，timeline 下游 tick/软 block 只认 scheduled → 永远跳过）
-            pending_items.append({"id": f"pd:ingest{i}", "who": "", "what": what,
-                                  "due": int(dt), "span": max(int(dt), 1),
-                                  "created_t": 0, "status": "scheduled",
-                                  "created_at": {"vol": 1, "ch": 0},
-                                  "overdue": 0, "block_count": 0})
-    if pending_items:
+    synth = synthesize_worldstate(bp)
+    ws_path = ws.bible_path(project_id, "worldstate")
+    current = ws.read_json(project_id, ws_path, required=False)
+    if not isinstance(current, dict):
+        current = {}
+    cur_time = current.get("time")
+    ws_data: dict = {
+        "time": cur_time if isinstance(cur_time, dict) and "now" in cur_time else synth["time"],
+        "pending": list(current.get("pending") or []),
+        "characters": synth["characters"],
+    }
+    # Chronicler 给人物打的不可出场期/状态历史保留（synthesize 只合初始态）
+    for cid, cur in (current.get("characters") or {}).items():
+        entry = ws_data["characters"].get(cid)
+        if isinstance(entry, dict) and isinstance(cur, dict):
+            for k in ("unavailable_until", "unavailable_since", "unavailable_reason", "history"):
+                if cur.get(k):
+                    entry[k] = cur[k]
+    if not ws_data["pending"]:
+        # 兜底：due = 当前 day + 持续时间（「预计完成时间」语义；无 LLM 时 now 通常为 0）
+        pending_lines_all: list[str] = []
+        for c in chapters:
+            pending_lines_all.extend(extract_deterministic(c.text, lexicon)["pending_lines"])
+        base = now_of(ws_data)
+        pending_items = []
+        for i, line in enumerate(dict.fromkeys(pending_lines_all), 1):
+            parsed = parse_pending_line(line)
+            if parsed:
+                what, dt, _warn = parsed
+                # 字段与 timeline.add_pending 对齐；status 必须是 schema 枚举 "scheduled"
+                pending_items.append({"id": f"pd:ingest{i}", "who": "", "what": what,
+                                      "due": base + int(dt), "span": max(int(dt), 1),
+                                      "created_t": base, "status": "scheduled",
+                                      "created_at": {"vol": 1, "ch": 0},
+                                      "overdue": 0, "block_count": 0})
         ws_data["pending"] = pending_items
-    ws.write_json(ws.bible_path(project_id, "worldstate"), ws_data)
+    ws.write_json(ws_path, ws_data)
     bp.save(ws, project_id)
 
     # 6) 缺口检测 → 回落商讨（interactive 且 TTY 才真问）

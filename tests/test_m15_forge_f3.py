@@ -341,6 +341,31 @@ def test_ingest_full_pipeline(ws_factory, tmp_path):
                       "ingest.blueprint", "ingest.encode", "ingest.end"]
 
 
+def test_ingest_preserves_chronicler_timeline(ws_factory, tmp_path):
+    """LLM 链路：chronicler 逐章推进的 time/pending 不被末尾合成覆盖
+    （ADR-019「预计完成时间」语义，用户 2026-09-01 拍板）。
+
+    行格式回复对抽取阶段是无效 JSON → 降级确定性（吃配额但继续）；
+    记忆初始化阶段 chronicler 正常解析「时间：/约定：」行。
+    """
+    ws, pid = ws_factory("proj-f3i")
+    src = _write_draft(tmp_path, "第 1 章 甲\n\n陆沉闭关修炼，陆沉心无旁骛，陆沉服下丹药。\n\n"
+                                  "第 2 章 乙\n\n陆沉出关，陆沉长啸，声震山谷。\n")
+    reply = ("事件：陆沉闭关修炼|discovery|陆沉\n时间：+30日\n约定：三日后出关试炼|+3日\n"
+             "事件：陆沉出关|turning_point|陆沉\n时间：+90日\n约定：三日后出关试炼|+3日\n")
+    res = run_ingest(ws, pid, str(src), provider=LineProvider(reply),
+                     chapters_per_volume=20, target_words=100,
+                     mode="auto", io=FakeIO(is_tty=False))
+    assert res.ok
+    ws_data = ws.read_json(pid, ws.bible_path(pid, "worldstate"))
+    assert ws_data["time"]["now"] == 60           # 30 + 30 逐章推进（同一回复 ×2 章），不被覆盖为 0
+    pend = ws_data["pending"]
+    dues = sorted(p["due"] for p in pend if "出关试炼" in p["what"])
+    assert 3 in dues                              # ch1 约定：due = 0 + 3（登记先于推进）
+    assert 33 in dues                             # ch2 约定：due = 30 + 3（按当时 day 锚定）
+    assert ws_data["characters"]                  # 蓝图人物初始态仍在
+
+
 def test_ingest_dry_run_no_write(ws_factory, tmp_path):
     ws, pid = ws_factory("proj-f3e")
     src = _write_draft(tmp_path, DRAFT)
