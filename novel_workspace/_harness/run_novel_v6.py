@@ -52,6 +52,10 @@ PID = "proj-yelan2"
 CLOUD_BASE = "http://127.0.0.1:6006"          # 隧道本地端口（tunnel_autodl.py --server A）
 CLOUD_MODEL = "Qwen3.5-9B-Q8_0.gguf"
 GEN_TOKENS = 1200                              # 思考已关：预算即正文预算
+LENGTH_CAP_CHARS = 7000                        # Y-2 篇幅硬上限（第七批机制接线）：
+                                               # 止损极端膨胀（v6 ch9 曾 12023 字），
+                                               # 段落边界截断不腰斩；7000 只切失控章，
+                                               # 不伤合理长章（v5 ch6 同章 8388 字）
 LOG = Path(__file__).resolve().parent / "run_v6_log.jsonl"
 HEAVYWEIGHT_CHAPTERS = {7}                     # 1-10 内的重场戏：ch7 大比
 
@@ -90,6 +94,7 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
+        length_cap_chars=LENGTH_CAP_CHARS,   # Y-2 篇幅硬上限（第七批机制接线）
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:200], "secs": round(time.time() - t0)}
@@ -99,6 +104,7 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         "heavyweight": heavyweight,
         "chars": res.completeness.get("chars"),
         "ends_properly": res.completeness.get("ends_properly"),
+        "length_truncated": res.length_truncated,  # Y-2 篇幅上限截断标记
         "meta": res.completeness.get("meta_narration") or [],
         "bible": res.bible_injected, "attempts": res.attempts,
         "events": res.events_committed,
@@ -157,7 +163,9 @@ def main() -> None:
         tally["threads"] += rec.get("threads_activated", 0)
         st = rec.get("state_updates") or {}
         print(f"[ch{ch}] {rec['secs']}s chars={rec['chars']} 完整={rec['ends_properly']}"
-              f" 重场戏={rec['heavyweight']} | 编纂 {rec['chronicle_written']} 条"
+              f" 重场戏={rec['heavyweight']}"
+              + (" 截断!" if rec.get("length_truncated") else "")
+              + f" | 编纂 {rec['chronicle_written']} 条"
               f" 状态 {len(st)} 人 伏笔流转 {rec.get('threads_activated', 0)}"
               + (f" 冲突{len(rec['chronicle_conflicts'])}" if rec.get("chronicle_conflicts") else "")
               + f" | 审校 block={rec.get('review_blocks', 0)}/{rec.get('review_blocks_chapter', 0)}"
