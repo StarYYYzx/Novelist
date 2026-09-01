@@ -553,8 +553,8 @@ src/novelist/forge/
   state.py         # ✅ ForgeState + Blueprint 读写 + provenance（docs/08 F0 落地记录）
   slots.py         # ✅ 槽位表 + 分组 + 缺口检测（确定性，零 LLM）
   genres.py        # ✅ Genre Pack 装载（id/别名匹配，通用兜底，装载即自身 schema 校验）
-  ask.py           # 问答协议（引擎侧：生成问题、解析回答、transcript）—— F2
-  io_console.py    # 问答通道的终端实现（接口化，便于日后换 HTTP）—— F2
+  ask.py           # ✅ 问答协议（引擎侧：生成问题、解析回答、transcript）—— F2（docs/08 F2 落地记录）
+  io_console.py    # ✅ 问答通道的终端实现（接口化，便于日后换 HTTP）—— F2（docs/08 F2 落地记录）
   seed.py          # ✅ 模式一：种子提炼 + 授权询问（docs/08 F1 落地记录）
   ingest.py        # 模式二：切片 / 抽取 / 消歧 / 文风画像 / 卷章编码 / 记忆初始化 —— F3
   engine.py        # ✅ 递归构建引擎（调度 + 边界 + 落盘 + 续跑）—— F1
@@ -601,7 +601,7 @@ src/novelist/forge/
 | **F0' schema 对齐**（前置） | `schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + **`schemas/forge/blueprint.schema.json` 与 `genres.schema.json`**（2026-09-01 补：蓝图与类型包是新文件格式，V1 须校验自身中间态，手改打错键名不能等到 build 才爆） | 既有项目（proj-t5）全部 bible/outline 文件过 V1；蓝图/Genre Pack 可校验 |
 | **F0 骨架** | `state.py` + `slots.py` + Genre Pack 装载 + `forge show` | 能加载/编辑/校验蓝图（无 LLM） |
 | **F1 模式一（全权）** | `seed.py` + `engine.py` 最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘 + provenance 保护 | ✅ 一句话 → bible + volumes + 卷 1 细纲（AG1 通过，docs/08 F1 落地记录） |
-| **F2 商讨** | `ask.py` + `io_console.py` + transcript 续跑 + 授权询问 + 非 TTY 降级 + 自由答案 | 分轮问答可用，可中断续跑 |
+| **F2 商讨** | `ask.py` + `io_console.py` + transcript 续跑 + 授权询问 + 非 TTY 降级 + 自由答案 | ✅ 分轮问答可用，可中断续跑（AG3 通过，docs/08 F2 落地记录） |
 | **F3 模式二** | `ingest.py`：切章预览 / 抽取（超限降级）/ 消歧 / 文风 / 卷章编码 / 记忆初始化 / **实体 warm-up** + 缺口回落 | 已有稿子 → 接着写 |
 | **F4 递归深化 + 滚动** | 旁支节点（worldview/character/style/threads）+ 可选 arc/beat 层 + `forge roll` + Genre Pack 扩充 | 卷 2 细纲滚动生成，质量提升 |
 | **F5 定稿** | `validate.py` V1–V6 + 冒烟 + report 双写 + rollback / --diff + pipeline 推进 | A1 可验收 |

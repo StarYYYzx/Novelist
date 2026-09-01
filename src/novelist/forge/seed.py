@@ -1,14 +1,14 @@
-"""模式一 `seed`（docs/10 §5）：一句话 → 蓝图 → 全权构建（M3l F1）。
+"""模式一 `seed`（docs/10 §5）：一句话 → 蓝图 → 构建（M3l F1/F2）。
 
-流程（docs/08 F1 表格）：
+流程（docs/08 F1/F2 表格）：
 1. **种子提炼**（1 次 LLM）：brief + 可用 Genre Pack 清单 → `SeedSpec`。
    解析失败降级为确定性兜底（genre/scale 用 CLI 参数与包默认），记 warn、写 transcript。
 2. **蓝图初始化**：SeedSpec → blueprint meta / 主角骨架 / 包默认值（src=template）。
    CLI 显式参数（--volumes 等）视为用户输入，provenance=user——受保护，永不被模型覆盖。
 3. **授权询问**（interactive 且 TTY）：展示提炼结果，问 [1] 全权 / [2] 商讨。
-   非 TTY 自动降级 auto + 告警写 transcript（docs/10 §5.3）。选 [2] 时 F2 未实现，
-   打印提示并回落全权（transcript 留痕）。F1 全权模式不逐槽提问。
-4. **全权构建**：调 `engine.build`（最小树 book→volume→chapter，卷闸门 vol=1）。
+   非 TTY 自动降级 auto + 告警写 transcript（docs/10 §5.3）。选 [2] 进 `run_consult`
+   （F2：分轮问答，q 提前结束则留缺口等 resume/build）。
+4. **构建**：调 `engine.build`（最小树 book→volume→chapter，卷闸门 vol=1）。
    构建后蓝图可手工编辑，`forge build` 重跑（provenance 保护 src=user）。
 """
 
@@ -57,6 +57,7 @@ class SeedResult:
     warnings: list[str] = field(default_factory=list)
     build: dict = field(default_factory=dict)  # engine.BuildResult.to_dict()
     blueprint_path: str = ""
+    quit_early: bool = False  # 商讨 q 退出（已答落蓝图，未答留缺口）
 
 
 # ---- 种子提炼 ----
@@ -228,9 +229,9 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
     return bp
 
 
-# ---- 授权询问（docs/10 §5.2，仅一次；F1 只有 [1] 全权可用）----
-def _authorize_ask(bp: Blueprint, spec: SeedSpec, brief: str) -> bool:
-    """交互询问 [1] 全权 / [2] 商讨；返回 True=继续全权。商讨分支 F2 提供，回落全权。"""
+# ---- 授权询问（docs/10 §5.2，仅一次）----
+def _authorize_ask(bp: Blueprint, spec: SeedSpec, brief: str) -> str:
+    """交互询问 [1] 全权 / [2] 商讨；返回 'auto' | 'consult'（F2）。"""
     meta = bp.get("meta") or {}
     scale = meta.get("scale") or {}
     ph = spec.protagonist_hint or {}
@@ -251,17 +252,15 @@ def _authorize_ask(bp: Blueprint, spec: SeedSpec, brief: str) -> bool:
         "",
         "接下来怎么构建？",
         "  [1] 全权构建 —— 我按流派模板补全全部设定，最后给你一份清单过目",
-        "  [2] 商讨构建 —— 分 3–4 轮问你 8–12 个关键设定，每问都给候选值（F2 提供）",
+        "  [2] 商讨构建 —— 分 3–4 轮问你关键设定，每问都给候选值",
         "选择 [1/2]（回车默认 [1]）：",
     ]
     print("\n".join(lines), flush=True)
     try:
         ans = input().strip()
     except EOFError:
-        return True
-    if ans == "2":
-        print("商讨模式（F2）尚未实现，本版按全权构建继续。", flush=True)
-    return True
+        return "auto"
+    return "consult" if ans == "2" else "auto"
 
 
 # ---- 主入口 ----
@@ -271,10 +270,11 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
              target_words: int | None = None,
              max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
              smoke: bool = False,
-             ask_fn: Callable[[Blueprint, SeedSpec, str], bool] | None = None) -> SeedResult:
-    """一句话 → 蓝图 → 全权构建（F1）。mode=interactive 且 TTY 时先授权询问。
+             ask_fn: Callable[[Blueprint, SeedSpec, str], str] | None = None) -> SeedResult:
+    """一句话 → 蓝图 → 构建。mode=interactive 且 TTY 时先授权询问。
 
-    `smoke=True`：只提炼 + 建蓝图，不跑构建（CLI --smoke，docs/10 §11）。
+    `ask_fn` 返回 'auto'（全权）或 'consult'（商讨）。`smoke=True`：只提炼 + 建蓝图，
+    不跑构建（CLI --smoke，docs/10 §11）。
     """
     warnings: list[str] = []
     state = ForgeState.load(ws, project_id)
@@ -318,20 +318,48 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
     append_transcript(ws, project_id, "seed.blueprint", rev=bp.data["rev"],
                       genre=pack_id, scale=bp.get("meta.scale"))
 
-    # 3) 授权询问（interactive 且 TTY；否则降级 auto）
+    # 3) 授权询问（interactive 且 TTY；否则降级 auto）——[2] 商讨进入 run_consult（F2）
     mode_used = mode
+    consult = None
     if mode == "interactive":
         tty = sys.stdin.isatty() and sys.stdout.isatty()
         if tty:
             ask = ask_fn or _authorize_ask
-            ask(bp, spec, brief)
+            choice = ask(bp, spec, brief)
             mode_used = "interactive"
+            if choice == "consult":
+                from .ask import ConsultResult, run_consult
+                from .io_console import ConsoleIO
+                from .slots import slots_for_genre
+
+                state.touch_stage(ws, project_id, "consulting")
+                consult = run_consult(ws, project_id, bp, provider=provider, io=ConsoleIO(),
+                                      slots=slots_for_genre(pack))
+                warnings += consult.warnings
+                if not consult.quit_early:
+                    state.touch_stage(ws, project_id, "seeded")
         else:
             warnings.append("非交互环境：interactive 降级为 auto（全部取推荐值）")
             append_transcript(ws, project_id, "seed.downgrade", reason="no-tty")
             mode_used = "auto"
     state.interaction = mode_used
     state.save(ws, project_id)
+
+    # 商讨中途 q 退出：已答落蓝图 + transcript，未答留缺口——不构建，等 resume/build
+    if consult is not None and consult.quit_early:
+        state.stage = "consulting"
+        state.save(ws, project_id)
+        warnings.append(
+            f"商讨提前结束（已答 {consult.answered} 项 / 自由答案 {consult.free_answers} 项，"
+            f"完成 {consult.rounds_done} 轮）。"
+            "用 `forge resume` 继续商讨，或 `forge build` 直接构建。"
+        )
+        return SeedResult(
+            ok=True, project_id=project_id, spec=spec, mode_used=mode_used,
+            warnings=warnings, build={"calls_used": 0, "ok": False},
+            blueprint_path=str(ws._abs(f"{project_id}/workspace/forge/blueprint.json")),  # noqa: SLF001
+            quit_early=True,
+        )
 
     # 4) 全权构建（最小树）；smoke 模式只提炼 + 建蓝图
     if smoke:

@@ -7,8 +7,10 @@ engine / nodes / validate / report。
 
 from __future__ import annotations
 
+from .ask import ConsultResult, run_consult
 from .engine import BuildResult, build
 from .genres import load_pack, load_pack_for, list_packs
+from .io_console import AnswerIO, ConsoleIO
 from .seed import SeedResult, SeedSpec, run_seed
 from .slots import Slot, detect_gaps, default_slots, group_slots, slots_for_genre
 from .state import Blueprint, ForgeState, append_transcript, read_transcript
@@ -31,6 +33,10 @@ __all__ = [
     "run_seed",
     "BuildResult",
     "build",
+    "AnswerIO",
+    "ConsoleIO",
+    "ConsultResult",
+    "run_consult",
 ]
 
 

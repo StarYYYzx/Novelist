@@ -321,7 +321,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | ✅ 完成（契约校验层 core/bible.py + CLI validate + 5 项目全过，见下） |
 | F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | ✅ 完成（forge 包 + 2 类型包 + CLI show，见下） |
 | F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | ✅ 完成（forge/seed+nodes+engine + CLI seed/build/resume，AG1 通过，见下） |
-| F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | 待做 |
+| F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | ✅ 完成（forge/ask+io_console + CLI resume 分流，见下） |
 | F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | 待做 |
 | F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | 待做 |
 | F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | 待做 |
@@ -417,6 +417,29 @@ AG1（一句话 + FakeProvider → `chapter 1 1` 可直出且 `bible_injected=Tr
 - 真实链路修复：LM-Studio 冒烟暴露 `response_format.type=json_object` 400（兼容层只认
   json_schema/text）。修复 `providers/lmstudio.py`：json_object 请求剥掉 response_format，
   靠 prompt 引导 JSON（forge/抽取层解析器本就宽松兜底）。
+
+**F2 落地记录（2026-09-01，商讨问答协议）**：`forge/ask.py` + `forge/io_console.py`，
+docs/10 §5.3 协议落地——问题由引擎（确定性）决定、候选由模型（LLM）批量生成：
+
+- **io_console.py**：`AnswerIO` Protocol（is_tty/notify/ask_choice/ask_free/confirm）+ `ConsoleIO`
+  （可注入 `_in`/`_out`；回车=推荐值、`N xxx`=第 N 项自由答案、`N`=选第 N 候选、`q`=退出）。
+- **ask.py**：槽位缺口检测（unfilled/low_confidence）→ `group_slots` 分轮（3–4 轮 × ≤4 问）；
+  每轮 1 次 LLM 批量生成候选（`_gen_candidates`，失败回退 `{}` 记 `candidates.fallback`，不阻断商讨）；
+  `parse_round_line` 纯函数解析用户行（乱码保守全默认）；`_apply_slot_value` 按槽位类型写蓝图——
+  `characters[role:*]` 直接改 section 对象（伪路径不走 `bp.set`）、threads→`pt:{slug}` upsert、
+  style.glossary 按 term 查重、list 类拆 `、`/空格、空值/占位值保持缺口。
+- **transcript 续跑**：`ask.answer`/`ask.skip` 事件逐项落 `transcript.jsonl`；`_answered_keys` 以
+  已答 key 集合判据，resume 幂等续问（跳过已答槽位）。
+- **seed 集成**：`_authorize_ask` 返回 `"auto"|"consult"`（去掉"[2] 尚未实现"占位）；consult 分支
+  `touch_stage("consulting")` → run_consult（slots_for_genre(pack)）→ 无 quit 则 `touch_stage("seeded")`；
+  quit_early 保持 consulting、不构建（`SeedResult.quit_early=True`）。
+- **CLI**：`forge resume` 新增 `--provider`；按 `state.stage` 分流——`consulting`→run_consult 续商讨，
+  否则→build 续跑。`forge seed` quit_early 时提示"resume 继续商讨 / build 直接构建"。
+- 测试：`tests/test_m14_forge_f2.py` 17 用例（parse_round_line 5 / ConsoleIO 原语 / run_consult 7：
+  非 TTY 降级+AG3 收敛 answered≤12、TTY 自由答案 src=user conf=1.0、每轮恰好 1 次 LLM 调用、
+  候选失败回退、结构化写入 threads/glossary/rival、resume 幂等、q 提前退出 / seed 集成 2：
+  quit_early 不构建、商讨完整→继续构建 / CLI 2：resume 按 stage 分流）。
+  全量 **350 passed**（2 deselected 慢测试）。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 

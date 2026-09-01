@@ -707,6 +707,9 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
     )
     if res.build.get("budget_exhausted"):
         click.echo("预算耗尽：部分节点未生成，改动蓝图后 `forge resume` 续跑。", err=True)
+    if res.quit_early:
+        click.echo(f"下一步：`forge resume --dir {project_id}` 继续商讨，或 `forge build --dir {project_id}` 直接构建")
+        return
     if not res.ok:
         raise click.ClickException("seed 构建未完成，见上方 warnings")
     click.echo(f"下一步：`novelist chapter 1 1 --dir {project_id}` 或 `novelist forge show {project_id}`")
@@ -751,18 +754,36 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
 @forge.command("resume")
 @click.argument("directory", required=False, default=None)
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted（商讨续跑时生成候选）")
 @click.pass_context
-def forge_resume(ctx: click.Context, directory: str | None, max_calls: int) -> None:
-    """断点续跑：跳过已落盘节点（chapter 文件 / volumes 条目），从断点继续（幂等）。"""
-    from novelist.forge import Blueprint, build
+def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, provider: str) -> None:
+    """断点续跑：商讨中断 → 续问答；构建中断 → 跳过已落盘节点续构建（幂等）。"""
+    from novelist.forge import Blueprint, ForgeState, build, run_consult
 
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
     try:
-        Blueprint.load(ws, project_id)
+        bp = Blueprint.load(ws, project_id)
     except FileNotFoundError:
         raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
-    res = build(ws, project_id, provider=_make_cli_provider("fake"),
+    state = ForgeState.load(ws, project_id)
+    if state.stage == "consulting":
+        # 商讨续问：已答槽位自动跳过（transcript 判据），q 可再次退出
+        from novelist.forge import ConsoleIO
+
+        consult = run_consult(ws, project_id, bp, provider=_make_cli_provider(provider),
+                              io=ConsoleIO())
+        for w in consult.warnings:
+            click.echo(f"  [warn] {w}", err=True)
+        click.echo(f"consult resume done: 已答 {consult.answered} 项 / 自由 {consult.free_answers} / "
+                   f"完成 {consult.rounds_done} 轮")
+        if consult.quit_early:
+            click.echo(f"下一步：`forge resume --dir {project_id}` 继续，或 `forge build --dir {project_id}` 直接构建")
+            return
+        state.touch_stage(ws, project_id, "seeded")
+        click.echo(f"商讨完成。下一步：`forge build --dir {project_id}` 开始构建")
+        return
+    res = build(ws, project_id, provider=_make_cli_provider(provider),
                 max_calls=max_calls, resume=True)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
