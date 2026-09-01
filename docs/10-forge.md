@@ -556,7 +556,7 @@ src/novelist/forge/
   ask.py           # ✅ 问答协议（引擎侧：生成问题、解析回答、transcript）—— F2（docs/08 F2 落地记录）
   io_console.py    # ✅ 问答通道的终端实现（接口化，便于日后换 HTTP）—— F2（docs/08 F2 落地记录）
   seed.py          # ✅ 模式一：种子提炼 + 授权询问（docs/08 F1 落地记录）
-  ingest.py        # 模式二：切片 / 抽取 / 消歧 / 文风画像 / 卷章编码 / 记忆初始化 —— F3
+  ingest.py        # ✅ 模式二：切片 / 抽取 / 消歧 / 文风画像 / 卷章编码 / 记忆初始化 —— F3（docs/08 F3 落地记录）
   engine.py        # ✅ 递归构建引擎（调度 + 边界 + 落盘 + 续跑）—— F1
   nodes.py         # ✅ 各节点类型的 prompt 装配 + artifact 解析 + 落盘 —— F1
   genres/          # ✅ 修仙男频.json / 通用.json（Genre Pack，数据；新增类型=加 JSON 零改码）
@@ -602,7 +602,7 @@ src/novelist/forge/
 | **F0 骨架** | `state.py` + `slots.py` + Genre Pack 装载 + `forge show` | 能加载/编辑/校验蓝图（无 LLM） |
 | **F1 模式一（全权）** | `seed.py` + `engine.py` 最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘 + provenance 保护 | ✅ 一句话 → bible + volumes + 卷 1 细纲（AG1 通过，docs/08 F1 落地记录） |
 | **F2 商讨** | `ask.py` + `io_console.py` + transcript 续跑 + 授权询问 + 非 TTY 降级 + 自由答案 | ✅ 分轮问答可用，可中断续跑（AG3 通过，docs/08 F2 落地记录） |
-| **F3 模式二** | `ingest.py`：切章预览 / 抽取（超限降级）/ 消歧 / 文风 / 卷章编码 / 记忆初始化 / **实体 warm-up** + 缺口回落 | 已有稿子 → 接着写 |
+| **F3 模式二** | `ingest.py`：切章预览 / 抽取（超限降级）/ 消歧 / 文风 / 卷章编码 / 记忆初始化 / **实体 warm-up** + 缺口回落 | ✅ 已有稿子 → 接着写（AG2 可用，docs/08 F3 落地记录） |
 | **F4 递归深化 + 滚动** | 旁支节点（worldview/character/style/threads）+ 可选 arc/beat 层 + `forge roll` + Genre Pack 扩充 | 卷 2 细纲滚动生成，质量提升 |
 | **F5 定稿** | `validate.py` V1–V6 + 冒烟 + report 双写 + rollback / --diff + pipeline 推进 | A1 可验收 |
 

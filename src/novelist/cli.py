@@ -793,6 +793,58 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
         raise click.ClickException("续跑未完成，见上方 warnings")
 
 
+@forge.command("ingest")
+@click.argument("source")
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted（语义抽取）")
+@click.option("--genre-pack", default=None, help="类型包 id（缺省通用包；抽取词表随包）")
+@click.option("--chapters-per-volume", type=int, default=None, help="每卷章数（缺省 20）")
+@click.option("--target-words", type=int, default=None, help="切章目标字数（缺省 2400）")
+@click.option("--ingest-max-calls", type=int, default=30, help="抽取独立配额（超出降级纯确定性）")
+@click.option("--mode", type=click.Choice(["auto", "interactive"]), default="auto",
+              help="interactive 且 TTY：缺口回落商讨；非 TTY 自动降级")
+@click.option("--dry-run", is_flag=True, default=False, help="只切章预览，不写库")
+@click.option("--recursive", is_flag=True, default=False, help="递归扫描子目录 .md/.txt")
+@click.pass_context
+def forge_ingest(ctx: click.Context, source: str, directory: str | None, provider: str,
+                 genre_pack: str | None, chapters_per_volume: int | None,
+                 target_words: int | None, ingest_max_calls: int,
+                 mode: str, dry_run: bool, recursive: bool) -> None:
+    """模式二：已有稿子 → 蓝图 + 正式章节 + 记忆初始化（F3）。
+
+    切章预览确认后：抽取（确定性优先 + LLM 补语义，独立配额降级）→ 归并消歧 →
+    文风画像 → 卷章编码（chapters/<vol>-<ch>.md 已是正式章节 + 细纲 done=true）→
+    chronicler 记忆初始化 + entity warm-up + worldstate 初始态。之后可 `chapter N+1` 接写。
+    """
+    from novelist.forge import ForgeState, run_ingest
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    # fake = 演示/测试（纯确定性抽取链路）；真实 provider 走语义抽取 + 记忆初始化
+    prov = None if provider == "fake" else _make_cli_provider(provider)
+    res = run_ingest(ws, project_id, source, provider=prov,
+                     genre=genre_pack,
+                     chapters_per_volume=chapters_per_volume or 20,
+                     target_words=target_words or 2400,
+                     ingest_max_calls=ingest_max_calls,
+                     mode=mode, dry_run=dry_run, recursive=recursive)
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    if res.quit_early:
+        click.echo("切章确认退出：未写库。重跑 `forge ingest` 重新预览。")
+        return
+    click.echo(f"ingest done: 章={res.chapters_ingested} 卷={res.volumes_encoded} "
+               f"人物={res.characters_found} 调用={res.calls_used}")
+    if res.downgraded:
+        click.echo(f"  [info] 以下章节降级纯确定性抽取: {res.downgraded}", err=True)
+    if dry_run:
+        return
+    if not res.ok:
+        raise click.ClickException("ingest 未完成，见上方 warnings")
+    click.echo(f"下一步：`novelist chapter {res.volumes_encoded} 1 --dir {project_id}` 接着写（N+1 章）"
+               f"或 `novelist forge show {project_id}`")
+
+
 @cli.command()
 @click.option("--host", default="127.0.0.1", help="监听地址")
 @click.option("--port", default=8000, type=int, help="监听端口")

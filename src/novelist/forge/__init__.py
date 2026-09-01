@@ -10,6 +10,7 @@ from __future__ import annotations
 from .ask import ConsultResult, run_consult
 from .engine import BuildResult, build
 from .genres import load_pack, load_pack_for, list_packs
+from .ingest import IngestResult, run_ingest
 from .io_console import AnswerIO, ConsoleIO
 from .seed import SeedResult, SeedSpec, run_seed
 from .slots import Slot, detect_gaps, default_slots, group_slots, slots_for_genre
@@ -33,6 +34,8 @@ __all__ = [
     "run_seed",
     "BuildResult",
     "build",
+    "IngestResult",
+    "run_ingest",
     "AnswerIO",
     "ConsoleIO",
     "ConsultResult",

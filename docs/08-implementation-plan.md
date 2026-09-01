@@ -322,7 +322,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | ✅ 完成（forge 包 + 2 类型包 + CLI show，见下） |
 | F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | ✅ 完成（forge/seed+nodes+engine + CLI seed/build/resume，AG1 通过，见下） |
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | ✅ 完成（forge/ask+io_console + CLI resume 分流，见下） |
-| F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | 待做 |
+| F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | ✅ 完成（forge/ingest.py + CLI forge ingest，见下） |
 | F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | 待做 |
 | F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | 待做 |
 
@@ -440,6 +440,39 @@ docs/10 §5.3 协议落地——问题由引擎（确定性）决定、候选由
   候选失败回退、结构化写入 threads/glossary/rival、resume 幂等、q 提前退出 / seed 集成 2：
   quit_early 不构建、商讨完整→继续构建 / CLI 2：resume 按 stage 分流）。
   全量 **350 passed**（2 deselected 慢测试）。
+
+**F3 落地记录（2026-09-01，模式二 ingest）**：`forge/ingest.py` + CLI `forge ingest`，
+docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写：
+
+- **摄入与切片**（§6.1）：`slice_chapters` 目录/文件列表（--recursive，.md/.txt，空文件跳过）→
+  `第X章`/`Chapter N` 标题行优先（**容忍数字与章节字间的空格**：`第 1 章` 也认），识别不到按
+  空行段落 + 目标字数兜底切；`preview_chapters` 预览确认（回车=全部确认 / `R`=全按字数重切 /
+  `N`=从第 N 章起重切 / `q`=退出不写库；非 TTY 自动直过）。
+- **抽取**（§6.2）：`extract_deterministic` 纯正则零 LLM——2/3 字名启发式（**同族取频次高者为主名**，
+  叶蓝心 ≥ 叶蓝 保留全名、陆沉X < 陆沉 归并；姓氏表补常用缺漏姓叶/龙/齐…；`_ORG_STOP` 滤组织通名
+  宗门/弟子…）、称谓共现提权、专名 `_match_suffix`（**动词/虚词前缀截断**：服用洗髓丹→洗髓丹）、
+  pending 双语序（闭关三月后 | 三日后闭关，`[^。！？\n]` 防跨句）、对白占比/句长指标。
+  LLM 补语义（性别/境界/性格/别名/关系/key_events/pending/伏笔/文风），**独立配额
+  `--ingest-max-calls`**，超限/失败/无 provider 全部降级纯确定性 + `downgraded` 章号 + warnings 披露
+  （docs/10 §12 不静默）。
+- **归并消歧**（§6.3）：`merge_characters` 别名归一（叶岚/叶师弟 → 同一 `char:`）、频次 ≥3 进主线、
+  LLM relation=主角 或最高频者 → protagonist；**id 序号制**（`char:in1`…）——中文名不可作 id
+  （schema 限 `^char:[A-Za-z0-9_-]+$`），`_slug` 会全消中文导致 id 撞车互相覆盖（修复点）。
+- **文风画像**（§6.4）：`style_from_ingest` pov/target_words 取包默认，tone 由 style_notes 归纳，
+  provenance=ingested（后续商讨只 confirm 不重问）。
+- **卷章编码 + 记忆初始化**（§6.5）：N 章按 chapters_per_volume 编入卷 → `chapters/<vol>-<ch>.md`
+  （**已是正式章节**）+ 细纲反写 `done=true`；chronicler 逐章抽事件写 `memory/` + `MemoryIndex.rebuild`
+  （第 N+1 章"先忆"非空）；`EntityTracker.update_from_chapter` 逐章 warm-up 重建
+  `bible/entity_progress.json`；worldstate 确定性合成 + pending 结构化（`parse_pending_line` →
+  `{"id": "pd:ingestN", "what", "due", "status"}`）。
+- **缺口回落**（§6.6）：interactive 且 TTY 才回落 run_consult（slots_for_genre(pack)）；无 provider
+  跳过并告警；stage 流转 ingest→ingested。
+- **CLI**：`forge ingest source [directory]`（--provider 缺省 fake=纯确定性链路 / --genre-pack /
+  --chapters-per-volume / --target-words / --ingest-max-calls / --mode / --dry-run / --recursive），
+  成功提示"下一步：`chapter {vol} 1` 接着写（N+1 章）"。
+- 测试：`tests/test_m15_forge_f3.py` 26 用例（切片 5 / 预览 5 / 确定性抽取 4 / 消歧 2 / 降级与披露 3 /
+  全链路 1 + dry_run 1 + interactive 回落 1 / 记忆初始化 2 / CLI 2），全量 **376 passed**
+  （2 deselected 慢测试）。功能冒烟 `novel_workspace/_harness/f3_smoke.py`（FakeProvider 全链路）。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 
