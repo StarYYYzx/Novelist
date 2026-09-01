@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.local/schemas/forge/genres",
+  "title": "Genre Pack",
+  "description": "类型包 Genre Pack（docs/10 §8）：一种小说类型的全部构建知识——槽位覆盖、抽取词表、构建节奏、默认文风。数据非代码，新增类型 = 加一个 JSON。F0：新增，V1 校验。",
+  "type": "object",
+  "required": ["id", "genre"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "description": "类型包唯一 id（如 修仙男频）" },
+    "genre": { "type": "string", "description": "归属大类（如 修仙）" },
+    "aliases": { "type": "array", "items": { "type": "string" }, "description": "用户描述/seed 提炼结果匹配用别名" },
+    "slots": {
+      "type": "object",
+      "description": "覆盖槽位表：按 path 覆盖默认槽位的 candidates/enum/ask/group",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "candidates": { "type": "array", "items": { "type": "string" } },
+          "enum": { "type": "array", "items": { "type": "string" } },
+          "ask": { "type": "string" },
+          "default": { "type": "string" },
+          "group": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "extract_lexicon": {
+      "type": "object",
+      "description": "模式二确定性抽取词表（docs/10 §6.2）",
+      "properties": {
+        "realms": { "type": "array", "items": { "type": "string" }, "description": "境界/等级词根" },
+        "faction_suffix": { "type": "array", "items": { "type": "string" }, "description": "势力后缀（宗/门/城…）" },
+        "item_suffix": { "type": "array", "items": { "type": "string" }, "description": "物品后缀（丹/剑/诀…）" },
+        "address": { "type": "array", "items": { "type": "string" }, "description": "称谓（师姐/长老…）" },
+        "unavailable_states": { "type": "array", "items": { "type": "string" }, "description": "不可出场期触发词（闭关/失踪/昏迷/被囚/渡劫，ADR-019）" }
+      }
+    },
+    "power_system": {
+      "type": "object",
+      "properties": {
+        "levels": { "type": "array", "items": { "type": "string" } },
+        "mechanic": { "type": "string" }
+      }
+    },
+    "character_slots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {
+          "role": { "enum": ["protagonist", "mentor", "rival", "love_interest", "minor"] },
+          "hint": { "type": "string" },
+          "count": { "type": "integer", "minimum": 1, "description": "配角数量提示" }
+        }
+      }
+    },
+    "chapter_rhythm": { "type": "array", "items": { "type": "string" }, "description": "章内节奏 turns 序列候选" },
+    "default_style": {
+      "type": "object",
+      "properties": {
+        "pov": { "type": "string" },
+        "tone": { "type": "array", "items": { "type": "string" } },
+        "target_words_per_chapter": { "type": "integer", "minimum": 100 }
+      }
+    },
+    "default_banned": { "type": "array", "items": { "type": "string" }, "description": "默认禁用词（现代词/出戏词）" },
+    "volume_arc_hint": { "type": "string", "description": "卷主线节奏提示（驱动 volumes 构建）" }
+  }
+}

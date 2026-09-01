@@ -1,0 +1,45 @@
+{
+  "id": "修仙男频",
+  "genre": "修仙",
+  "aliases": ["仙侠", "修真", "玄幻修仙"],
+  "slots": {
+    "worldview.power_system.levels": {
+      "candidates": ["练气-筑基-金丹-元婴-化神", "炼体-通脉-宗师-武圣", "淬体-开灵-凝魄-分魂-合道"],
+      "default": "练气-筑基-金丹-元婴-化神"
+    },
+    "style.tone": {
+      "enum": ["热血激昂", "严谨冷肃", "诙谐幽默", "杀伐果断", "温柔细腻"],
+      "default": "热血激昂"
+    },
+    "meta.themes": {
+      "candidates": ["逆天改命", "宗门兴衰", "大道独行", "因果报应", "红尘历练"],
+      "ask": "这本书的核心主题？"
+    }
+  },
+  "extract_lexicon": {
+    "realms": ["练气", "炼气", "筑基", "金丹", "元婴", "化神", "炼体", "通脉", "宗师"],
+    "faction_suffix": ["宗", "门", "城", "谷", "殿", "阁", "派", "教"],
+    "item_suffix": ["丹", "剑", "诀", "经", "符", "印", "旗", "钟"],
+    "address": ["师姐", "师兄", "长老", "门主", "宗主", "师叔", "师祖", "掌门"],
+    "unavailable_states": ["闭关", "闭死关", "入定", "失踪", "昏迷", "被囚", "囚禁", "渡劫", "沉睡", "疗伤"]
+  },
+  "power_system": {
+    "levels": ["练气", "筑基", "金丹", "元婴", "化神"],
+    "mechanic": "炼气入体，逐境而上；大境界跨度质变，同境分前期/中期/后期/大圆满"
+  },
+  "character_slots": [
+    { "role": "protagonist", "hint": "穿越/废柴/身世谜，金手指宿主" },
+    { "role": "mentor", "hint": "引路人或随身老爷爷" },
+    { "role": "rival", "hint": "同期天骄，多次交锋" },
+    { "role": "love_interest", "hint": "宗门师姐/青梅/宿敌之女" },
+    { "role": "minor", "count": 4, "hint": "同门/坊市/敌对势力路人" }
+  ],
+  "chapter_rhythm": ["opening-hook", "setup", "conflict", "climax", "cliffhanger"],
+  "default_style": {
+    "pov": "第三人称限知（主角视角）",
+    "tone": ["热血激昂"],
+    "target_words_per_chapter": 2400
+  },
+  "default_banned": ["打卡", "手机", "网络", "系统崩溃", "CPU", "GDP", "键盘"],
+  "volume_arc_hint": "入门立足→宗门大比→外域历练→宗门危机→真相揭露"
+}

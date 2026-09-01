@@ -51,8 +51,21 @@
     "event_seq": {
       "type": "integer",
       "minimum": 0
+    },
+    "forge": {
+      "type": "object",
+      "description": "构建层 Forge 状态（docs/10 §4.1）：输入模式 / 交互形态 / 阶段 / 蓝图修订 / 调用预算 / 进度",
+      "properties": {
+        "mode": { "enum": ["seed", "ingest"], "description": "输入模式" },
+        "interaction": { "enum": ["auto", "interactive"], "description": "全权 / 商讨" },
+        "stage": { "enum": ["slots", "ask", "build", "validate", "done"], "description": "Forge 阶段" },
+        "blueprint_rev": { "type": "integer", "minimum": 1 },
+        "calls_used": { "type": "integer", "minimum": 0 },
+        "started_at": { "type": ["string", "null"], "description": "ISO8601 起始时间" },
+        "last_error": { "type": ["string", "null"] }
+      }
     }
   },
   "additionalProperties": true,
-  "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐；event_seq 为事件回写序列计数"
+  "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐；event_seq 为事件回写序列计数；forge 段为构建层状态（docs/10 §4.1）"
 }

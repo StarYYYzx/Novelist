@@ -1,0 +1,32 @@
+{
+  "id": "通用",
+  "genre": "通用",
+  "aliases": [],
+  "slots": {},
+  "extract_lexicon": {
+    "realms": [],
+    "faction_suffix": [],
+    "item_suffix": [],
+    "address": [],
+    "unavailable_states": ["闭关", "闭死关", "入定", "失踪", "昏迷", "被囚", "囚禁", "渡劫", "沉睡", "疗伤"]
+  },
+  "power_system": {
+    "levels": [],
+    "mechanic": ""
+  },
+  "character_slots": [
+    { "role": "protagonist" },
+    { "role": "mentor" },
+    { "role": "rival" },
+    { "role": "love_interest" },
+    { "role": "minor", "count": 3 }
+  ],
+  "chapter_rhythm": ["opening-hook", "setup", "conflict", "climax", "cliffhanger"],
+  "default_style": {
+    "pov": "第三人称限知",
+    "tone": [],
+    "target_words_per_chapter": 2000
+  },
+  "default_banned": [],
+  "volume_arc_hint": ""
+}

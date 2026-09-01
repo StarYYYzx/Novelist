@@ -587,6 +587,51 @@ def validate(ctx: click.Context, directory: str | None) -> None:
         raise click.ClickException(f"{failed} 个项目存在契约违规，见上方清单")
 
 
+@cli.group()
+def forge() -> None:
+    """构建层 Forge（docs/10）：seed/ingest/show/resume/build/roll/rollback/validate。"""
+
+
+def _resolve_forge_target(ws: Workspace, directory: str | None) -> tuple[Workspace, str]:
+    """解析 forge 目标项目：目录直传项目/根，缺省取 workspace 根下唯一项目。"""
+    import pathlib
+
+    if directory:
+        ws = Workspace(root=directory)
+    root = pathlib.Path(ws._abs(""))
+    if (root / "project.json").exists():
+        return Workspace(root=str(root.parent)), root.name
+    found = sorted(d.name for d in root.iterdir() if d.is_dir() and (d / "project.json").exists())
+    if not found:
+        raise click.ClickException("no project found; run `novelist init` first")
+    if len(found) > 1:
+        raise click.ClickException(
+            f"multiple projects found: {found}; target one explicitly (e.g. forge show novel_workspace/proj-t5)"
+        )
+    return ws, found[0]
+
+
+@forge.command("show")
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def forge_show(ctx: click.Context, directory: str | None) -> None:
+    """打印蓝图 / 缺口 / 进度 / 调用数（F0，无 LLM）。"""
+    from novelist.forge import Blueprint, ForgeState, show_summary
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        bp = Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"{project_id}: 尚无蓝图（workspace/forge/blueprint.json）——先跑 `forge seed`"
+        ) from None
+    state = ForgeState.load(ws, project_id)
+    click.echo(f"== {project_id} ==")
+    for line in show_summary(bp, state):
+        click.echo(line)
+
+
 @cli.command()
 @click.option("--host", default="127.0.0.1", help="监听地址")
 @click.option("--port", default=8000, type=int, help="监听端口")
