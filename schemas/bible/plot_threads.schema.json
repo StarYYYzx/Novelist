@@ -20,6 +20,16 @@
         "type": "string",
         "minLength": 1
       },
+      "plant_desc": {
+        "type": "string",
+        "minLength": 1,
+        "description": "埋设方式一句话（thread_set 节点协议产出，F5 修订：原白名单过滤丢弃导致伏笔语义丢失，改为 schema 收录）。"
+      },
+      "payoff_desc": {
+        "type": "string",
+        "minLength": 1,
+        "description": "回收方式一句话（thread_set 节点协议产出；roll 的 payoff_checklist / V5 伏笔密度检查消费）。"
+      },
       "scope": {
         "type": "string",
         "enum": [

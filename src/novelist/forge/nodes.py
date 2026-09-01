@@ -74,6 +74,8 @@ class NodeResult:
     reason: str = ""
     children: list = field(default_factory=list)  # expand 时的子节点 brief 清单
     warnings: list[str] = field(default_factory=list)
+    tokens_in: int = 0   # 本节点 LLM 调用 usage（F5b report 统计；provider 不给则为 0）
+    tokens_out: int = 0
 
 
 def _parse_node_reply(raw: str) -> dict:
@@ -974,9 +976,12 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
         warns.append(f"{node_id}: decide=expand 但未给 children，按 done 处理")
     if not node["reason"]:
         warns.append(f"{node_id}: 模型未给 reason（协议要求必填）")
+    usage = getattr(res, "usage", None)
     return NodeResult(kind=kind, node_id=node_id, ok=True, artifact=node["artifact"],
                       decide=node["decide"], reason=node["reason"],
-                      children=node["children"], warnings=warns)
+                      children=node["children"], warnings=warns,
+                      tokens_in=int(getattr(usage, "tokens_in", 0) or 0),
+                      tokens_out=int(getattr(usage, "tokens_out", 0) or 0))
 
 
 # ---- 确定性落盘（零 LLM）----
@@ -992,6 +997,15 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
     wv = dict(bp.get("worldview") or {})
     wv.setdefault("id", "world:main")
     wv.setdefault("name", (bp.get("meta") or {}).get("title") or "未命名世界")
+    # factions 归一化：蓝图是字符串数组（中间态），bible schema 要求对象数组（知识单元）
+    if wv.get("factions"):
+        norm = []
+        for f in wv["factions"]:
+            if isinstance(f, str):
+                norm.append({"faction": f})
+            elif isinstance(f, dict) and f.get("faction"):
+                norm.append(f)
+        wv["factions"] = norm
     write("bible/worldview.json", wv)
     # characters（剥离 role；protagonist → is_protagonist）
     chars = []
@@ -1008,20 +1022,31 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
     if proto:
         st["protagonist"] = {"id": proto["id"], "name": proto.get("name"), "gender": proto.get("gender")}
     write("bible/style.json", st)
-    # threads（补默认 status/scope）
+    # threads（补默认 status/scope；白名单过滤——bible schema items additionalProperties=false，
+    # plant_desc/payoff_desc 已收入 schema（F5 修订：原过滤丢弃导致伏笔语义丢失，F4 测试证伪））
     threads = []
     for t in bp.section("threads"):
         row = dict(t)
         row.setdefault("status", "unplanned")
         row.setdefault("scope", "book")
-        threads.append(row)
+        threads.append({k: v for k, v in row.items()
+                        if k in ("id", "desc", "scope", "target_vol", "planted",
+                                 "status", "report_deadline", "returned", "revision",
+                                 "plant_desc", "payoff_desc")})
     write("bible/plot_threads.json", threads)
-    # 有内容才写其余段
-    for section, rel in (("locations", "bible/locations.json"), ("items", "bible/items.json"),
-                         ("skills", "bible/skills.json"), ("settings", "bible/settings.json")):
+    # 有内容才写其余段（同样白名单过滤）
+    for section, rel, keep in (("locations", "bible/locations.json",
+                                {"id", "name", "parent", "desc", "status", "revision", "aliases"}),
+                               ("items", "bible/items.json",
+                                {"id", "name", "type", "aliases", "state", "desc", "note"}),
+                               ("skills", "bible/skills.json",
+                                {"id", "name", "type", "aliases", "state", "note"}),
+                               ("settings", "bible/settings.json",
+                                {"id", "keywords", "text", "revealed", "first_ch"})):
         data = bp.section(section)
         if data:
-            write(rel, data)
+            write(rel, [{k: v for k, v in x.items() if k in keep}
+                        for x in data if isinstance(x, dict)])
     return written
 
 

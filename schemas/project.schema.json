@@ -58,7 +58,7 @@
       "properties": {
         "mode": { "enum": ["seed", "ingest"], "description": "输入模式" },
         "interaction": { "enum": ["auto", "interactive"], "description": "全权 / 商讨" },
-        "stage": { "enum": ["slots", "ask", "build", "validate", "done"], "description": "Forge 阶段" },
+        "stage": { "enum": ["slots", "ask", "seed", "consulting", "seeded", "build", "built", "validate", "done", "ingest", "ingested"], "description": "Forge 阶段（F5 起对齐实然：seed/ingest 模式的中间与完成态均入枚举）" },
         "blueprint_rev": { "type": "integer", "minimum": 1 },
         "calls_used": { "type": "integer", "minimum": 0 },
         "started_at": { "type": ["string", "null"], "description": "ISO8601 起始时间" },

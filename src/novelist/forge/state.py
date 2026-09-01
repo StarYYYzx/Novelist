@@ -251,6 +251,14 @@ class ForgeState:
             data = {"id": project_id, "title": project_id, "pipeline_state": "立项"}
         data["forge"] = self.to_dict()
         ws.write_json(path, data)
+        # 同步 .checksum.json：project.json 已变，不刷新则后续 Checkpoint.restore
+        # 误报「file checksum changed」（M3l F5 发现：build 后 validate 的 restore 失败）
+        try:
+            from ..storage.checkpoint import Checkpoint
+
+            Checkpoint(ws).save(project_id, data)
+        except Exception:  # noqa: BLE001 - checksum 刷新失败不阻断 forge 主流程
+            pass
 
     def to_dict(self) -> dict:
         return {

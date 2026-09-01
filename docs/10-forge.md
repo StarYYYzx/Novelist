@@ -449,6 +449,7 @@ L0 book（唯一根）── 主题/卖点/基调/规模
 | 写到一半改设定（人物性格/伏笔/文风） | **影响分析子树重建**：`forge build --diff` 比对蓝图改动 → 定位引用被改字段的已生成产物 → 只重建受影响节点（如引用该人物的章细纲）。已写正文不动，差异由一致性引擎与后续章节消化 |
 | 项目已有 `chapters/`（已 ingest 或已写章）时跑 seed/build | 默认**拒绝**并提示原因；`--force` 才执行 |
 | 构建前快照 | build/roll 前自动打 checkpoint（复用双轨快照）；`forge rollback` 回退到构建前状态 |
+| **双快照（F5 落地细化）** | 每次 build/roll 打 **两个**快照：前置快照 `-build`/`-roll-vN`（回滚前提，失败也可退）+ **结果快照** `-build-ok`/`-roll-ok-vN`（`--diff` 比对基线与 `forge rollback` **默认回滚点**——结果态才是 diff 的天然基线，前置快照是 seed 态，取它做基线会误报全量重建）。快照存 `workspace/forge/snapshots/<时间戳>-<label>/`，纳入 project.json/bible/outline/blueprint.json/nodes；transcript 与快照自身不入快照 |
 
 ### 7.7 `forge roll <vol>` 的上下文注入清单（2026-09-01 拍板）
 
@@ -553,15 +554,17 @@ novelist forge resume <dir>            # 断点续跑（问答或构建）
 novelist forge build <dir> [--diff] [--force]
                                       # --diff = 影响分析子树重建；--force = 已有 chapters 时强制
 novelist forge roll <dir> <vol>        # 滚动生成第 N 卷细纲（写到该卷前执行）
-novelist forge rollback <dir>          # 回退到上次构建前快照
-novelist forge validate <dir>          # 只跑 V1–V6
+novelist forge validate <dir> [--smoke] [--settings-min N] [--no-report]
+                                      # V1–V6；通过 → pipeline 推进到「细纲」（持久化，只前进）
+novelist forge rollback <dir> [--to <name>]   # 回退到快照（缺省最近 = build-ok 结果态）
+novelist forge snapshots <dir>        # 列出快照目录
 ```
 
-模块（**实现状态**：✅=已建；其余待 F1–F5）：
+模块（**实现状态**：✅=已建；M3l 全部落地）：
 
 ```
 src/novelist/forge/
-  __init__.py      # 对外：show_summary（F0）；run_seed / run_ingest / build / validate 待 F1–F5
+  __init__.py      # 对外：show_summary / run_seed / run_ingest / build / roll / validate / 快照 / diff / report
   state.py         # ✅ ForgeState + Blueprint 读写 + provenance（docs/08 F0 落地记录）
   slots.py         # ✅ 槽位表 + 分组 + 缺口检测（确定性，零 LLM）
   genres.py        # ✅ Genre Pack 装载（id/别名匹配，通用兜底，装载即自身 schema 校验）
@@ -569,11 +572,12 @@ src/novelist/forge/
   io_console.py    # ✅ 问答通道的终端实现（接口化，便于日后换 HTTP）—— F2（docs/08 F2 落地记录）
   seed.py          # ✅ 模式一：种子提炼 + 授权询问（docs/08 F1 落地记录）
   ingest.py        # ✅ 模式二：切片 / 抽取 / 消歧 / 文风画像 / 卷章编码 / 记忆初始化 —— F3（docs/08 F3 落地记录）
-  engine.py        # ✅ 递归构建引擎（调度 + 边界 + 落盘 + 续跑）—— F1
-  nodes.py         # ✅ 各节点类型的 prompt 装配 + artifact 解析 + 落盘 —— F1
+  engine.py        # ✅ 递归构建引擎（调度 + 边界 + 落盘 + 续跑 + 双快照）—— F1/F5（docs/08 F5 落地记录）
+  nodes.py         # ✅ 各节点类型的 prompt 装配 + artifact 解析 + 落盘 + sync_bible —— F1/F5
   genres/          # ✅ 修仙男频.json / 通用.json（Genre Pack，数据；新增类型=加 JSON 零改码）
-  validate.py      # V1–V6 + 报告生成 —— F5
-  report.py        # report.md 渲染 —— F5
+  validate.py      # ✅ V1–V6 契约校验（V4 可写冒烟 FakeProvider，零真调）—— F5（docs/08 F5 落地记录）
+  report.py        # ✅ report.md 渲染 + 双写（全量+摘要）—— F5
+  snapshot.py      # ✅ 快照 / 恢复 / diff 基线（双快照：前置 + 结果态）—— F5
 ```
 
 ---

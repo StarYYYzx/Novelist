@@ -722,14 +722,17 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
 @click.option("--no-deepen", is_flag=True, default=False,
               help="退化为 F1 最小树（跳过旁支递归深化与 arc/beat 层）")
+@click.option("--diff", is_flag=True, default=False,
+              help="影响分析：比对最近快照，只重建被改实体引用的章/节点（docs/10 §9.6）")
 @click.pass_context
 def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
-                max_calls: int, no_deepen: bool) -> None:
+                max_calls: int, no_deepen: bool, diff: bool) -> None:
     """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
 
     默认拒绝已有 chapters/ 的项目（先写正文或 ingest 的项目）；--force 放行。
+    --diff 走影响分析：清掉被改实体引用的章细纲与节点后再构建。
     """
-    from novelist.forge import Blueprint, build
+    from novelist.forge import Blueprint, build, diff_affected
 
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
@@ -743,6 +746,12 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
             f"{project_id}: 已有 {len(chapters)} 章正文（chapters/）——Forge 拒绝覆盖已有稿子；"
             f"确认要继续请加 --force"
         )
+    if diff:
+        plan = diff_affected(ws, project_id)
+        removed = plan.apply(ws, project_id)
+        click.echo(f"diff: {plan.summary}（清理 {removed} 个产物文件）")
+        if plan.rebuild_all:
+            click.echo("  [info] 结构级变更（worldview/style/volumes/arcs）→ 全量重建")
     res = build(ws, project_id, provider=_make_cli_provider(provider),
                 max_calls=max_calls, resume=False, deepen=not no_deepen)
     for w in res.warnings:
@@ -877,6 +886,116 @@ def forge_ingest(ctx: click.Context, source: str, directory: str | None, provide
         raise click.ClickException("ingest 未完成，见上方 warnings")
     click.echo(f"下一步：`novelist chapter {res.volumes_encoded} 1 --dir {project_id}` 接着写（N+1 章）"
                f"或 `novelist forge show {project_id}`")
+
+
+@forge.command("validate")
+@click.argument("directory", required=False, default=None)
+@click.option("--smoke", is_flag=True, default=False,
+              help="跑 V4 可写冒烟（FakeProvider 真跑 produce_chapter(1,1)，校验 bible 注入与 cast）")
+@click.option("--settings-min", type=int, default=5, help="V3 settings 条数下限（缺省 5）")
+@click.option("--no-report", is_flag=True, default=False, help="只打印结论，不写报告文件")
+@click.pass_context
+def forge_validate(ctx: click.Context, directory: str | None, smoke: bool,
+                   settings_min: int, no_report: bool) -> None:
+    """V1–V6 契约校验 + 报告双写（docs/10 §9，M3l F5）。
+
+    全部确定性规则、零 LLM（--smoke 的 V4 用 FakeProvider，非真实调用）。
+    通过（无 block）→ pipeline 推进到「细纲」（只前进）；不通过 → 列出可修条目。
+    """
+    from novelist.core.pipeline import PipelineStateError, PipelineStateMachine
+    from novelist.forge import Blueprint, write_reports
+    from novelist.forge.validate import validate_project_full
+    from novelist.storage.checkpoint import Checkpoint
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
+    res = validate_project_full(ws, project_id, smoke=smoke, settings_min=settings_min)
+    for f_ in res.blocks:
+        click.echo(f"  [block] [{f_.code}] {f_.message}", err=True)
+    for f_ in res.warns:
+        click.echo(f"  [warn] [{f_.code}] {f_.message}", err=True)
+    if res.smoke_ran:
+        click.echo(f"V4 冒烟: {'通过' if res.smoke_ok else '失败'}（FakeProvider 直出章 1 首章）")
+    if not res.ok:
+        raise click.ClickException(
+            f"校验未通过：{len(res.blocks)} 个阻断项（V2/V3 优先修引用与覆盖度），"
+            f"见上方清单。修完重跑 `forge validate`"
+        )
+    # 通过 → pipeline 推进到「细纲」（只前进；持久化 project.json.pipeline_state）
+    ck = Checkpoint(ws)
+    try:
+        project = ck.restore(project_id)
+        st = PipelineStateMachine()
+        cur = project.get("pipeline_state") or "立项"
+        if cur != st.current:  # 先推进到已存阶段，再尝试推进到细纲
+            _advance_to(st, cur)
+        st.advance("细纲")
+        project["pipeline_state"] = st.current
+        ck.save(project_id, project)
+    except PipelineStateError as e:
+        raise click.ClickException(f"pipeline 推进失败: {e}") from None
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"pipeline 状态保存失败: {e}") from None
+    click.echo(f"校验通过：block {len(res.blocks)} / warn {len(res.warns)}"
+               f" → pipeline 已推进到「细纲」")
+    if not no_report:
+        full, stats = write_reports(ws, project_id, smoke=smoke)
+        click.echo(f"报告已写：{full}（全量）/ {stats}（摘要）")
+
+
+@forge.command("rollback")
+@click.argument("directory", required=False, default=None)
+@click.option("--to", "snap_name", default=None,
+              help="回退到指定快照名（缺省最近一次；`forge snapshots` 可列）")
+@click.pass_context
+def forge_rollback(ctx: click.Context, directory: str | None, snap_name: str | None) -> None:
+    """回退到构建前快照：恢复文件 + 删除构建新增产物（docs/10 §7.6，M3l F5）。
+
+    快照由 build/roll 自动前置生成于 workspace/forge/snapshots/。
+    """
+    from novelist.forge import latest_snapshot, restore_snapshot, snapshots_dir
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    snaps = [p.name for p in sorted(snapshots_dir(ws, project_id).iterdir())] \
+        if snapshots_dir(ws, project_id).exists() else []
+    if not snaps:
+        raise click.ClickException(f"{project_id}: 无可用快照（先跑一次 `forge build` 或 `forge roll`）")
+    if snap_name:
+        if snap_name not in snaps:
+            raise click.ClickException(f"快照不存在：{snap_name}\n可用: {snaps}")
+        import shutil
+        from pathlib import Path
+
+        snap = Path(snapshots_dir(ws, project_id)) / snap_name
+    else:
+        snap = latest_snapshot(ws, project_id)
+    restored = restore_snapshot(ws, project_id, snap)
+    click.echo(f"回滚到 {snap.name}: 恢复 {len(restored)} 个文件。"
+               f"可用 `forge validate` 复核后重跑 `forge build --diff`")
+
+
+@forge.command("snapshots")
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def forge_snapshots(ctx: click.Context, directory: str | None) -> None:
+    """列出快照目录（build/roll 前置自动生成）。"""
+    from novelist.forge import snapshots_dir
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    d = snapshots_dir(ws, project_id)
+    if not d.exists() or not any(d.iterdir()):
+        click.echo(f"{project_id}: 无快照")
+        return
+    for p in sorted(d.iterdir()):
+        if p.is_dir():
+            n = sum(1 for f in p.rglob("*") if f.is_file())
+            click.echo(f"  {p.name}（{n} 个文件）")
 
 
 @cli.command()

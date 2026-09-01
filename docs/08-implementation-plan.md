@@ -324,7 +324,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | ✅ 完成（forge/ask+io_console + CLI resume 分流，见下） |
 | F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | ✅ 完成（forge/ingest.py + CLI forge ingest，见下） |
 | F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | ✅ 完成（2026-09-01，见下） |
-| F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | 待做 |
+| F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | ✅ 完成（2026-09-01，见下） |
 
 验收：AG1 一句话 → 项目可直接 `chapter 1 1` 且 `bible_injected=True`；AG2 3 章样章 → 第 4 章起可接写
 且记忆非空；AG3 商讨 12 问内收敛；AG4 构建调用数不超分阶段配额（build 卷 1 = 60 / roll 每卷 = 40 /
@@ -524,6 +524,46 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
 - 测试：`tests/test_m17_forge_f4.py` 8 用例（旁支 DFS 落库+计数 / nodes 落盘+resume 幂等 /
   arc+beat 层 / max_width 截断告警 / roll 四块注入+pending 追加 / roll 幂等 / roll 前置拒绝 /
   CLI roll），全量 **391 passed**（2 deselected）。
+
+**F5 落地记录（2026-09-01，契约校验 V1–V6 + 报告双写 + 快照/rollback + --diff + pipeline 推进细纲）**：
+
+- **`validate.py` V1–V6**（docs/10 §9 全量落地）：V1 双层 schema（`BIBLE_CONTRACT` 14 类映射 +
+  jsonschema 逐条）、V2 交叉引用（坏 char 引用 / 卷章区间缝隙 block）、V3 覆盖度（主角卷 1 第 1 章
+  出场 / settings 下限可配 `--settings-min` / 卷 1 threads_to_payoff 非空）、V4 可写冒烟
+  （`--smoke`：FakeProvider 跑 `produce_chapter(1,1)` 断言 ok/bible_injected/cast——**单测绝不真调
+  LLM 纪律的延申**，docs/09 §2.1）、V5/V6 质量软检查（warn 不阻断，写入 report.md）。
+  **自定决策：仅卷 1 缺失细纲报 block**——build 只产出卷 1，卷 2+ 由 `forge roll` 渐进生成，
+  未 roll 不算阻断（最初全卷报 block 会误伤合法渐进流程）。
+- **报告双写**（`report.py`）：全量 → `workspace/forge/report.md`（resume/build 引用），摘要 →
+  `reports/stats/forge-<时间戳>.md`（解决 reports/ 零写入遗留）。含 provenance 来源分布表 /
+  V1–V6 校验结论 / 调用与耗时 / token 与估算成本（¥1/1M in + ¥2/1M out，DeepSeek 参考价）/
+  每节点 decide+reason 摘要。数据全确定性零 LLM。
+- **usage 上链**（自定决策，docs/10 §4.3 已拍板）：`NodeResult` 补 `tokens_in/tokens_out`，
+  `engine._call` 记 transcript `build_node` 事件（含 retried 标记），report 据此聚合成本。
+- **双快照机制**（自定决策，docs/10 §7.6 补充）：build/roll **前置**快照（回滚前提）+ **结果**
+  快照 `build-ok`/`roll-ok`（`--diff` 比对基线与 `forge rollback` 默认回滚点——最初 diff 基线取
+  前置快照（seed 态）与构建结果天然全差、误报全量重建，补结果快照修复）。快照目录
+  `workspace/forge/snapshots/<ts>-<label>/`，纳入 project.json/bible/outline/blueprint.json/nodes；
+  transcript 与快照自身不入快照。
+- **`--diff` 影响分析**（docs/10 §7.6 落地）：比对当前蓝图 vs 最近结果快照 → 结构级
+  （worldview/style/volumes/arcs）变更 → 全量重建；实体级（characters/threads/settings）变更 →
+  按章引用精确匹配受影响章，settings 只清 setting_entry 节点。`forge build --diff` 先清理产物
+  再提示全量重建。
+- **CLI 新增**：`forge validate <dir> [--smoke] [--settings-min N] [--no-report]`（通过则
+  `Checkpoint` 持久化 `pipeline_state=细纲`，只前进不倒退；block 不推进）、`forge rollback
+  [--to <name>]`（缺省最近快照 = build-ok 结果态）、`forge snapshots`（列快照目录）。
+- **`ForgeState.save` 同步 checksum**（存量缺陷修复）：Forge 每次写 project.json 但从不刷新
+  `.checksum.json`，validate 首次在 build 后调 `Checkpoint.restore` 即暴露「file checksum
+  changed」误报 → save 末尾同步刷新。
+- **schema 对齐（自定决策）**：`project.schema.json` 的 forge.stage 枚举扩展为实然值
+  （seeded/built/consulting/ingested 等，存量枚举停在 F0 初版导致 `forge.stage='built'` 违约）。
+- **白名单过滤修订（本轮修正）**：`sync_bible` 按 schema 白名单过滤（factions 归一化 +
+  plot_threads/settings/items/locations/skills 对齐 `additionalProperties=false`），但 thread_set
+  节点协议要求产出的 `plant_desc/payoff_desc` 最初被一并过滤——**F4 测试证伪**（丢伏笔语义，
+  模型白写），改为 `schemas/bible/plot_threads.schema.json` 收录两字段 + 白名单恢复。
+- 测试：`tests/test_m18_forge_f5.py` 15 用例（合法全过 / V2 block×2 / V3 block×2 / V4 冒烟 /
+  V5 V6 warn 不阻断 / 报告双写+usage / CLI 推进与不推进 / 双快照+rollback / no-snapshot 抛错 /
+  diff 精确与全量重建 / CLI snapshots+rollback），全量 **406 passed**（2 deselected）。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 

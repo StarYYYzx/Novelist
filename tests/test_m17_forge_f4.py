@@ -78,13 +78,12 @@ def _deepen_script(chapters=2):
         # thread_set
         _reply({"threads": [{"id": "pt:yuwen", "desc": "玉牌之谜", "scope": "volume", "target_vol": 1,
                              "plant_desc": "第 1 章遗物现世", "payoff_desc": "卷末揭秘"}]}),
-        # volume 1 / volume 2
+        # volume 1 →（卷闸门）chapter 1-1/1-2 → volume 2（引擎实际消费顺序）
         _reply({"vol": 1, "title": "V1", "summary": "一卷主线", "key_beats": ["k"]}),
-        _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"]}),
-        # chapter 1-1 / 1-2
         *[ _reply({"title": f"章{c}", "pov": "第三人称限知（主角视角）",
                    "key_events": [f"事件{c}"], "turns": [f"转折{c}"],
                    "characters": ["char:yelan"], "after_days": 0}) for c in range(1, chapters + 1) ],
+        _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"]}),
     ]
 
 

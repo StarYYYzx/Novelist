@@ -137,6 +137,12 @@ def build(ws: Workspace, project_id: str, *, provider,
     calls_used = int(state.calls_used or 0)
     log = log_fn or (lambda line: print(line, flush=True))
 
+    # 构建前置文件快照（docs/10 §7.6 F5）：rollback / --diff 的基线
+    from .snapshot import take_snapshot
+
+    snap = take_snapshot(ws, project_id, label="build")
+    log(f"[snapshot] {snap.name}")
+
     warnings: list[str] = []
     nodes_done = 0
     chapters_written = 0
@@ -178,6 +184,9 @@ def build(ws: Workspace, project_id: str, *, provider,
                 f"{time.time() - start:.1f}s)")
             for w in res.warnings:
                 warnings.append(f"{label}: {w}")
+            append_transcript(ws, project_id, "build_node", kind=kind, node=label,
+                              decide=res.decide, reason=(res.reason or "")[:120],
+                              tokens_in=res.tokens_in, tokens_out=res.tokens_out)
             return res
         except ValueError as e:  # 解析失败 → retry 1（docs/10 §12）
             if not _budget_check():
@@ -192,6 +201,10 @@ def build(ws: Workspace, project_id: str, *, provider,
                     f"{time.time() - start:.1f}s)")
                 for w in res2.warnings:
                     warnings.append(f"{label}: {w}")
+                append_transcript(ws, project_id, "build_node", kind=kind, node=label,
+                                  decide=res2.decide, reason=(res2.reason or "")[:120],
+                                  tokens_in=res2.tokens_in, tokens_out=res2.tokens_out,
+                                  retried=True)
                 return res2
             except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
                 calls_used = started + 1
@@ -340,6 +353,10 @@ def build(ws: Workspace, project_id: str, *, provider,
                           budget_exhausted=budget_exhausted,
                           interrupted=interrupted,
                           warnings=warnings[:10])
+        # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态
+        from .snapshot import take_snapshot
+
+        take_snapshot(ws, project_id, label="build-ok")
 
     ok = not interrupted and not budget_exhausted and chapters_written > 0
     return BuildResult(
@@ -442,6 +459,12 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     append_transcript(ws, project_id, "roll.start", rev=bp.data["rev"], vol=vol, max_calls=max_calls)
     log = log_fn or (lambda line: print(line, flush=True))
     start = time.time()
+
+    # roll 前置文件快照（F5：rollback / --diff 基线；与 build 同一机制）
+    from .snapshot import take_snapshot
+
+    snap = take_snapshot(ws, project_id, label=f"roll-v{vol}")
+    log(f"[snapshot] {snap.name}")
 
     warnings: list[str] = []
     calls_used = 0
@@ -563,6 +586,10 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
                           chapters_written=chapters_written,
                           budget_exhausted=budget_exhausted, interrupted=interrupted,
                           warnings=warnings[:10])
+        # 结果快照（F5e diff 基线 / 默认 rollback 点）
+        from .snapshot import take_snapshot
+
+        take_snapshot(ws, project_id, label=f"roll-ok-v{vol}")
 
     return RollResult(
         ok=not interrupted and not budget_exhausted and chapters_written > 0,
@@ -628,3 +655,158 @@ def _upsert_volume_from_row(bp: Blueprint, row: dict) -> None:
             vols[i] = merged
             return
     vols.append(dict(row))
+
+
+# ---- F5e：`forge build --diff` 影响分析（docs/10 §9.6）----
+
+@dataclass
+class DiffPlan:
+    """当前蓝图 vs 最近快照的差异影响：变更实体 → 受影响节点/章。
+
+    - rebuild_all：worldview/style/volumes 结构级变更 → 全量重建（不删 nodes，
+      交给 build 自身幂等逻辑；此处只删章级产物加速）。
+    - affected_chapters：按引用精确匹配的章（characters/threads 变更）。
+    - affected_nodes：要删的 nodes/<id>.json（含净化名）。
+    """
+
+    changed: list[str] = field(default_factory=list)
+    rebuild_all: bool = False
+    affected_chapters: list[tuple[int, int]] = field(default_factory=list)
+    affected_nodes: list[str] = field(default_factory=list)
+
+    @property
+    def summary(self) -> str:
+        parts = []
+        if self.rebuild_all:
+            parts.append("全量重建")
+        if self.affected_chapters:
+            chs = ",".join(f"{v}-{c}" for v, c in sorted(self.affected_chapters))
+            parts.append(f"重建 {len(self.affected_chapters)} 章: {chs}")
+        if self.affected_nodes:
+            parts.append(f"清节点 {len(self.affected_nodes)} 个")
+        return "; ".join(parts) if parts else "无变更"
+
+    def apply(self, ws: Workspace, project_id: str) -> int:
+        """删除受影响产物（nodes/ 文件 + 细纲 md）。返回删除文件数。"""
+        removed = 0
+        nodes_dir = ws._abs(f"{project_id}/workspace/forge/nodes")  # noqa: SLF001
+        for nid in self.affected_nodes:
+            p = nodes_dir / (nid.replace(":", "-") + ".json")
+            if p.exists():
+                p.unlink()
+                removed += 1
+        for vol, ch in self.affected_chapters:
+            gist = ws._abs(f"{project_id}/outline/chapters/{vol}-{ch}.md")  # noqa: SLF001
+            if gist.exists():
+                gist.unlink()
+                removed += 1
+            b = nodes_dir / f"beat-{vol}-{ch}.json"
+            if b.exists():
+                b.unlink()
+                removed += 1
+        return removed
+
+
+def _section_by_id(bp: Blueprint, name: str) -> dict:
+    return {str(x.get("id", i)): json.dumps(x, ensure_ascii=False, sort_keys=True)
+            for i, x in enumerate(bp.section(name))}
+
+
+def diff_affected(ws: Workspace, project_id: str) -> DiffPlan:
+    """当前 blueprint vs 最近快照内 blueprint 的影响分析（F5e）。
+
+    无快照 → 空 plan（首轮构建没有可比对的基线；build 正常全量跑）。
+    worldview/style/volumes 结构变更 → rebuild_all；characters/threads 变更 →
+    精确匹配引用它们的章；settings 变更只清 setting_entry 节点。
+    """
+    from .snapshot import snapshot_blueprint
+
+    plan = DiffPlan()
+    bp = Blueprint.load(ws, project_id)
+    snap = snapshot_blueprint(ws, project_id)
+    if snap is None:
+        plan.changed.append("无快照基线（首轮构建，--diff 退化为全量 build）")
+        return plan
+    if bp.data.get("rev") == snap.get("rev"):
+        plan.changed.append("rev 未变，无差异")
+        return plan
+
+    cur = bp.data
+    # 1) 结构级字段：worldview / style / volumes / arcs
+    for key, label in (("worldview", "worldview"), ("style", "style"),
+                       ("volumes", "volumes"), ("arcs", "arcs")):
+        if json.dumps(cur.get(key), ensure_ascii=False, sort_keys=True) \
+                != json.dumps(snap.get(key), ensure_ascii=False, sort_keys=True):
+            plan.rebuild_all = True
+            plan.changed.append(f"{label} 变更")
+    if plan.rebuild_all:
+        return plan  # 结构级变更覆盖一切，无需精确定位
+
+    # 2) 实体级：characters / threads / settings（按 id 序列化 diff）
+    affected: dict[str, set[tuple[int, int]]] = {}
+    for name, label in (("characters", "人物"), ("threads", "伏笔"), ("settings", "设定")):
+        cur_map = _section_by_id(bp, name)
+        snap_map = {str(x.get("id", i)): json.dumps(x, ensure_ascii=False, sort_keys=True)
+                    for i, x in enumerate(snap.get(name) or [])}
+        added = {k for k in cur_map if k not in snap_map}
+        dropped = {k for k in snap_map if k not in cur_map}
+        changed = {k for k in cur_map if k in snap_map and cur_map[k] != snap_map[k]}
+        if added or dropped or changed:
+            plan.changed.append(f"{label} 变更 {len(added)}+{len(dropped)}+{len(changed)}"
+                                f"（新/删/改）")
+            affected[name] = added | dropped | changed
+
+    if not affected:
+        plan.changed.append("实体无差异（仅 rev 或 meta 变更）")
+        return plan
+
+    # 3) 章引用匹配
+    vols = _load_volumes(ws, project_id)
+    gists = _load_gists(ws, project_id, vols)
+    char_ids = affected.get("characters")
+    thread_ids = affected.get("threads")
+    for (vol, ch), g in sorted(gists.items()):
+        hit = False
+        if char_ids:
+            cast = {str(c) for c in (g.get("characters") or [])}
+            hit = bool(cast & char_ids)
+        if not hit and thread_ids:
+            tids = {str(t) for t in (g.get("threads_involved") or [])}
+            hit = bool(tids & thread_ids)
+        if hit:
+            plan.affected_chapters.append((vol, ch))
+            plan.affected_nodes.append(f"chapter:{vol}:{ch}")
+            plan.affected_nodes.append(f"beat:{vol}:{ch}")
+    # settings 变更：清 setting_entry 节点（细纲无引用字段；知识库按需检索）
+    if affected.get("settings"):
+        plan.affected_nodes.append("setting_entry")
+    return plan
+
+
+def _load_volumes(ws: Workspace, project_id: str) -> list[dict]:
+    p = ws._abs(f"{project_id}/outline/volumes.json")  # noqa: SLF001
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [v for v in data if isinstance(v, dict)] if isinstance(data, list) else []
+
+
+def _load_gists(ws: Workspace, project_id: str, vols: list[dict]) -> dict[tuple[int, int], dict]:
+    from ..core.bible import parse_gist
+
+    out: dict[tuple[int, int], dict] = {}
+    for row in vols:
+        rng = row.get("chapter_range") or [0, -1]
+        try:
+            s, e = int(rng[0]), int(rng[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        vol = int(row.get("vol", 0))
+        for ch in range(s, e + 1):
+            g = parse_gist(ws, project_id, vol, ch)
+            if g is not None:
+                out[(vol, ch)] = g
+    return out

@@ -8,13 +8,17 @@ engine / nodes / validate / report。
 from __future__ import annotations
 
 from .ask import ConsultResult, run_consult
-from .engine import BuildResult, RollResult, build, roll
+from .engine import BuildResult, DiffPlan, RollResult, build, diff_affected, roll
 from .genres import load_pack, load_pack_for, list_packs
 from .ingest import IngestResult, run_ingest
 from .io_console import AnswerIO, ConsoleIO
+from .report import render_report, write_reports
 from .seed import SeedResult, SeedSpec, run_seed
 from .slots import Slot, detect_gaps, default_slots, group_slots, slots_for_genre
+from .snapshot import (latest_snapshot, restore_snapshot, snapshots_dir,
+                       take_snapshot)
 from .state import Blueprint, ForgeState, append_transcript, read_transcript
+from .validate import ValidateResult, validate_project_full
 
 __all__ = [
     "Blueprint",
@@ -36,12 +40,22 @@ __all__ = [
     "build",
     "RollResult",
     "roll",
+    "DiffPlan",
+    "diff_affected",
     "IngestResult",
     "run_ingest",
     "AnswerIO",
     "ConsoleIO",
     "ConsultResult",
     "run_consult",
+    "ValidateResult",
+    "validate_project_full",
+    "render_report",
+    "write_reports",
+    "take_snapshot",
+    "latest_snapshot",
+    "restore_snapshot",
+    "snapshots_dir",
 ]
 
 
