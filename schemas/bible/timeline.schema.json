@@ -2,19 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/timeline.schema.json",
   "title": "timeline_event",
-  "description": "时间线事件（供一致性规则单调性校验）。见 docs/06 §3.3。",
+  "description": "时间线事件（历史时点登记簿，事实源 ADR-016；供 R-TL 按相对天数单调性校验）。见 docs/06 §3.3、ADR-019。",
   "type": "object",
   "required": ["id", "at", "event"],
   "properties": {
     "id": { "type": "string", "pattern": "^tl:[A-Za-z0-9_-]+$" },
     "at": {
       "type": "object",
+      "required": ["t", "vol", "ch"],
       "properties": {
-        "era": { "type": "string" },
-        "year": { "type": "integer" },
-        "season": { "type": "string" }
+        "t": { "type": "integer", "minimum": 0, "description": "相对天数（开书之日 = 0），单调性校验的主轴" },
+        "vol": { "type": "integer", "minimum": 1 },
+        "ch": { "type": "integer", "minimum": 0 }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "event": { "type": "string", "minLength": 1 },
     "in_chapters": {

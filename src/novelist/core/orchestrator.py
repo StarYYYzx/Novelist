@@ -35,7 +35,8 @@ class ProductionResult:
                  jit_added: int = 0, settings_added: int = 0,
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
                  phase: str = "writing", phase_reason: str = "",
-                 length_truncated: bool = False, events_capped: int = 0):
+                 length_truncated: bool = False, events_capped: int = 0,
+                 pending_tick: dict | None = None):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -57,6 +58,7 @@ class ProductionResult:
         self.phase_reason = phase_reason        # 阶段判定依据（确定性规则可解释）
         self.length_truncated = length_truncated  # 篇幅硬上限截断（第七批）
         self.events_capped = events_capped        # 每章事件数超限截掉的事件数（第二批）
+        self.pending_tick = pending_tick or {}    # 定时事项记账（ADR-019，M3m T2）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -904,9 +906,39 @@ def produce_chapter(
     if payoff_lines:
         goal = goal + "\n\n" + "\n".join(payoff_lines)
 
+    # ---- 1.6) 临近事项分档注入（ADR-019 §3.3.3，M3m T2）----
+    # 确定性规则零 LLM：>30% 静默、≤30% 轻提示、≤10% 或到期强提示。
+    # 到期只升提示强度、不硬插剧情（与 ADR-002 大纲驱动一致）。
+    try:
+        from . import worldstate as _wsmod
+        from .timeline import reminder_lines
+
+        pending_lines = reminder_lines(_wsmod.load(ws, project_id))
+    except Exception:  # noqa: BLE001 - 提醒注入失败不影响写章
+        pending_lines = []
+    if pending_lines:
+        goal = goal + "\n\n" + "\n".join(pending_lines)
+
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
+
+    # ---- 2.1) 定时事项软 block（ADR-019 §3.3.3，M3m T2）----
+    # 已到期且连续 block 的 pending：本章细纲/key_events 未体现 → 拦截。
+    # 拦截后必须记账（tick），连续 3 次自动 expired 放行，防挂机批跑死锁。
+    try:
+        from .timeline import soft_block_check
+        from .timeline import tick as _timeline_tick
+
+        blocks = soft_block_check(ws, project_id, gist_text_for_events)
+        if blocks:
+            _timeline_tick(ws, project_id, vol=vol, ch=ch)
+            return ProductionResult(
+                ok=False, result="\n".join(blocks), mode=mode,
+                bible_injected=bible_injected,
+                phase=getattr(phase, "value", phase), phase_reason=phase_reason)
+    except Exception:  # noqa: BLE001 - 定时拦截失败不阻断写章
+        pass
     comp: dict = {}
     chronic_reports: list = []
     review_blocks = 0       # 事件级审校 block 数（讨论第 7 轮）
@@ -1269,6 +1301,19 @@ def produce_chapter(
         except Exception:  # noqa: BLE001 - 回写失败不影响本书草稿已落盘
             pass
 
+    # ---- 5.5) 定时事项记账（ADR-019 §3.3.3，M3m T2）----
+    # 章末统一判定：正文 token 命中 → fired（解除不可出场期）；到期未兑现 →
+    # overdue 递增（≥3 warn / ≥5 软 block / block×3 自动 expired）。失败不影响成稿。
+    pending_tick: dict = {}
+    try:
+        from .timeline import tick as _timeline_tick
+
+        verify_text = draft.read_text(encoding="utf-8") if draft.exists() else final
+        pending_tick = _timeline_tick(ws, project_id, vol=vol, ch=ch,
+                                      chapter_text=verify_text).as_dict()
+    except Exception:  # noqa: BLE001 - 记账失败不影响成稿
+        pending_tick = {}
+
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
                             completeness=comp, polish=polish_res, chronicle=chronicle,
@@ -1277,4 +1322,5 @@ def produce_chapter(
                             settings_added=settings_added,
                             entity_new=entity_new, entity_alerts=entity_alerts,
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
-                            length_truncated=length_truncated, events_capped=events_capped)
+                            length_truncated=length_truncated, events_capped=events_capped,
+                            pending_tick=pending_tick)

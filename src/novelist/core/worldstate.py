@@ -65,6 +65,23 @@ NOOP_VALUES = {"无", "无变化", "未变", "不变", "无碍", "无伤", "没�
 _CAPABILITY_SUFFIXES = ("力量", "能力", "权", "权限", "警告", "信息", "提示",
                         "关注", "气息", "感应", "状态", "权限", "使用权")
 
+# 不可出场状态词表（ADR-019，docs/06 §3.3.2）：状态行/约定文本命中这些词时，
+# 该人物进入「不可出场期」（闭关/失踪/昏迷/被囚/渡劫…），R-STATE 校验其不得出场。
+# 这是通用包基础词表；`bible/worldview.json` 的 `unavailable_states` 字段可覆盖，
+# 类型包（forge/genres/*.json）亦可扩展。
+UNAVAILABLE_STATES: tuple[str, ...] = (
+    "闭关", "闭死关", "入定", "失踪", "昏迷", "被囚", "囚禁", "渡劫", "沉睡", "疗伤",
+)
+
+
+def unavailable_keywords(ws, project_id: str) -> tuple[str, ...]:
+    """取不可出场词表：`bible/worldview.json` 的 `unavailable_states` 覆盖默认表。"""
+    data = _read(ws._abs(f"{project_id}/bible/worldview.json"))  # noqa: SLF001
+    extra = data.get("unavailable_states") if isinstance(data, dict) else None
+    if isinstance(extra, list) and extra:
+        return tuple(str(x) for x in extra if x)
+    return UNAVAILABLE_STATES
+
 
 def parse_realm(realm: str, levels: list[str]) -> tuple[int, int] | None:
     """把「炼气三层」「筑基大圆满」解析成（大境界序号, 细分序号），用于单调性比较。
@@ -101,10 +118,27 @@ def _read(path: Path):
         return None
 
 
+def ensure_axes(state: dict, origin_text: str = "开书之日") -> dict:
+    """补齐 `time` / `pending` 两段结构（幂等，ADR-019）。
+
+    放在 worldstate 里是因为这两段就存在 `bible/worldstate.json` 内；
+    `core/timeline.py` 负责其上的语义（推进/登记/分档/记账）。
+    """
+    if not isinstance(state.get("time"), dict):
+        state["time"] = {}
+    state["time"].setdefault("now", 0)
+    state["time"].setdefault("origin_text", origin_text)
+    if not isinstance(state.get("pending"), list):
+        state["pending"] = []
+    return state
+
+
 def load(ws, project_id: str) -> dict:
     """读世界状态；不存在时返回空结构（不自动初始化，由编纂/脚本显式 init）。"""
     data = _read(ws._abs(f"{project_id}/{WORLDSTATE_REL}")) or {}
-    data.setdefault("characters", {})
+    if not isinstance(data.get("characters"), dict):
+        data["characters"] = {}
+    ensure_axes(data)
     return data
 
 
@@ -117,9 +151,16 @@ def init_from_bible(ws, project_id: str) -> dict:
 
     `possessions`：人物卡可声明"固有物品"（陈默的残玉锚点），初始化时登记进 items
     ——正文反复出现但"非获得"的物品不会因此漏记（R-ITEM 未持有告警的源头）。
+
+    时间轴（ADR-019）：同时初始化 `time.now = 0`，`origin_text` 取 `project.title`
+    或默认"开书之日"。
     """
     chars = _read(ws._abs(f"{project_id}/bible/characters.json")) or []
     state = load(ws, project_id)
+    if not state["time"].get("origin_text"):
+        proj = _read(ws._abs(f"{project_id}/project.json")) or {}
+        state["time"]["origin_text"] = (
+            f"{proj.get('title', '本书')}开书之日" if isinstance(proj, dict) else "开书之日")
     for c in chars if isinstance(chars, list) else []:
         if not isinstance(c, dict) or not c.get("id"):
             continue
@@ -145,6 +186,8 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
 
     `registry`：物品/功法注册表（core/registry.Registry）。给出时，"获得/失去"里的
     异名（残篇/残卷）归一化为规范名再入库——解决同物异名堆积（讨论决策）。
+
+    `at` 除 `{vol, ch}` 外可带 `t`（相对天数，ADR-019），供时间轴与 R-STATE 交叉核对。
     """
     if registry is None:
         from .registry import Registry
@@ -154,6 +197,11 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
     cur = state["characters"].setdefault(char_id, {"name": "", "realm": "", "location": "",
                                                    "items": [], "injuries": [],
                                                    "dead": False, "history": []})
+    # add_pending（timeline）可能先建了裸占位（仅 unavailable_* 键）——补齐骨架
+    cur.setdefault("name", "")
+    cur.setdefault("history", [])
+    cur.setdefault("items", [])
+    cur.setdefault("injuries", [])
     recorded = {}
     for key, value in (delta or {}).items():
         field = _STATE_KEYS.get(key, key)
@@ -229,6 +277,9 @@ def snapshot_lines(state: dict, char_ids: list[str] | None = None) -> list[str]:
             bits.append("伤势 " + "、".join(cur["injuries"]))
         if cur.get("dead"):
             bits.append("已死亡（不得再出场行动）")
+        if cur.get("unavailable_until") is not None:
+            bits.append(f"正在{cur.get('unavailable_reason') or '闭关'}中"
+                        f"（至 t+{cur['unavailable_until']}，期间不得出场）")
         if len(bits) > 1:
             lines.append("- " + "，".join(bits))
     return lines

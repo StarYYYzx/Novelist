@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from ..storage.workspace import Workspace
 
@@ -374,12 +375,72 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
                         level="warn", rule_id="R-STATE", object_ref=f"{ch_name}｜{name}",
                         detail=(f"人物已在 {death_ch[0]}:{death_ch[1]} 阵亡，"
                                 "之后章节正文仍出现其名（确认是否回忆/提及）")))
+
+        # 不可出场期（ADR-019）：闭关/失踪/昏迷/被囚/渡劫期间不得出场
+        if cur.get("unavailable_until") is not None:
+            since = cur.get("unavailable_since")
+            if isinstance(since, dict):
+                since_at = (int(since.get("vol", 0) or 0), int(since.get("ch", 0) or 0))
+                for ch_name, text in chapters.items():
+                    m = re.match(r"(\d+)-(\d+)$", ch_name)
+                    if not m:
+                        continue
+                    at = (int(m.group(1)), int(m.group(2)))
+                    if at > since_at and name in text:
+                        alerts.append(RuleAlert(
+                            level="warn", rule_id="R-STATE", object_ref=f"{ch_name}｜{name}",
+                            detail=(f"人物正在{cur.get('unavailable_reason') or '闭关'}中"
+                                    f"（不可出场期至 t+{cur['unavailable_until']}，自 "
+                                    f"{since_at[0]}:{since_at[1]} 起），第 {at[0]}:{at[1]} 章仍出现"
+                                    "其名（确认是否回忆/提及，或应推迟到出关后）")))
     return alerts
 
 
 def run_state_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """只跑世界状态规则（R-STATE），供编纂流程单独调用。"""
-    return _worldstate_check(ws, project_id)
+    """只跑世界状态规则（R-STATE + R-TIME），供编纂流程单独调用。"""
+    return _worldstate_check(ws, project_id) + _pending_time_check(ws, project_id)
+
+
+def _pending_time_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-TIME：定时事件（pending）到期状态（ADR-019，docs/06 §3.3.3）。
+
+    - overdue ≥ 3 章 → warn（该兑现了）；
+    - overdue ≥ 5 章 → warn 软 block（本章须体现，否则拦截）；
+    - 已 expired → warn 留痕（自动作废，建议人工处理/改期）。
+    """
+    from ..core.timeline import now_of, pending_of
+
+    alerts: list[RuleAlert] = []
+    st = _load(ws, project_id, "bible/worldstate.json")
+    if not isinstance(st, dict):
+        return alerts
+    now = now_of(st)
+    for p in pending_of(st):
+        what = str(p.get("what") or "")[:30]
+        pid = str(p.get("id") or "?")
+        status = p.get("status")
+        if status == "expired":
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-TIME", object_ref=pid,
+                detail=f"「{what}」已逾期自动作废（expired）——事件不再拦截，建议人工处理或改期"))
+            continue
+        if status != "scheduled":
+            continue
+        od = int(p.get("overdue") or 0)
+        due = int(p.get("due") or 0)
+        if od >= 5:
+            bc = int(p.get("block_count") or 0)
+            detail = (f"「{what}」due=t+{due}（now=t+{now}）已逾期 {od} 章未兑现，"
+                      f"软 block {bc}/3——本章 key_events 须体现该事项"
+                      if bc < 3 else
+                      f"「{what}」已逾期 {od} 章，软 block {bc}/3——下一章将被自动作废")
+            alerts.append(RuleAlert(level="warn", rule_id="R-TIME", object_ref=pid,
+                                    detail=detail))
+        elif od >= 3:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-TIME", object_ref=pid,
+                detail=f"「{what}」due=t+{due}（now=t+{now}）已到期 {od} 章未兑现，该安排兑现了"))
+    return alerts
 
 
 def _referential_integrity(ws: Workspace, project_id: str) -> list[RuleAlert]:
@@ -412,32 +473,46 @@ def _referential_integrity(ws: Workspace, project_id: str) -> list[RuleAlert]:
 
 
 def _timeline_monotonic(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """校验时间线事件按 (vol, ch) 出现顺序不倒退（docs/06 §3.3）。"""
+    """R-TL：时间线单调（docs/06 §3.3，ADR-019）。
+
+    **按 `at.t`（相对天数）判单调**——天数是事实轴，(vol, ch) 只是粗粒度投影；
+    旧数据（无 t）回退按 in_chapters 首现章节序判。两者都缺失才 warn。
+    """
     alerts: list[RuleAlert] = []
     tls = _load(ws, project_id, "bible/timeline.json")
     if not isinstance(tls, list):
         return alerts
-    prev = None
+    prev: tuple[Any, int] | None = None   # (key, type)：key=t 或 (vol, ch)，type 0|1 区分
+    prev_id = ""
     for t in tls:
         if not isinstance(t, dict):
             continue
+        tid = str(t.get("id") or "?")
+        at = t.get("at") if isinstance(t.get("at"), dict) else None
+        t_key = None
+        if isinstance(at, dict) and isinstance(at.get("t"), (int, float)):
+            t_key = int(at["t"])
+        if t_key is not None:
+            cur: tuple[int, int] = (t_key, 0)
+            if prev is not None and prev[1] == 0 and cur[0] < prev[0]:
+                alerts.append(RuleAlert(
+                    level="block", rule_id="R-TL", object_ref=tid,
+                    detail=(f"时间线事件 {tid}（t={cur[0]}）早于前一事件 "
+                            f"{prev_id}（t={prev[0]}）——时间倒退")))
+            prev, prev_id = (t_key, 0), tid
+            continue
+        # 旧数据回退：按 in_chapters 首现章节序
         chaps = t.get("in_chapters") or []
-        # 采用该事件最早出现的章节作为排序基准
         if chaps and isinstance(chaps[0], dict):
-            cur = (int(chaps[0].get("vol", 0)), int(chaps[0].get("ch", 0)))
-            if prev is not None and cur < prev:
-                alerts.append(
-                    RuleAlert(
-                        level="block",
-                        rule_id="R-TL",
-                        object_ref=t.get("id", "?"),
-                        detail=f"时间线事件 {t.get('id')} 出现顺序({cur[0]}:{cur[1]}) 早于前一事件({prev[0]}:{prev[1]})",
-                    )
-                )
-            prev = cur
+            cur_ch = (int(chaps[0].get("vol", 0)), int(chaps[0].get("ch", 0)))
+            if prev is not None and prev[1] == 1 and cur_ch < prev[0]:
+                alerts.append(RuleAlert(
+                    level="block", rule_id="R-TL", object_ref=tid,
+                    detail=f"时间线事件 {tid} 出现顺序({cur_ch[0]}:{cur_ch[1]}) 早于前一事件({prev[0][0]}:{prev[0][1]})"))
+            prev, prev_id = (cur_ch, 1), tid
         else:
-            alerts.append(RuleAlert(level="warn", rule_id="R-TL", object_ref=t.get("id", "?"),
-                                    detail="时间线事件缺少 in_chapters 章节定位"))
+            alerts.append(RuleAlert(level="warn", rule_id="R-TL", object_ref=tid,
+                                    detail="时间线事件缺少 at.t 与 in_chapters，无法判单调"))
     return alerts
 
 

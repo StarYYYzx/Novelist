@@ -2,10 +2,53 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/worldstate.schema.json",
   "title": "worldstate",
-  "description": "世界状态（硬状态层）。人物当前修为/位置/持有物/伤势的确定性事实源，由编纂员在事件回写时更新，供生成上下文注入与 R-STATE 校验。见 docs/06 §3、docs/人工审查.md 第三批第 3 条。",
+  "description": "世界状态（硬状态层）。人物当前修为/位置/持有物/伤势的确定性事实源，由编纂员在事件回写时更新，供生成上下文注入与 R-STATE 校验。含相对天数时间轴（ADR-019，docs/06 §3.3）。见 docs/06 §3、docs/人工审查.md 第三批第 3 条。",
   "type": "object",
   "required": ["characters"],
   "properties": {
+    "time": {
+      "type": "object",
+      "description": "相对天数时间轴（ADR-019）：开书之日 = 0，LLM 维护历法必然漂移，天数轴不会",
+      "required": ["now"],
+      "properties": {
+        "now": { "type": "integer", "minimum": 0, "description": "当前时刻（天）" },
+        "origin_text": { "type": "string", "description": "t=0 的语义锚点，如「叶蓝穿越之日」" }
+      },
+      "additionalProperties": false
+    },
+    "pending": {
+      "type": "array",
+      "description": "未来日程（定时事件）。due 是天数轴上的到期时刻；到期只升提示强度不硬插剧情（ADR-002）。",
+      "items": {
+        "type": "object",
+        "required": ["id", "what", "due", "status"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^pd:[A-Za-z0-9_-]+$" },
+          "who": { "type": "string", "description": "关联人物 id（char:xxx）；世界级日程可为空串" },
+          "what": { "type": "string", "minLength": 1, "description": "要发生的事，如「叶蓝出关」" },
+          "due": { "type": "integer", "minimum": 0, "description": "到期时刻（天）" },
+          "span": { "type": "integer", "minimum": 1, "description": "跨度（due - 登记时 now），分档比例分母" },
+          "created_t": { "type": "integer", "minimum": 0, "description": "登记时刻（天）" },
+          "status": {
+            "type": "string",
+            "enum": ["scheduled", "fired", "cancelled", "expired"],
+            "description": "scheduled→fired（正文引出）；scheduled→expired（连续 3 次软 block 自动作废）；cancelled 仅用户手改"
+          },
+          "created_at": {
+            "type": "object",
+            "required": ["vol", "ch"],
+            "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+            "additionalProperties": false
+          },
+          "thread": { "type": "string", "description": "可选：与 plot_threads 伏笔 id 互引（不合并）" },
+          "overdue": { "type": "integer", "minimum": 0, "description": "到期后经过的章数" },
+          "block_count": { "type": "integer", "minimum": 0, "description": "软 block 次数，≥3 自动 expired" },
+          "fired_at": { "type": "object", "description": "兑现落点（vol/ch）" },
+          "expired_at": { "type": "object", "description": "自动作废落点（vol/ch）" }
+        },
+        "additionalProperties": false
+      }
+    },
     "characters": {
       "type": "object",
       "additionalProperties": {
@@ -18,6 +61,14 @@
           "items": { "type": "array", "items": { "type": "string" } },
           "injuries": { "type": "array", "items": { "type": "string" } },
           "dead": { "type": "boolean", "default": false },
+          "unavailable_until": { "type": "integer", "description": "不可出场期截止（天，ADR-019）：闭关/失踪/昏迷/被囚/渡劫…期间 R-STATE 校验不得出场" },
+          "unavailable_since": {
+            "type": "object",
+            "description": "不可出场期起始（vol/ch）",
+            "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
+            "additionalProperties": false
+          },
+          "unavailable_reason": { "type": "string", "description": "命中的不可出场词，如「闭关」" },
           "history": {
             "type": "array",
             "description": "状态变更历史，R-STATE 依据它校验境界单调性与越级跳变",
@@ -29,7 +80,8 @@
                   "type": "object",
                   "properties": {
                     "vol": { "type": "integer", "minimum": 1 },
-                    "ch": { "type": "integer", "minimum": 0 }
+                    "ch": { "type": "integer", "minimum": 0 },
+                    "t": { "type": "integer", "description": "变更落定时的相对天数（ADR-019）" }
                   },
                   "additionalProperties": false
                 },
@@ -44,5 +96,5 @@
     }
   },
   "additionalProperties": false,
-  "$comment": "硬状态层。realm 只进不退（R-STATE 校验），越级跳变（一次跨 2 个大境界以上）须有对应突破事件。"
+  "$comment": "硬状态层。realm 只进不退（R-STATE 校验），越级跳变（一次跨 2 个大境界以上）须有对应突破事件。time/pending 为相对天数时间轴（ADR-019），unavailable_* 为不可出场期。"
 }

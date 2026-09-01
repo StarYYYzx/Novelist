@@ -49,6 +49,20 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 - 获得/失去**只写具体的物品实体**（丹药、符箓、法宝、秘籍、材料等可持有之物），
   **能力、力量、权限、警告信息、关注等抽象概念不是物品，不要写**
 
+第三部分——时间行与约定行（ADR-019，docs/06 §3.3）：
+
+时间：+90日
+- 表示本章结束后故事时间推进了多少（**相对天数**，不是历法日期）
+- 只写正文明确写到的时间跨度；同章多线并进写「时间：同日」；回忆插叙写「时间：闪回」
+- 可加备注：时间：+90日 | 叶蓝闭关结束
+
+约定：叶蓝出关｜+90日
+- 表示正文中角色**约定/宣告**在未来某时发生的事（闭关出关、三年之约、比试之期等）
+- 竖线前写"什么事"，竖线后写"距今多少天"
+- 只登记正文明确约定的，不要臆测
+
+时间行与约定行都**最多各 1 条**；没有就不写。
+
 不要输出标题、序号、解释或空行。事件最多 {max_events} 条，宁少勿多。
 
 正文：
@@ -64,6 +78,20 @@ class ExtractedEvent:
 
 
 @dataclass
+class Extraction:
+    """一次抽取的全部结果（事件 + 状态 + 时间 + 约定）。
+
+    原先 `extract()` 返回 `(events, state_changes)` 二元组；ADR-019 需要再带出
+    时间行与约定行，二元组会一路改成四元组——改成具名容器，后续再加字段不改签名。
+    """
+
+    events: list[ExtractedEvent] = field(default_factory=list)
+    state_changes: list[tuple[str, dict]] = field(default_factory=list)
+    time_lines: list[str] = field(default_factory=list)      # 「时间：+90日（| 备注）」原文
+    pending_lines: list[str] = field(default_factory=list)   # 「约定：叶蓝出关｜+90日」原文
+
+
+@dataclass
 class ChroniclerReport:
     extracted: int = 0
     written: int = 0
@@ -73,6 +101,12 @@ class ChroniclerReport:
     state_updates: dict[str, dict] = field(default_factory=dict)
     # 伏笔流转（暗线）：本轮 planted→active 的伏笔数
     threads_activated: int = 0
+    # 时间轴（ADR-019）：本轮推进的天数（0 = 未推进/闪回）
+    time_advanced: int = 0
+    # 时间轴：本轮登记的定时事件 [(pending_id, what, due)]
+    pending_added: list[tuple[str, str, int]] = field(default_factory=list)
+    # 时间轴：解析告警（无法识别的时间增量、超上限的天数等）
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -131,13 +165,14 @@ class Chronicler:
 
     # ---- 抽取 ----
     def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500
-                ) -> tuple[list[ExtractedEvent], list[tuple[str, dict]]]:
-        """LLM 从正文抽取事件与状态变化。无 LLM 时返回空（不做假）。
+                ) -> Extraction:
+        """LLM 从正文抽取事件、状态变化、时间推进与约定（ADR-019）。
 
-        返回 (events, state_changes)；state_changes 为 [(char_id, delta)]。
+        无 LLM 时返回空 `Extraction`（不做假）。时间/约定行搭在同一次抽取调用里，
+        **不额外增加 LLM 调用**。
         """
         if self.llm is None or not chapter_text.strip():
-            return [], []
+            return Extraction()
         res = self.llm.complete(
             LLMRequest(
                 messages=[LLMMessage(role="user",
@@ -148,16 +183,30 @@ class Chronicler:
             )
         )
         if res.blocked or not res.content:
-            return [], []
+            return Extraction()
         return self._parse(res.content, max_events)
 
-    def _parse(self, content: str, max_events: int) -> tuple[list[ExtractedEvent], list[tuple[str, dict]]]:
-        from .worldstate import parse_state_lines
+    def _parse(self, content: str, max_events: int) -> Extraction:
+        from . import worldstate
+        from .timeline import _PENDING_LINE_RE, _TIME_LINE_RE
 
-        # 状态行先摘出来，避免「状态：X | 修为：Y」被当成事件行
-        state_changes = parse_state_lines(content, self._name_map)
-        event_lines = [ln for ln in content.splitlines()
-                       if not ln.strip().startswith(("状态：", "状态:"))]
+        # 状态/时间/约定行先摘出来，避免被当成事件行
+        state_changes = worldstate.parse_state_lines(content, self._name_map)
+        time_lines: list[str] = []
+        pending_lines: list[str] = []
+        event_lines: list[str] = []
+        for ln in content.splitlines():
+            s = ln.strip()
+            if _TIME_LINE_RE.match(s):
+                if len(time_lines) < 1:      # 每章最多 1 条（多次推进按最大跨度算）
+                    time_lines.append(s)
+            elif _PENDING_LINE_RE.match(s):
+                if len(pending_lines) < 1:
+                    pending_lines.append(s)
+            elif s.startswith(("状态：", "状态:")):
+                continue
+            else:
+                event_lines.append(ln)
 
         out: list[ExtractedEvent] = []
         for line in event_lines:
@@ -178,7 +227,8 @@ class Chronicler:
             ))
             if len(out) >= max_events:
                 break
-        return out, state_changes
+        return Extraction(events=out, state_changes=state_changes,
+                          time_lines=time_lines, pending_lines=pending_lines)
 
     # ---- 写入（含冲突双检）----
     def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int,
@@ -237,12 +287,15 @@ class Chronicler:
 
     def commit(self, events: list[ExtractedEvent], vol: int, ch: int, *, project_id: str = "",
                state_changes: list[tuple[str, dict]] | None = None,
-               tag: str = "c", payoff: bool = False) -> ChroniclerReport:
+               tag: str = "c", payoff: bool = False,
+               time_lines: list[str] | None = None,
+               pending_lines: list[str] | None = None) -> ChroniclerReport:
         """逐条写入；冲突回退并记入 report，不静默入库（docs/06 §4.4）。
 
         `state_changes` 非空时同步更新世界状态（B-STATE），
         并把 delta 写进对应人物经历的 `state_delta` 字段（docs/06 §3.5 预留字段）。
         `payoff=True`（收尾期，第九批）：命中事件的 active 伏笔自动判 paid_off。
+        `time_lines` / `pending_lines`（ADR-019）：推进故事时间、登记定时事件。
         """
         report = ChroniclerReport(extracted=len(events), events=list(events))
         pid = project_id or self.project_id
@@ -279,15 +332,62 @@ class Chronicler:
 
         # 世界状态（B-STATE）：硬状态层的更新与事件写入同一事务语义——
         # 先合 delta，再把实际生效的变更记进 report 供编排层/人工核对。
+        # 时间轴（ADR-019）：**登记先于推进**——约定行按推进前的 now 算 due；
+        # 状态历史打的 t 是**章末**时刻（推进后），因为状态变更落定在本章结尾。
+        self._apply_pending(pending_lines, vol, ch, report)
+        self._apply_time(time_lines, vol, ch, report)
         if deltas_by_char:
+            from . import worldstate as wsmod
+            from .timeline import now_of
             from .worldstate import apply_delta
 
+            end_t = now_of(wsmod.load(self.ws, self.project_id))
             for cid, delta in deltas_by_char.items():
                 applied = apply_delta(self.ws, self.project_id, cid, delta,
-                                      at={"vol": vol, "ch": ch})
+                                      at={"vol": vol, "ch": ch, "t": end_t})
                 if applied:
                     report.state_updates[cid] = applied
         return report
+
+    # ---- 时间轴（ADR-019）----
+    def _apply_pending(self, pending_lines: list[str] | None, vol: int, ch: int,
+                       report: ChroniclerReport) -> None:
+        """登记「约定：」行（按推进前的 now 算 due——登记先于推进）。"""
+        from . import worldstate as wsmod
+        from .timeline import add_pending, parse_pending_line, resolve_who
+
+        for raw in pending_lines or []:
+            parsed = parse_pending_line(raw)
+            if parsed is None:
+                report.warnings.append(f"约定行无法解析：{raw[:40]}")
+                continue
+            what, dt, warn = parsed
+            if warn:
+                report.warnings.append(warn)
+            if dt > 3650:  # MAX_DT_WARN
+                report.warnings.append(f"约定「{what[:20]}」跨度 {dt} 天，疑似抽取错误")
+            who = resolve_who(what, self._name_map)
+            item = add_pending(self.ws, self.project_id, what=what, dt=dt, vol=vol, ch=ch,
+                               who=who, unavailable_states=wsmod.unavailable_keywords(
+                                   self.ws, self.project_id))
+            report.pending_added.append((str(item["id"]), what, int(item["due"])))
+
+    def _apply_time(self, time_lines: list[str] | None, vol: int, ch: int,
+                    report: ChroniclerReport) -> None:
+        """推进「时间：」行（取最大跨度；闪回/同日不推进但登记时点）。"""
+        from .timeline import MAX_DT_WARN, advance, parse_time_line
+
+        for raw in time_lines or []:
+            dt, note, warn = parse_time_line(raw)
+            if warn:
+                report.warnings.append(warn)
+            if dt is None:
+                continue  # 闪回/无法解析：不推进，也不污染 timeline
+            if dt > MAX_DT_WARN:
+                report.warnings.append(f"时间增量 {dt} 天超过上限 {MAX_DT_WARN}，疑似抽取错误")
+            advance(self.ws, self.project_id, dt, vol=vol, ch=ch,
+                    event=note or f"时间推进 {dt} 日")
+            report.time_advanced += dt
 
     def run(self, chapter_text: str, vol: int, ch: int, *, max_events: int = 3,
             tag: str = "c", payoff: bool = False) -> ChroniclerReport:
@@ -297,6 +397,7 @@ class Chronicler:
         避免同一章内不同片段抽出的事件 id 撞名。
         `payoff`：收尾期传 True，命中事件的 active 伏笔判 paid_off（第九批）。
         """
-        events, state_changes = self.extract(chapter_text, max_events=max_events)
-        return self.commit(events, vol, ch, state_changes=state_changes, tag=tag,
-                           payoff=payoff)
+        ex = self.extract(chapter_text, max_events=max_events)
+        return self.commit(ex.events, vol, ch, state_changes=ex.state_changes, tag=tag,
+                           payoff=payoff, time_lines=ex.time_lines,
+                           pending_lines=ex.pending_lines)

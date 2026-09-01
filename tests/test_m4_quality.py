@@ -139,7 +139,8 @@ def test_chronicler_parses_events_and_resolves_names(tmp_path):
     _seed(ws, pid)
     llm = _StubLLM("苏晚被逐出内门 | conflict | 苏晚,铁无涯\n苏晚拾得断玉佩 | discovery | 苏晚\n")
     c = Chronicler(ws, pid, llm=llm)
-    events, states = c.extract("正文略")
+    ex = c.extract("正文略")
+    events = ex.events
     assert len(events) == 2
     assert events[0].kind == "conflict"
     assert events[0].participant_ids == ["char:sw", "char:twy"]
@@ -152,8 +153,7 @@ def test_chronicler_backfills_names_omitted_by_model(tmp_path):
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     c = Chronicler(ws, pid, llm=_StubLLM("铁无涯宣布末位者逐出内门 | conflict\n"))
-    events, states = c.extract("正文略")
-    assert events[0].participant_ids == ["char:twy"]
+    assert c.extract("正文略").events[0].participant_ids == ["char:twy"]
 
 
 def test_chronicler_commits_with_conflict_check(tmp_path):
@@ -183,7 +183,8 @@ def test_chronicler_without_llm_returns_nothing(tmp_path):
     """无 LLM 时编纂不可用，不做假。"""
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
-    assert Chronicler(ws, pid, llm=None).extract("正文") == ([], [])
+    ex = Chronicler(ws, pid, llm=None).extract("正文")
+    assert ex.events == [] and ex.state_changes == [] and ex.time_lines == []
 
 
 def test_chronicler_semantic_layer_can_block(tmp_path):
