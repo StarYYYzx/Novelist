@@ -284,20 +284,31 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 2. 一致性**规则检引擎**的字段引用依据；
 3. 生成实现时的 dataclass/Pydantic 建模输入。
 
-> Schema 的完整定义将在实现阶段以 `schemas/*.schema.json` 提供（见 08 规划）。本文档定结构，不铺开全部字段。
+> Schema 的完整定义在实现阶段以 `schemas/*.schema.json` 提供（见 08 规划）。本文档定结构，不铺开全部字段。
+> **F0'（2026-09-01）契约已与磁盘实然对齐**：数组型文件（characters/locations/items/settings/
+> plot_threads/timeline/volumes/plot_events）schema 根节点为 `array`；style 为扁平结构
+> （pov/tone[]/target_words_per_chapter/forbidden_words/protagonist，无顶层 style 键）；
+> timeline.at 双格式 oneOf（新 `t/vol/ch` | 旧历法 `era/year/season`）；worldview 含
+> power_system/phase_policy/unavailable_states/factions；校验入口 `core/bible.py validate_project`
+> + CLI `novelist validate`（14 类契约映射，缺失文件不违规）。
 
 ### 5.1 通用 schema 骨架
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "character",
-  "type": "object",
-  "required": ["id", "name", "status"],
-  "properties": {
-    "id": {"type": "string", "pattern": "^char:[A-Za-z0-9_-]+$"},
-    "name": {"type": "string", "minLength": 1},
-    "core_traits": {"type": "array", "items": {"type": "string"}},
-    "status": {"enum": ["active", "dead", "away", "unknown"]}
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "name"],
+    "properties": {
+      "id": {"type": "string", "pattern": "^char:[A-Za-z0-9_-]+$"},
+      "name": {"type": "string", "minLength": 1},
+      "core_traits": {"type": "array", "items": {"type": "string"}},
+      "background": {"type": "string"},
+      "is_protagonist": {"type": "boolean", "default": false},
+      "status": {"enum": ["active", "dead", "away", "unknown"]}
+    }
   }
 }
 ```

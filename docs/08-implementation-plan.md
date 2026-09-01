@@ -318,7 +318,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | 待做 |
+| F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | ✅ 完成（契约校验层 core/bible.py + CLI validate + 5 项目全过，见下） |
 | F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | 待做 |
 | F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | 待做 |
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | 待做 |
@@ -331,6 +331,33 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 ingest = 30）。设计三轮敲定（2026-09-01），29 项分支决策见 `docs/10` §15。
 **执行顺序**：本里程碑在 **M3m（时间线 T1–T3）之后**启动——F3 的 ingest 依赖 chronicler
 时间行（T1 产物），先接泵再摄入。
+
+**F0' 落地记录（2026-09-01）**：契约对齐分三层——schema / 磁盘 / 校验入口，互相校准后 5 项目全过：
+
+- **schema 根节点修正（结构层）**：characters/locations/items/settings/plot_threads/timeline/
+  outline-volume/memory-plot_event 8 个根节点从 object 改 **array+items**（磁盘实然即数组，
+  docs/06 §3.1/§3.3.1 明示）；fragment_index 相反，根从 array 改 **object**（磁盘
+  `{revision,kind,dim,fragments}`，`MemoryIndex.load` 读 `raw["fragments"]`）。
+- **字段契约校准（实然消费者）**：style 废弃错误的顶层 `style:string`，重构为扁平
+  （pov/tone 数组/target_words_per_chapter/forbidden_words/protagonist——context.py:69、
+  rules.py:66 读取）；worldview 补 power_system/phase_policy/unavailable_states/factions
+  （phase.py:122 / worldstate.py:79 / knowledge.py:131 消费）；characters items 补
+  background/is_protagonist 且 additionalProperties 放宽（人物卡为示意结构，允许 possessions 等扩展）。
+- **历史兼容（旧数据不破坏）**：timeline.at 用 **oneOf**（新 `t/vol/ch` | 旧历法
+  `era/year/season`，R-TL 已回退 in_chapters 章序）；plot_event enum 对齐
+  `chronicler.EVENT_KINDS` 六类 + id 允许 `ev:proj:vol:ch:seq`、affected_threads 兼容
+  `thread:` 前缀；character_history state_delta 允许 null、char_id 兼容 `char_` 旧前缀；
+  project id 模式放宽（project_id 即目录名 `proj-t5` 无冒号）。
+- **磁盘数据补齐**：5 项目 worldview 补 `id`（world:luoxia 等）、缺失 title 的 project.json 补书名、
+  proj-t5 items 补 type、characters 补 status（schema 已放宽 required，补全以保语义）。
+- **校验入口接通（B1 阻塞解除）**：新 `core/bible.py`——`BIBLE_CONTRACT` 14 类映射
+  （含 `memory/character_histories/*.json` glob）+ `validate_project()` 返回违规清单
+  （缺失文件不违规，加载层空值兜底）+ `parse_gist()`（细纲 front-matter 宽松解析，
+  兼容旧行内 `key_events: [...]`，供 F1 Forge 使用）；CLI 新增 `novelist validate`（项目直传
+  或 workspace 根全查）。`SchemaRegistry.validate` 从零调用点变为 Forge 前置门禁。
+- 测试：`tests/test_m11_schema_alignment.py` 31 用例（契约映射完整性 / 16 组样例全 PASS /
+  validate_project 行为 / parse_gist 三形态 / proj-t5 集成 skipif）；存量 test_m0 样例适配数组根。
+  全量 293 passed；`novelist validate novel_workspace` 5/5 项目全过。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 
