@@ -2,31 +2,79 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/outline/volume.schema.json",
   "title": "volume_outline",
-  "description": "卷级大纲（outline/volumes.json）。2026-08-31 对齐实际数据结构（vol/chapter_range/target_words 此前在代码与 harness 中已广泛使用，schema 却要求 order/summary，两相脱节）；第九批新增 threads_to_payoff（卷级收尾工作流：本卷须回收的伏笔清单）。",
-  "type": "object",
-  "required": ["id", "vol", "summary", "chapter_range"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^vol:[A-Za-z0-9_-]+$" },
-    "vol": { "type": "integer", "minimum": 1, "description": "卷号（与 order 语义重复，历史字段，兼容保留）" },
-    "order": { "type": "integer", "minimum": 1, "description": "全书卷序；缺省取 vol" },
-    "title": { "type": ["string", "null"] },
-    "summary": { "type": "string", "description": "本卷主线（每章生成时注入）" },
-    "chapter_range": {
-      "type": "array",
-      "items": { "type": "integer", "minimum": 1 },
-      "minItems": 2,
-      "maxItems": 2,
-      "description": "[起, 止] 全局章号；VolumeContext 据此计算卷内进度与收尾期"
+  "description": "卷级大纲（outline/volumes.json）。2026-08-31 对齐实际数据结构（vol/chapter_range/target_words 此前在代码与 harness 中已广泛使用，schema 却要求 order/summary，两相脱节）；第九批新增 threads_to_payoff（卷级收尾工作流：本卷须回收的伏笔清单）。 F0': 根节点修正为数组（volumes.json 实为卷数组）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "vol",
+      "summary",
+      "chapter_range"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^vol:[A-Za-z0-9_-]+$"
+      },
+      "vol": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "卷号（与 order 语义重复，历史字段，兼容保留）"
+      },
+      "order": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "全书卷序；缺省取 vol"
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "summary": {
+        "type": "string",
+        "description": "本卷主线（每章生成时注入）"
+      },
+      "chapter_range": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "[起, 止] 全局章号；VolumeContext 据此计算卷内进度与收尾期"
+      },
+      "target_words": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "themes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "key_beats": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "threads_to_payoff": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "本卷大纲声明须回收的伏笔 id（thread:*/pt:*）；收尾期回收清单的补充来源"
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
+      }
     },
-    "target_words": { "type": "integer", "minimum": 0 },
-    "themes": { "type": "array", "items": { "type": "string" } },
-    "key_beats": { "type": "array", "items": { "type": "string" } },
-    "threads_to_payoff": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "本卷大纲声明须回收的伏笔 id（thread:*/pt:*）；收尾期回收清单的补充来源"
-    },
-    "revision": { "type": "integer", "minimum": 0 }
-  },
-  "additionalProperties": true
+    "additionalProperties": true
+  }
 }

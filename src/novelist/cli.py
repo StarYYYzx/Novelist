@@ -546,6 +546,48 @@ def stats(ctx: click.Context, directory: str | None) -> None:
 
 
 @cli.command()
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def validate(ctx: click.Context, directory: str | None) -> None:
+    """校验项目事实源 ↔ schema 契约（F0'，docs/06 §5 / core/bible.py）。
+
+    传入项目目录直接校验该项目；传入 workspace 根则遍历全部项目。
+    """
+    import pathlib
+
+    from novelist.core.bible import BIBLE_CONTRACT, validate_project
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    root = pathlib.Path(ws._abs(""))
+    if (root / "project.json").exists():
+        base = root.parent
+        projects = [root.name]
+    else:
+        base = root
+        projects = sorted(d.name for d in base.iterdir() if d.is_dir() and (d / "project.json").exists())
+    if not projects:
+        raise click.ClickException("no project found; run `novelist init` first")
+    if str(base) != str(root):
+        ws = Workspace(root=str(base))
+    failed = 0
+    for project_id in projects:
+        violations = validate_project(ws, project_id)
+        if not violations:
+            click.echo(f"{project_id}: 契约校验全过（{len(BIBLE_CONTRACT)} 类映射）")
+            continue
+        failed += 1
+        click.echo(f"{project_id}: {len(violations)} 个文件未通过契约校验")
+        for v in violations:
+            click.echo(f"[FAIL] {v.path} (schema={v.schema})")
+            for e in v.errors:
+                click.echo(f"    {e}")
+    if failed:
+        raise click.ClickException(f"{failed} 个项目存在契约违规，见上方清单")
+
+
+@cli.command()
 @click.option("--host", default="127.0.0.1", help="监听地址")
 @click.option("--port", default=8000, type=int, help="监听端口")
 @click.pass_context

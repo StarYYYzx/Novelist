@@ -2,16 +2,51 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/locations.schema.json",
   "title": "location",
-  "description": "地点/地图（设定圣经）。见 docs/06 §2。",
-  "type": "object",
-  "required": ["id", "name"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^loc:[A-Za-z0-9_-]+$" },
-    "name": { "type": "string", "minLength": 1 },
-    "parent": { "type": ["string", "null"], "pattern": "^loc:[A-Za-z0-9_-]+$" },
-    "desc": { "type": "string" },
-    "status": { "type": ["string", "null"] },
-    "revision": { "type": "integer", "minimum": 0 }
-  },
-  "additionalProperties": true
+  "description": "地点/地图（设定圣经）。见 docs/06 §2。 F0': 根节点修正为数组（磁盘实然，docs/06 §3 数组形态）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "name"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^loc:[A-Za-z0-9_-]+$"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "parent": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^loc:[A-Za-z0-9_-]+$"
+      },
+      "desc": {
+        "type": "string"
+      },
+      "status": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "aliases": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "别名表：正文出现的异名归一化到本条目"
+      }
+    },
+    "additionalProperties": true
+  }
 }

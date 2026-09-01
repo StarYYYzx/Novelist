@@ -1,32 +1,44 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/settings.schema.json",
   "title": "SettingEntry",
-  "description": "设定条目库（讨论决策）：世界观按独立知识单元切块，每条带关键词表与「是否已交代」状态。\n生成前：事件文本命中关键词且 revealed=false → 注入 prompt 要求自然带出；\n生成后：交代验证（正文关键词命中）→ revealed=true；未交代保留 false 下一章继续注入。",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["id", "keywords", "text"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^set:" },
-    "keywords": {
-      "type": "array",
-      "items": { "type": "string" },
-      "minItems": 1,
-      "description": "提及检测与交代验证共用：命中即认为「本设定相关 / 已交代」"
+  "description": "设定条目库（讨论决策）：世界观按独立知识单元切块，每条带关键词表与「是否已交代」状态。\n生成前：事件文本命中关键词且 revealed=false → 注入 prompt 要求自然带出；\n生成后：交代验证（正文关键词命中）→ revealed=true；未交代保留 false 下一章继续注入。 F0': 根节点修正为数组（磁盘实然，docs/06 §3 数组形态）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "keywords",
+      "text"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^set:"
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "提及检测与交代验证共用：命中即认为「本设定相关 / 已交代」"
+      },
+      "text": {
+        "type": "string",
+        "description": "设定文本（1–3 句，注入时原样给出，由 LLM 自然带进正文）"
+      },
+      "revealed": {
+        "type": "boolean",
+        "default": false,
+        "description": "是否已在正文交代。首次交代后置 true（运行态，随文件回写）"
+      },
+      "first_ch": {
+        "type": "integer",
+        "default": 1,
+        "description": "最迟交代章节（用于覆盖度检查与排序）"
+      }
     },
-    "text": {
-      "type": "string",
-      "description": "设定文本（1–3 句，注入时原样给出，由 LLM 自然带进正文）"
-    },
-    "revealed": {
-      "type": "boolean",
-      "default": false,
-      "description": "是否已在正文交代。首次交代后置 true（运行态，随文件回写）"
-    },
-    "first_ch": {
-      "type": "integer",
-      "default": 1,
-      "description": "最迟交代章节（用于覆盖度检查与排序）"
-    }
+    "additionalProperties": false
   }
 }

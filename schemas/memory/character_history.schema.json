@@ -4,34 +4,82 @@
   "title": "character_history",
   "description": "人物经历史（记忆层·事实演进·实然）。见 docs/06 §3.5。",
   "type": "object",
-  "required": ["char_id", "revision", "entries"],
+  "required": [
+    "char_id",
+    "revision",
+    "entries"
+  ],
   "properties": {
-    "char_id": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-    "revision": { "type": "integer", "minimum": 0 },
+    "char_id": {
+      "type": "string",
+      "pattern": "^(char:|char_)[A-Za-z0-9_-]+$",
+      "description": "人物稳定 ID。新数据统一 char: 前缀；旧数据 char_ 前缀兼容（历史项目）。"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
     "entries": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["at", "summary"],
+        "required": [
+          "at",
+          "summary"
+        ],
         "properties": {
           "at": {
             "type": "object",
-            "required": ["vol", "ch"],
-            "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
+            "required": [
+              "vol",
+              "ch"
+            ],
+            "properties": {
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
             "additionalProperties": false
           },
-          "summary": { "type": "string", "minLength": 1 },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
           "state_delta": {
-            "type": "object",
+            "type": [
+              "object",
+              "null"
+            ],
             "properties": {
-              "power": { "type": "string" },
-              "status": { "type": "string" }
+              "power": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
             },
             "additionalProperties": true
           },
-          "emotion": { "type": ["string", "null"] },
-          "refs": { "type": "array", "items": { "type": "string" } },
-          "hash": { "type": "string" }
+          "emotion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hash": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }

@@ -2,23 +2,93 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/memory/fragment_index.schema.json",
   "title": "fragment_index",
-  "description": "记忆碎片索引元数据（编纂去重/冲突定位/索引重建）。见 docs/06 §3.5 与 §9。",
-  "type": "array",
-  "items": {
-    "type": "object",
-    "required": ["sig", "kind", "source"],
-    "properties": {
-      "sig": { "type": "string" },
-      "kind": { "type": "string", "enum": ["experience", "plot_event", "relationship", "thread"] },
-      "source": {
-        "type": "object",
-        "required": ["vol", "ch"],
-        "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
-        "additionalProperties": false
-      },
-      "refs": { "type": "array", "items": { "type": "string" } },
-      "hash": { "type": "string" }
+  "description": "记忆碎片索引元数据（编纂去重/冲突定位/索引重建）。见 docs/06 §3.5 与 §9。 F0': 根节点修正为 object（磁盘实然：{revision,kind,dim,fragments}，MemoryIndex.load 读 raw[fragments]）。",
+  "type": "object",
+  "required": [
+    "revision",
+    "kind",
+    "fragments"
+  ],
+  "properties": {
+    "revision": {
+      "type": "integer",
+      "minimum": 0
     },
-    "additionalProperties": false
-  }
+    "kind": {
+      "type": "string",
+      "description": "embedding 类型：keyword | openai 等"
+    },
+    "dim": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "fragments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "sig",
+          "kind",
+          "text",
+          "source"
+        ],
+        "properties": {
+          "sig": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "experience",
+              "plot_event",
+              "relationship",
+              "thread"
+            ]
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "vol",
+              "ch"
+            ],
+            "properties": {
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": true
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hash": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "description": "碎片文本（检索命中返回的正文摘要）"
+          },
+          "char_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "归属人物（人物经历史碎片）；通用事件碎片为 null"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
 }

@@ -2,18 +2,56 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/project.schema.json",
   "title": "project_meta",
-  "description": "project.json（项目元数据 + 流水线状态 + 批基线元信息）。见 docs/06 §2/§4.5/§6。",
+  "description": "project.json（项目元数据 + 流水线状态 + 批基线元信息）。见 docs/06 §2/§4.5/§6。 F0': id 模式放宽（project_id 即目录名 proj-t5，无 proj: 前缀）。",
   "type": "object",
-  "required": ["id", "title", "pipeline_state"],
+  "required": [
+    "id",
+    "title",
+    "pipeline_state"
+  ],
   "properties": {
-    "id": { "type": "string", "pattern": "^proj:[A-Za-z0-9_-]+$" },
-    "title": { "type": "string", "minLength": 1 },
-    "brief": { "type": "string" },
-    "genre": { "type": ["string", "null"] },
-    "prefs": { "type": "object", "additionalProperties": true },
-    "budget": { "type": "object", "additionalProperties": true },
-    "pipeline_state": { "type": "string", "enum": ["立项", "世界观", "大纲", "细纲", "正文", "审查", "待发布", "已完成"] },
-    "event_seq": { "type": "integer", "minimum": 0 }
+    "id": {
+      "type": "string",
+      "pattern": "^proj[A-Za-z0-9_-]*$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "brief": {
+      "type": "string"
+    },
+    "genre": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prefs": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "pipeline_state": {
+      "type": "string",
+      "enum": [
+        "立项",
+        "世界观",
+        "大纲",
+        "细纲",
+        "正文",
+        "审查",
+        "待发布",
+        "已完成"
+      ]
+    },
+    "event_seq": {
+      "type": "integer",
+      "minimum": 0
+    }
   },
   "additionalProperties": true,
   "$comment": "pipeline_state 取值与 docs/06 §4.1 对齐；event_seq 为事件回写序列计数"

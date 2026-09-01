@@ -2,28 +2,87 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/style.schema.json",
   "title": "style",
-  "description": "文风约束/禁用词/术语表/叙述偏好（设定圣经）。见 docs/06 §2。",
+  "description": "文风约束/禁用词/术语表/叙述偏好（设定圣经）。见 docs/06 §2。F0'：按磁盘实然重构——原顶层 style 键（string）与实然扁平结构冲突，废弃；tone 实为列表；补 target_words_per_chapter/forbidden_words/protagonist（context.py:69、rules.py:66 读取）。",
   "type": "object",
-  "required": ["style"],
   "properties": {
-    "style": { "type": "string" },
-    "tone": { "type": ["string", "null"] },
-    "pov": { "type": ["string", "null"] },
-    "narrative_prefs": { "type": "array", "items": { "type": "string" } },
-    "banned_words": { "type": "array", "items": { "type": "string" } },
+    "pov": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "叙述视角，如「第三人称限知（陆沉视角）」"
+    },
+    "tone": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "文风基调标签列表（如 热血激昂/压抑）"
+    },
+    "target_words_per_chapter": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "单章目标字数（context.py 注入「目标篇幅」）"
+    },
+    "forbidden_words": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "禁用词（R-LEX 正文扫描 + 生成期预检），与 banned_words 同义"
+    },
+    "banned_words": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "禁用词旧别名，兼容保留"
+    },
+    "protagonist": {
+      "type": "object",
+      "description": "主角标注（生成上下文注入视角人物）",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^char:[A-Za-z0-9_-]+$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "gender": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "narrative_prefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "glossary": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["term", "def"],
+        "required": [
+          "term"
+        ],
         "properties": {
-          "term": { "type": "string" },
-          "def": { "type": "string" }
+          "term": {
+            "type": "string"
+          },
+          "def": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }
     },
-    "revision": { "type": "integer", "minimum": 0 }
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    }
   },
   "additionalProperties": true
 }

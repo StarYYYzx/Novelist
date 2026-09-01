@@ -2,32 +2,101 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/timeline.schema.json",
   "title": "timeline_event",
-  "description": "时间线事件（历史时点登记簿，事实源 ADR-016；供 R-TL 按相对天数单调性校验）。见 docs/06 §3.3、ADR-019。",
-  "type": "object",
-  "required": ["id", "at", "event"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^tl:[A-Za-z0-9_-]+$" },
-    "at": {
-      "type": "object",
-      "required": ["t", "vol", "ch"],
-      "properties": {
-        "t": { "type": "integer", "minimum": 0, "description": "相对天数（开书之日 = 0），单调性校验的主轴" },
-        "vol": { "type": "integer", "minimum": 1 },
-        "ch": { "type": "integer", "minimum": 0 }
+  "description": "时间线事件（历史时点登记簿，事实源 ADR-016；供 R-TL 按相对天数单调性校验）。见 docs/06 §3.3、ADR-019。 F0': 根节点修正为数组（磁盘实然，docs/06 §3 数组形态）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "at",
+      "event"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^tl:[A-Za-z0-9_-]+$"
       },
-      "additionalProperties": false
-    },
-    "event": { "type": "string", "minLength": 1 },
-    "in_chapters": {
-      "type": "array",
-      "items": {
+      "at": {
         "type": "object",
-        "required": ["vol", "ch"],
-        "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
-        "additionalProperties": false
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "t",
+              "vol",
+              "ch"
+            ],
+            "properties": {
+              "t": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "相对天数（开书之日 = 0），单调性校验的主轴；新数据必须填写"
+              },
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ch": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "description": "新格式（ADR-019 相对天数轴）"
+          },
+          {
+            "type": "object",
+            "required": [
+              "era",
+              "year",
+              "season"
+            ],
+            "properties": {
+              "era": {
+                "type": "string"
+              },
+              "year": {
+                "type": "integer"
+              },
+              "season": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true,
+            "description": "旧格式（历法式，ADR-019 已废弃），历史数据兼容；R-TL 回退按 in_chapters 章序判"
+          }
+        ]
+      },
+      "event": {
+        "type": "string",
+        "minLength": 1
+      },
+      "in_chapters": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "vol",
+            "ch"
+          ],
+          "properties": {
+            "vol": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ch": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
       }
     },
-    "revision": { "type": "integer", "minimum": 0 }
-  },
-  "additionalProperties": false
+    "additionalProperties": false
+  }
 }

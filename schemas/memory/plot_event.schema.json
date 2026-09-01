@@ -2,24 +2,89 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/memory/plot_event.schema.json",
   "title": "plot_event",
-  "description": "剧情事件流（记忆层）。见 docs/06 §3.5。",
-  "type": "object",
-  "required": ["id", "at", "type", "summary"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^ev:[A-Za-z0-9_-]+$" },
-    "at": {
-      "type": "object",
-      "required": ["vol", "ch"],
-      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 1 } },
-      "additionalProperties": false
+  "description": "剧情事件流（记忆层）。见 docs/06 §3.5。 F0': 根节点修正为数组；id 允许 ev:proj:vol:ch:seq 形式；affected_threads 兼容 thread: 前缀。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "at",
+      "type",
+      "summary"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^ev:[A-Za-z0-9_:.-]+$"
+      },
+      "at": {
+        "type": "object",
+        "required": [
+          "vol",
+          "ch"
+        ],
+        "properties": {
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "conflict",
+          "discovery",
+          "reveal",
+          "turning_point",
+          "dialogue",
+          "departure",
+          "chapter"
+        ]
+      },
+      "summary": {
+        "type": "string",
+        "minLength": 1
+      },
+      "participants": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^char:[A-Za-z0-9_-]+$"
+        }
+      },
+      "affected_threads": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^(pt|thread):[A-Za-z0-9_-]+$"
+        }
+      },
+      "related_events": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^ev:[A-Za-z0-9_-]+$"
+        }
+      },
+      "causality_note": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hash": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
     },
-    "type": { "type": "string", "enum": ["conflict", "discovery", "reveal", "turning_point"] },
-    "summary": { "type": "string", "minLength": 1 },
-    "participants": { "type": "array", "items": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" } },
-    "affected_threads": { "type": "array", "items": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" } },
-    "related_events": { "type": "array", "items": { "type": "string", "pattern": "^ev:[A-Za-z0-9_-]+$" } },
-    "causality_note": { "type": ["string", "null"] },
-    "hash": { "type": ["string", "null"] }
-  },
-  "additionalProperties": false
+    "additionalProperties": false
+  }
 }

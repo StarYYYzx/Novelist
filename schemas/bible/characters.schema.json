@@ -2,51 +2,129 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://novelist.dev/schemas/bible/characters.schema.json",
   "title": "character",
-  "description": "人物卡（设定圣经·权威约束·应然）。见 docs/06 §3.1。",
-  "type": "object",
-  "required": ["id", "name", "status"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-    "name": { "type": "string", "minLength": 1 },
-    "aliases": { "type": "array", "items": { "type": "string" } },
-    "species": { "type": "string" },
-    "gender": {
-      "type": "string",
-      "enum": ["male", "female", "unknown"],
-      "description": "人物性别。小说系统必需——缺失时 LLM 会自行漂移人物性别（实测把男性主角写成女性）。"
-    },
-    "age": { "type": ["integer", "string"] },
-    "core_traits": { "type": "array", "items": { "type": "string" } },
-    "power": {
-      "type": "object",
-      "properties": {
-        "level": { "type": "string" },
-        "faction": { "type": "string" }
+  "description": "人物卡数组（设定圣经·权威约束·应然）。见 docs/06 §3.1。F0'：根节点修正为数组（磁盘实然），items 补 background/is_protagonist。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "name"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^char:[A-Za-z0-9_-]+$"
       },
-      "additionalProperties": true
-    },
-    "arc": { "type": "string" },
-    "first_appear": {
-      "type": "object",
-      "required": ["vol", "ch"],
-      "properties": { "vol": { "type": "integer", "minimum": 1 }, "ch": { "type": "integer", "minimum": 0 } },
-      "additionalProperties": false
-    },
-    "status": { "enum": ["active", "dead", "away", "unknown"] },
-    "relationships": {
-      "type": "array",
-      "items": {
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "aliases": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "species": {
+        "type": "string"
+      },
+      "gender": {
+        "type": "string",
+        "enum": [
+          "male",
+          "female",
+          "unknown"
+        ],
+        "description": "人物性别。小说系统必需——缺失时 LLM 会自行漂移人物性别（实测把男性主角写成女性）。"
+      },
+      "is_protagonist": {
+        "type": "boolean",
+        "default": false,
+        "description": "是否主角。正文生成上下文据此标注视角人物；worldstate 主角判定输入。"
+      },
+      "age": {
+        "type": [
+          "integer",
+          "string"
+        ]
+      },
+      "core_traits": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "power": {
         "type": "object",
-        "required": ["target", "type"],
         "properties": {
-          "target": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-          "type": { "type": "string" }
+          "level": {
+            "type": "string"
+          },
+          "faction": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
+      },
+      "background": {
+        "type": "string",
+        "description": "身世背景一句话（生成上下文注入，抑制人物凭空漂移）。"
+      },
+      "arc": {
+        "type": "string"
+      },
+      "first_appear": {
+        "type": "object",
+        "required": [
+          "vol",
+          "ch"
+        ],
+        "properties": {
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "status": {
+        "enum": [
+          "active",
+          "dead",
+          "away",
+          "unknown"
+        ]
+      },
+      "relationships": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "target",
+            "type"
+          ],
+          "properties": {
+            "target": {
+              "type": "string",
+              "pattern": "^char:[A-Za-z0-9_-]+$"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
       }
     },
-    "revision": { "type": "integer", "minimum": 0 }
-  },
-  "additionalProperties": false,
-  "$comment": "revision 用于版本策略（docs/06 §8）"
+    "additionalProperties": true,
+    "$comment": "revision 用于版本策略（docs/06 §8）；status 缺省视为 active（加载归一，见 core/bible.py normalize_characters）"
+  }
 }

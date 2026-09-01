@@ -91,7 +91,8 @@ def test_schema_registry_validates_valid_bible(tmp_path):
 
     schemas_root = P("schemas").resolve()
     reg = SchemaRegistry(root=schemas_root)
-    data = {"id": "char:cz7", "name": "苏晚", "status": "active"}
+    # F0'：characters schema 根已修正为数组（磁盘实然，docs/06 §3.1）
+    data = [{"id": "char:cz7", "name": "苏晚", "status": "active"}]
     reg.validate("bible/characters", data)  # 不抛即通过
 
 
@@ -101,7 +102,7 @@ def test_schema_registry_rejects_bad_character(tmp_path):
     schemas_root = P("schemas").resolve()
     reg = SchemaRegistry(root=schemas_root)
     with pytest.raises(Exception):
-        reg.validate("bible/characters", {"id": "bad", "name": ""})  # name 空 -> 校验失败
+        reg.validate("bible/characters", [{"id": "bad", "name": ""}])  # name 空 -> 校验失败
 
 
 def test_models_character_pydantic():
