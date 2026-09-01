@@ -483,6 +483,28 @@ docs/10 §5.3 协议落地——问题由引擎（确定性）决定、候选由
 
 > 里程碑以"可演示的纵向切片"为单位（每次都有可跑通的新能力），而非单纯横向铺层。
 
+### M5 — 多厂商 LLM 接入：api-key 统一管理 + 全量主流模型（2026-09-01 用户新增需求）
+
+**需求**：系统可接入多家 LLM 厂商的 api-key，用全量主流大模型（国内外云厂商 + 本地）进行小说撰写——
+生成/提炼/候选/抽取全流程均可在厂商与模型间切换，不绑定某一家。
+
+**为什么单列**：现有 `providers/` 仅 openai（OpenAI 兼容）/ deepseek / lmstudio / fake 四家，其中
+openai 与 deepseek 均为 OpenAI 兼容 SDK，无 Anthropic / Gemini / 智谱 / Kimi 等原生厂商适配器；
+`ProviderConfig`（config.py:15-22）无 api-key 字段，密钥散落在环境变量、无统一管理；
+且 docs/11 P0-2 记载 `REGISTRY`（providers/__init__.py:16-57）是死代码——`cli.py:354
+_make_cli_provider` 用 if/elif 自行装配，未走注册表。多厂商接入必须先清偿 P0-2（Provider 双轨制）。
+
+**排序**：排在当前未做完工作（M3l F3–F5、M3m T4、M4、docs/11 §13 P0/P1 整改清单）之后，不插队。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| X1 | **Provider 统一装配**：清偿 P0-2（REGISTRY 单轨 + `providers.create()`，删 base.py 仅 docstring 文件）+ `ProviderConfig` 加多厂商密钥段（`api_keys: {name: key}`，密钥 gitignored + .env 加载，不入库） | 待做 |
+| X2 | **原生厂商适配器**：Anthropic（Claude）/ Google（Gemini）/ 智谱（GLM）/ 月之暗面（Kimi）各实现 `LLMProvider` Protocol（docs/07 §2.3/§2.4）；OpenAI 兼容厂商（DeepSeek/通义/OpenRouter 等）复用 `OpenAICompatibleProvider` + base_url，零新增适配器 | 待做 |
+| X3 | **能力矩阵与运行时切换**：模型能力注册（上下文长度/思考型标记/embedding 支持/成本档，本地 9B 思考关不掉的教训入库）；`provider@model` 语法；CLI `--provider` 覆盖全部命令；primary→fallback 失败切换链；embedding provider 独立可配 | 待做 |
+| X4 | **验收**：≥3 家真实云厂商各跑通 ≥1 章；同一本书运行中切换厂商续写不丢上下文（bible/细纲/记忆已落盘，切换只换生成后端）；密钥经 gitignored 配置注入 | 待做 |
+
+验收：A11（多厂商可用，docs/02 §5）；NFR-2（Provider 插件化）实跑兑现。
+
 ## 4. 风险清单与缓解
 
 | # | 风险 | 等级 | 缓解 |
@@ -500,6 +522,7 @@ docs/10 §5.3 协议落地——问题由引擎（确定性）决定、候选由
 | R11 | 演员串味/越权读他人记忆 | 中 | actor 工具白名单 + take 路径沙箱 + 隔离会话 + 权限面收敛（05§7） |
 | R12 | 围读会失控/不收敛（绕圈、越界） | 中 | 结束判据（轮次上限/全体离场/收敛判定）+ 主持人强制收场 + 场景隔离（ADR-014） |
 | R13 | 厂商审核拦截导致产出停滞/缺章 | 高 | 拦截识别 + 改写/切换/人工链 + 敏感词预检 + 拦截统计监控（ADR-015/09§4） |
+| R14 | 多厂商接入：密钥泄露 / 厂商接口行为差异（响应字段、限流、审核拦截码） | 中 | 密钥 gitignored + .env 加载、不入库；适配器统一归一化到 `LLMResponse`；拦截识别复用 F14 链路（M5） |
 
 ## 5. 实现顺序建议（TDD 取向）
 1. 先 `storage`（工作区/schema/检查点）——是所有上层的地基。
@@ -510,6 +533,8 @@ docs/10 §5.3 协议落地——问题由引擎（确定性）决定、候选由
 6. 再 `actor`（takes + 排演整合）→ `scene`（围读会 + 收敛判据）——打通人设生动化。
 7. 再 `moderation`（预检 + 拦截降级链）——打通内容合规。
 8. 最后 `consistency` 全量、HTTP、评测（含记忆/演员/围读/审核维度）。
+9. **M5 多厂商接入殿后**（用户 2026-09-01 新增）：先清偿 P0-2（REGISTRY 单轨），再按 X1→X4 扩展，
+   排在 F3–F5 / T4 / M4 之后。
 
 ## 6. 后续可迁移点（Backlog 对接）
 - worker 进程池化（分布式）、多项目空间、文风学习、内容回流、跨书记忆迁移（对应 02§6）。
