@@ -600,7 +600,7 @@ src/novelist/forge/
 | --- | --- | --- |
 | **F0' schema 对齐**（前置） | `schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + **`schemas/forge/blueprint.schema.json` 与 `genres.schema.json`**（2026-09-01 补：蓝图与类型包是新文件格式，V1 须校验自身中间态，手改打错键名不能等到 build 才爆） | 既有项目（proj-t5）全部 bible/outline 文件过 V1；蓝图/Genre Pack 可校验 |
 | **F0 骨架** | `state.py` + `slots.py` + Genre Pack 装载 + `forge show` | 能加载/编辑/校验蓝图（无 LLM） |
-| **F1 模式一（全权）** | `seed.py` + `engine.py` 最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘 + provenance 保护 | 一句话 → bible + volumes + 卷 1 细纲 |
+| **F1 模式一（全权）** | `seed.py` + `engine.py` 最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘 + provenance 保护 | ✅ 一句话 → bible + volumes + 卷 1 细纲（AG1 通过，docs/08 F1 落地记录） |
 | **F2 商讨** | `ask.py` + `io_console.py` + transcript 续跑 + 授权询问 + 非 TTY 降级 + 自由答案 | 分轮问答可用，可中断续跑 |
 | **F3 模式二** | `ingest.py`：切章预览 / 抽取（超限降级）/ 消歧 / 文风 / 卷章编码 / 记忆初始化 / **实体 warm-up** + 缺口回落 | 已有稿子 → 接着写 |
 | **F4 递归深化 + 滚动** | 旁支节点（worldview/character/style/threads）+ 可选 arc/beat 层 + `forge roll` + Genre Pack 扩充 | 卷 2 细纲滚动生成，质量提升 |
