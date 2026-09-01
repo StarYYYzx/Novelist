@@ -5,17 +5,22 @@ Novelist 是多 Agent 长篇小说撰写系统。设计文档先行，当前处�
 > **进度以代码和 `docs/08-implementation-plan.md` 为准。** README/本文档的阶段自述可能滞后于真实实现——
 > 判断实现到哪一步，看 `git log` 和测试，不要只看文档自述。
 
-## 文档层（docs/01–09）
+## 文档层（docs/01–11）
 
-- `01` 概述 + "以写代码的方式写小说"（Claude Code 类比）| `02` 需求（FR/NFR/UC/验收 A1–A10）| `03` 架构选型 + ADR（-001..-016）| `04` 总体架构 | `05` Agent 设计（主编剧/子代理/演员/编纂）| `06` 数据设计（工作区+SQLite 索引）| `07` 接口 | `08` 实现规划（M0–M4/风险，**含各里程碑完成状态**）| `09` 质量。
+- `01` 概述 + "以写代码的方式写小说"（Claude Code 类比）| `02` 需求（FR/NFR/UC/验收 A1–A10）| `03` 架构选型 + ADR（-001..-019）| `04` 总体架构 | `05` Agent 设计（主编剧/子代理/演员/编纂）| `06` 数据设计（工作区+SQLite 索引）| `07` 接口 | `08` 实现规划（M0–M4/风险，**含各里程碑完成状态**）| `09` 质量 | `10` 构建层（Forge）：一句话/已有稿子 → bible + 大纲 + 细纲（ADR-017/018，里程碑 M3l F0–F5）| **`11` 编码规范**：分层/命名/类型/错误/测试规则 + 存量整改清单（P0–P2）。
 - 关键决策以 **ADR** 记录编辑在 `docs/03`，新增机制须回填对应 ADR 与 FR/验收。
 - `docs/人工审查.md` 是用户的审查意见与待办（含空白的"第二批"，等用户填）。
+- **写代码前先读 `docs/11`**：新代码必须遵守其 §1–§12 规则；动 orchestrator/providers/workspace 前先看 §13 对应整改项（避免在债务上叠债务）。
 
 ## 代码层（src/novelist/）
 
 - `core/`：内核。`llm`（Provider 抽象）、`embedding`（Embedding + 关键词降级）、`memory`（记忆索引/检索/写入）、
-  `writeback`（事件实时回写）、`tools`（注册表 + 三级门禁）、`approval`（审批队列）、`pipeline`（工序状态机）、
-  `orchestrator` + `agent_runner`（Agent 循环）、`scene`（围读会总线）、`export`、`errors`、`events`、`moderation`。
+  `writeback`（事件实时回写）、`worldstate`（人物硬状态 + 时间轴/pending，ADR-019）、`tools`（注册表 + 三级门禁）、`approval`（审批队列）、`pipeline`（工序状态机）、
+  `orchestrator` + `agent_runner`（Agent 循环）、`phase`（分阶段工作流）、`entity`（实体引入状态机）、
+  `scene`（围读会总线）、`export`、`errors`、`events`、`moderation`。
+- `forge/`：构建层（`docs/10`）。`state`（Blueprint/provenance）、`slots`（槽位与缺口）、`ask` + `io_console`
+  （分轮商讨协议与终端通道）、`seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、
+  `genres`（类型包 Genre Pack 数据）、`validate` + `report`（契约校验与构建报告）。
 - `providers/`：`openai`（OpenAI 兼容，含审核拦截识别）、`deepseek`、`lmstudio`、`fake`（测试替身）。
 - `storage/`：`workspace`（沙箱 + 原子写）、`checkpoint`（双轨快照）、`indexdb`（SQLite 辅助索引）、`models`（Schema 校验）。
 - `tools/`：`filesys` / `writing` / `memory_tools` / `governance`，经 `build_registry()` 装配。
@@ -30,7 +35,8 @@ python -m novelist.cli --help                  # CLI（保证 src 在 sys.path�
 
 - 依赖：pytest、click 等（见 pyproject）。未做 editable install；pytest 通过 `[tool.pytest.ini_options].pythonpath=["src"]` 注入。
 - 默认 `addopts = -m 'not slow'`，本地 LM-Studio / 真实 API 的慢测试需 `pytest -m slow` 显式运行。
-- 新增 Provider 须实现 `core/llm.LLMProvider` Protocol + 在 `providers/__init__.py` 注册；单元测试用 `providers/fake.py`，
+- 新增 Provider 须实现 `core/llm.LLMProvider` Protocol + 在 `providers/__init__.py` **REGISTRY 注册工厂**（单一入口；
+  docs/11 §9/R9.1——现状 cli 里另有 if/elif 硬编码是登记在案的债务 P0-2，勿再扩展它）；单元测试用 `providers/fake.py`，
   **绝不真调 LLM**（docs/09 §2.1）。
 
 ### 运行环境（Windows 本机）
@@ -39,6 +45,8 @@ python -m novelist.cli --help                  # CLI（保证 src 在 sys.path�
 
 ## 约定
 
+- **编码规范见 `docs/11`**（分层依赖方向、函数/参数上限、类型标注、Workspace 公共 API、
+  异常统一继承 `NovelistError`、Provider 单轨注册、conftest 夹具）。
 - Python 3.11+；UTC 时间戳；错误码走 `core/errors`（对应 docs/07 §9 映射表）。
 - 中文文档正文与标识符用 UTF-8；**Windows 控制台在 pytest 中可能把 UTF-8 stdout 显示为乱码，但逻辑不受影响**（是终端编码问题，非数据问题）。
 - 围读会 `SceneBus` 用 `threading.Lock`（**不可重入**）——不要在持锁时再调用加锁方法，避免死锁。

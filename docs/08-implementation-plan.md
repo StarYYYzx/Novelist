@@ -284,9 +284,10 @@ novelist/
 #### 待办
 - ~~v5 阶段修复~~ **已修**（提交 181de3c，见 人工审查 第七批）：P0-1 R-STATE 绑定豁免、
   P0-2 编纂能力词过滤 + NOOP 扩展、P1-1 R-LEX `modern_words_exempt` 豁免表。
-- **世界观 skill（M3j）**：流派模板库（修仙男频/都市高武/女频）+ 分步 LLM 生成
-  （世界观 → 人物初稿 → 卷主线 → 细纲），人工 review 定稿——补 B-01 的世界观构建师/大纲师。
-  **JIT 补卡子代理已先行落地**（递归分层 A，`orchestrator._jit_characters`），模板库待做。
+- **世界观 skill（M3j）→ 并入 M3l 构建层 Forge**：类型包 Genre Pack（修仙男频/通用，数据驱动）+
+  递归 LLM 生成（世界观 → 人物 → 卷主线 → 细纲，每步由模型判断是否需要细化）+ 人工 review 定稿
+  ——补 B-01 的世界观构建师/大纲师。设计见 `docs/10-forge.md`，不引入 subagent 框架。
+  **JIT 补卡子代理已先行落地**（递归分层 A，`orchestrator._jit_characters`），Genre Pack 随 F0/F4 做。
 - ~~递归分层深化~~ **已落地（M3k，提交 181de3c）**：卷→章（人物 JIT `出场人物:` 声明 →
   生成前补卡）→ 事件 → 拍（细纲事件标 `[expanded]` → ≤3 拍逐拍生成，失败回退事件级）；
   章→事件层"世界观补充"细化点（`supplement_settings`，滚动 settings，revealed=False
@@ -304,6 +305,64 @@ novelist/
 - **审计日志完整**（F7.1）：事件与 token 计量尚未落 `reports/` 与 `.index.db`。
 - **围读会（档 3）**：SceneBus 已就绪，但按 ADR-014 接入编排流（主持人 + 结束判据）未做；
   档 2（剧本草稿）已先行落地，围读会定位为"探索 + 对白素材"，产出不直接进正文。
+
+### M3l — 构建层（Forge）：立项→世界观→大纲→细纲 的真实产出（2026-09-01 立项）
+
+> 设计文档：`docs/10-forge.md`；ADR-017（Blueprint 中间态 + 双模式收敛）、
+> ADR-018（构建期递归深化：模型自判 + 引擎硬边界）。
+
+**为什么单列**：前四道工序此前是空转（`cli.py:87-99` 只推进状态字符串，bible 全库只有读没有写），
+A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是补齐 A1 的唯一路径，
+同时取代原"世界观 skill（M3j）"待办里的模板库与分步生成部分（世界观构建师/大纲师职能由 Forge 承担，
+**不引入 subagent 框架**，用户拍板）。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | 待做 |
+| F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | 待做 |
+| F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | 待做 |
+| F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | 待做 |
+| F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | 待做 |
+| F4 | 递归深化：worldview/character/style/threads 旁支节点 + 可选 arc/beat 层 + `forge roll` 滚动生成 + Genre Pack 扩充 | 待做 |
+| F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | 待做 |
+
+验收：AG1 一句话 → 项目可直接 `chapter 1 1` 且 `bible_injected=True`；AG2 3 章样章 → 第 4 章起可接写
+且记忆非空；AG3 商讨 12 问内收敛；AG4 构建调用数不超分阶段配额（build 卷 1 = 60 / roll 每卷 = 40 /
+ingest = 30）。设计三轮敲定（2026-09-01），29 项分支决策见 `docs/10` §15。
+**执行顺序**：本里程碑在 **M3m（时间线 T1–T3）之后**启动——F3 的 ingest 依赖 chronicler
+时间行（T1 产物），先接泵再摄入。
+
+### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
+
+> 设计：`docs/06` §3.3（含数据结构 / 抽取行 / 分档表）。用户提议、四项分支拍板
+> （天数轴 / 分档加压+告警 / worldstate 内嵌 / 状态约束本批一起做）。
+
+**为什么单列**：时间维度"壳存在、泵未接"——`timeline.json` 实跑为空、`LandedEvent.timeline_delta`
+零调用方、R-TL 空转。本里程碑把事件级时间推进、未来日程登记、到期渐进提醒、不可出场约束四件事
+一次接通，全部搭编纂员既有调用与确定性规则，**零新增 LLM 调用**。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| T1 | `worldstate.json` 扩展（time/pending/unavailable_until + history.at 加 t）+ chronicler "时间：/约定："行抽取 + `timeline.json` 写入激活（量词归一、闪回/同日、dt 上限告警）+ **worldstate/timeline schema 同步修订**（AGENTS.md 约定：改 schema 须同步 docs/06）+ Genre Pack `unavailable_states` 词表 | ✅ 完成（core/timeline.py + chronicler Extraction + worldstate 扩展 + schema 同步） |
+| T2 | 渐进提醒分档注入（produce_chapter「临近事项」段，仿 PhasePolicy；与 payoff_checklist 同通道）+ 软 block 拦截 + 章末记账（fired/expired） | ✅ 完成（orchestrator §1.6 注入 / §2.1 软 block / §5.5 tick，result.pending_tick） |
+| T3 | R-TIME 新规则（到期 3 章 warn / 再 2 章 **软 block**：key_events 须引用该 pending / 连续 3 次 block 自动转 expired 放行 + report 留痕）+ R-TL 改按 t 单调 + R-STATE 不可出场告警 | ✅ 完成（rules.py R-TIME / R-TL at.t + 旧数据回退 / R-STATE unavailable） |
+| T4 | Forge 联动：细纲 `key_events` 可选 `after_days` 登记 pending + ingest 抽取"三个月后"类约定 + build 末尾 worldstate 确定性合成（`time={now:0, origin_text}`，人物初始状态从蓝图合成，零 LLM）（随 M3l F3/F4 实施） | 待做 |
+
+**T1–T3 落地记录（2026-09-01）**：
+
+- `core/timeline.py` 新模块：天数解析（`+90日`/闪回/同日/量词归一，dt>3650 warn）、
+  `advance`（推进+登记 timeline，id `tl:N`）、`add_pending`（due=now+dt，id `pd:N`，
+  命中不可出场词自动打 `unavailable_until`）、`reminder_lines` 三档、
+  `soft_block_check`、`tick`（兑现判定含**姓名+已到期兜底**——「闭关三月→出关」
+  词面无共同二元组，见 §3.3 补记）、连续 block×3 自动 expired。
+- chronicler：`Extraction` 具名容器（原二元组扩展为事件/状态/时间/约定四段），
+  「时间：」「约定：」各最多 1 条，登记先于推进（due 按章首 now 算），
+  状态历史 `at.t` 打章末时刻。
+- orchestrator：`pending_tick` 进 ProductionResult；软 block 用**细纲原文**判定
+  （不能用注入后的 goal——提醒文本会自我满足引用）。
+
+验收：闭关事件登记 pending 且三个档位（30%/10%/到期）依次触发对应提示；闭关人物在不可出场期
+出现在正文被 R-STATE 告警；`timeline.json` 非空且 R-TL 按 t 单调；全量测试不回归（262 passed）。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。

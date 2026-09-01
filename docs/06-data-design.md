@@ -82,16 +82,85 @@ novel_workspace/
 }
 ```
 
-### 3.3 时间线 `timeline.json`
+### 3.3 时间线与定时事件（ADR-019，2026-09-01 拍板）
+
+> 原设计的历法式 `at: {era, year, season}` 已废弃——LLM 维护历法必然漂移，改为**相对天数轴**。
+
+#### 3.3.1 `bible/timeline.json` — 历史时点登记簿（事实源，ADR-016）
+
 ```json
+[
+  {"id": "tl:13", "event": "叶蓝服丹闭关", "at": {"t": 1143, "vol": 1, "ch": 12},
+   "in_chapters": [{"vol": 1, "ch": 12}]},
+  {"id": "tl:14", "event": "叶蓝出关，突破筑基", "at": {"t": 1233, "vol": 1, "ch": 15},
+   "in_chapters": [{"vol": 1, "ch": 15}]}
+]
+```
+
+- `t` 为**相对天数**（开书之日 = 0），章序 `(vol, ch)` 只是 t 的粗粒度投影。
+- 写入方：编纂员事件回写链路（"时间："行 → `LandedEvent.timeline_delta` → 落盘；
+  该接口 `writeback.py:41` 此前定义了但零调用方，本机制激活它）。
+- R-TL 单调性校验**按 t**（原按章序首现位置）。
+
+#### 3.3.2 `bible/worldstate.json` 扩展 — 当前时刻与未来日程
+
+```jsonc
 {
-  "id": "tl:13",
-  "at": {"era": "青云纪", "year": 3, "season": "秋"},
-  "event": "苏晚继任掌门",
-  "in_chapters": [{"vol": 1, "ch": 3}]
+  "time": {"now": 1143, "origin_text": "叶蓝穿越之日"},
+  "pending": [
+    {"id": "pd:1", "who": "char:yelan",
+     "what": "叶蓝出关（服丹闭关三月，可能突破筑基）",
+     "due": 1233,                       // 天数轴上的到期时刻
+     "span": 90,                        // 跨度（due − 登记时 now），分档比例分母
+     "created_t": 1143,                 // 登记时刻（天）
+     "status": "scheduled",             // scheduled|fired|cancelled|expired
+     "created_at": {"vol": 1, "ch": 12},
+     "overdue": 0,                      // 到期后经过的章数（tick 记账）
+     "block_count": 0,                  // 软 block 次数（≥3 自动 expired）
+     "thread": "pt:V017"}               // 可选：与伏笔 id 互引（不合并，见下）
+  ],
+  "characters": { /* 既有结构；约定文本命中 `unavailable_states` 词表
+                     （闭关/失踪/昏迷/被囚/渡劫，worldview.unavailable_states 可覆盖）
+                     → 该人物 `unavailable_until = due` + `unavailable_since = {vol,ch}` */ }
 }
 ```
-> 一致性规则要求：正文中出现的时序事件均映射到 `timeline`，保证单调不矛盾（F4.1）。
+
+**pending 状态生命周期**（2026-09-01 拍板）：`scheduled → fired`（正文引出）；
+`scheduled → expired`（R-TIME 连续 3 次 block 后**自动**置位放行，report 与告警留痕
+"该事件已逾期作废，建议人工处理"——挂机批跑不会永久卡死，事件也不会静默消失）；
+`cancelled` 仅由**用户手改** worldstate 置位（系统不代取消）。
+
+**编纂员抽取行扩展**（搭既有事件抽取调用，零新增 LLM 调用；时间行/约定行**各最多 1 条/章**）：
+
+| 输出行 | 语义 | 效果 |
+| --- | --- | --- |
+| `时间：+90日` | 事件推进故事时间 | `time.now += 90`；登记 timeline 条目（可带备注 `| 事件`） |
+| `时间：闪回` | 回忆/插叙 | 不推进 `now` |
+| `时间：同日` | 多线"与此同时" | `dt = 0`（只登记时点，不推进） |
+| `约定：叶蓝出关｜+90日` | 未来事实登记 | 追加 `pending[]`（id 自动分配，**登记先于推进**：due 按章首 now 算） |
+
+模糊量词归一兜底：数日后→2、半月→15、三月→90、三年→1095（prompt 要求 LLM 给具体数，
+归一表兜底抽取噪声）；单事件 dt > 3650 → warn（疑似抽取错误）。
+
+**兑现判定**（`timeline.tick`，章末确定性判定，零 LLM）：token 重合度启发式优先
+（`what` 二元组与正文重合率 ≥30%，长文本须 ≥2 个）；**词面不重合兜底**——「闭关三月」与
+「出关」没有共同二元组，若 pending 关联人物姓名在正文出场**且已到期**（due ≤ now，此前
+强提示已注入 key_events 候选），视为兑现。轻微误判（人物出场但未处理节点）只停止提醒，
+损失可接受，符合"到期只升提示强度、不硬插剧情"。
+
+#### 3.3.3 渐进提醒分档（produce_chapter 注入，确定性规则，仿 PhasePolicy）
+
+| 剩余时间（due − now） | 行为 |
+| --- | --- |
+| > 30% | 静默（仅 worldstate 可查） |
+| ≤ 30% | 「临近事项」轻提示（"叶蓝闭关将满"） |
+| ≤ 10% 或已到期 | 强提示 + key_events 候选（"本章宜安排：叶蓝出关"） |
+| 到期 3 章未处理 | R-TIME warn；再 2 章未处理 → **软 block**（本章 key_events 须引用该 pending 才放行）；连续 3 次 block → 自动转 `expired` 放行 + report 留痕（防死锁） |
+
+**与 §3.2 plot_threads 的边界**：threads 的 `report_deadline` 是**章节位置**驱动（第几卷第几章前回收），
+pending 的 `due` 是**天数**驱动（世界日程到点没有）；同一事实（出关既是伏笔回收又是定时事件）
+两边登记、经 `pending.thread` 互引，**不合并**。到期触发只升提示强度、不硬插剧情（与 ADR-002
+串行逐章、大纲驱动一致）。
 
 ### 3.4 章节细纲 `outline/chapters/<vol>-<ch>.md`
 Markdown 头信息 + 正文要点：

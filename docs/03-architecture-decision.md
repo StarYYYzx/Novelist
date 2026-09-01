@@ -155,6 +155,48 @@
 - **理由**：纯 JSON 在全书持续追加上会有"整文件重写 + 无并发读 + 无范围查询"的工程痛点（用户选型决策）；引入 SQLite（零外部服务、事务、可并发读、SQL 查询）收益明显，同时**不牺牲文件即状态**的透明度——SQLite 全部可由 JSON 事实源**重建/导出**，不算新的"事实源"。
 - **影响**：数据设计（06§9）新增 `.index.db` 的 schema 与"可重建/与文件一致性"约束；存储层新增 `indexdb` 模块（见 08）；SQLite 可随时删除并从文件重建（如切到纯文件模式），ADR-004 的"文件即记忆"定位不被动摇。
 
+### ADR-017 构建层（Forge）：Blueprint 中间态 + 双输入模式收敛
+- **决策**：新增独立的**构建层（Forge）**，负责流水线前四道工序（立项/世界观/大纲/细纲）的真实产出。
+  两种输入模式（一句话 `seed`、已有章节 `ingest`）**收敛到同一个中间产物 `Blueprint`（构建蓝图）**，
+  再由构建引擎从蓝图长出 bible + outline；蓝图落盘为可编辑文件并带 `provenance`（字段来源：
+  user / llm / template / ingested），问答与构建过程落 `transcript.jsonl`，可中断续跑。
+- **理由**：立项→世界观→大纲→细纲此前是空转（`cli.py:87-99` 只推进状态字符串，bible 全库只有读没有写），
+  A1 不满足、每本书的 bible 都靠手工/harness 硬编码。两种模式收敛到同一蓝图，使"模式二缺口回落模式一的
+  商讨"在架构上免费；provenance 让"问什么/细化什么/披露什么"都有确定性依据而不是模型随机决定。
+- **影响**：新增 `src/novelist/forge/` 模块族与 `workspace/forge/` 目录；`project.json` 增 `forge` 段；
+  CLI 增 `forge seed|ingest|show|resume|build|validate`。**不引入 subagent 框架**——
+  docs/05 §3 的世界观构建师/大纲师职能由本层承担，子代理框架另议（用户拍板 2026-09-01）。详见 docs/10。
+
+### ADR-018 构建期递归深化（模型自判 + 引擎硬边界）
+- **决策**：构建层采用**递归深化**而非固定步骤流水线：每个构建节点由**模型判断** `decide=done|expand`
+  并给出 `reason` 与子节点清单；引擎以**四道硬边界**兜底——`max_depth`（默认 4）、`max_width`（默认 4）、
+  `max_calls`（默认 80）、每节点 `max_retries=1`；每节点产出须过 schema + 交叉引用校验才落盘，
+  失败回退父层产物，绝不静默跳过。
+- **理由**：固定 S1→S6 分步无法适配题材复杂度差异（简单题材过度生成、复杂题材细化不足）；
+  用户明确拍板"接受更多次模型调用换取更高质量"（与第七批"分层深化"同宗旨：每次调用聚焦一个小目标，
+  是小模型出高质量的可靠路径）。但模型自判必须有界——第七批防失控三原则（深度/宽度/检查点兜底）
+  在构建层的具体化。
+- **影响**：构建期 LLM 调用数从"固定几次"变为"有上限的可变次数"（默认 ≤80），耗时上升但可接受；
+  新增 `workspace/forge/nodes/` 存每个节点产物以支持续跑与调试；构建报告须披露每个节点的 `decide`/`reason`。
+
+### ADR-019 时间线与定时事件机制（相对天数轴 + pending + 渐进提醒）
+- **决策**：故事内时间采用**相对天数轴**（`worldstate.json` 顶层 `time: {now, origin_text}`），
+  事件级推进由编纂员在**既有抽取调用**中输出"时间：+90日 / 闪回 / 同日"行（零新增 LLM 调用），
+  中文量词归一为天数；**定时事件（pending）内嵌 worldstate.json**（`{id, who, what, due, status, created_at,
+  thread?}`），登记来源为编纂员"约定："行、Forge 细纲 `key_events` 可选 `after_days`、模式二 ingest 抽取；
+  **渐进提醒分档**为确定性规则（剩余 >30% 静默 / ≤30% 轻提示 / ≤10% 或到期强提示+key_events 候选 /
+  到期 3 章 warn、再 2 章 block=R-TIME），只升提示强度、不硬插剧情；**闭关/失踪/昏迷登记为不可出场期**，
+  期间出场 → R-STATE 告警。`bible/timeline.json` 激活为历史时点登记簿（`at: {t, vol, ch}`），
+  R-TL 从按章序单调改为按 t 单调。
+- **理由**：时间维度的"壳"早已存在但"泵"没接——`timeline.json` 实跑为空（proj-t5 五章后 `[]`）、
+  `LandedEvent.timeline_delta`（`writeback.py:41`）零调用方、R-TL 空转；原历法式 `at:{era,year,season}`
+  LLM 无法稳定维护。天数轴可归一计算、显示层再格式化（"入宗第 3 年·第 1143 日"）。
+  用户提议的"时间临近节点时系统渐进注意到并引出事件"与收尾清单（payoff_checklist）同范式，
+  但驱动维度不同：threads 按剧情位置（卷末），pending 按天数（世界日程），二者 id 互引不合并。
+- **影响**：chronicler 抽取 prompt 加"时间：/约定："两种行；worldstate schema 扩展（time/pending/
+  unavailable_until，history.at 加 t）；新增 R-TIME、R-TL 改造、R-STATE 扩展；produce_chapter 注入
+  通道加"临近事项"段；Forge 细纲支持 `after_days`（回填 docs/10）。详见 docs/06 §3.3。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |
