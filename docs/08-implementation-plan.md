@@ -319,7 +319,7 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | F0' | **schema 对齐（前置）**：`schemas/file/*.schema.json` 文件层 + 4 处字段差异修复 + `schemas/forge/blueprint.schema.json` + `genres.schema.json`（蓝图/类型包自身可校验） | ✅ 完成（契约校验层 core/bible.py + CLI validate + 5 项目全过，见下） |
-| F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | 待做 |
+| F0 | `state.py`（Blueprint/provenance）+ `slots.py`（槽位与缺口检测）+ Genre Pack 装载 + `forge show` | ✅ 完成（forge 包 + 2 类型包 + CLI show，见下） |
 | F1 | 模式一全权：seed 提炼 + 授权询问 + 递归引擎最小树（book→volume→chapter，**卷闸门 vol=1**）+ 落盘（含 worldstate 确定性合成）+ provenance 保护 | 待做 |
 | F2 | 商讨：分轮分组问答 + 候选批量生成 + transcript 续跑 + 非 TTY 降级 + 自由答案 | 待做 |
 | F3 | 模式二 ingest：切章预览/抽取（超限降级确定性）/消歧/文风画像/卷章编码/记忆初始化/实体 warm-up + 缺口回落商讨 | 待做 |
@@ -358,6 +358,31 @@ ingest = 30）。设计三轮敲定（2026-09-01），29 项分支决策见 `doc
 - 测试：`tests/test_m11_schema_alignment.py` 31 用例（契约映射完整性 / 16 组样例全 PASS /
   validate_project 行为 / parse_gist 三形态 / proj-t5 集成 skipif）；存量 test_m0 样例适配数组根。
   全量 293 passed；`novelist validate novel_workspace` 5/5 项目全过。
+
+**F0 落地记录（2026-09-01，Forge 骨架）**：`src/novelist/forge/` 包建起——state / slots / genres /
+2 个 Genre Pack 数据 + CLI `forge show`，全部确定性（零 LLM）：
+
+- **schemas/forge/**（F0' 遗留项补齐）：`blueprint.schema.json`（蓝图中间态——rev/provenance/
+  meta/worldview/characters/locations/items/skills/settings/threads/style/volumes/chapters/ingested，
+  `role` 为蓝图内部字段、characters 用 `characters[role:protagonist].name` 伪路径兼容 provenance
+  的 id 索引键；meta 补 `endgame`/`time_origin`）+ `genres.schema.json`（类型包自身可校验）；
+  `project.schema.json` 加 `forge` 段（mode/interaction/stage/blueprint_rev/calls_used）。
+- **state.py**：`Blueprint`（blank/load/save 均过自身 schema 校验、点路径 get/set 含数组下标、
+  upsert 按 id 幂等、`set_provenance`/`is_protected`（src=user 永不被覆盖）/`low_confidence_paths`
+  /`provenance_summary`）；`ForgeState`（project.json.forge 段读写，project.json 缺失时容错建骨架）；
+  `append_transcript`/`read_transcript`（transcript.jsonl 留痕，F2 续跑前置）。
+- **slots.py**：Slot 数据类 + 必填 8 槽 + 推荐 9 槽（docs/10 §5.3 表）；`detect_gaps`（未填 /
+  provenance 低置信两类缺口，required 优先排序，`characters[role:*]` 按角色匹配无下标依赖）；
+  `group_slots`（4 轮 × ≤4 问）；`slots_for_genre`（Genre Pack.slots 覆盖候选/默认值）。
+- **genres/**：修仙男频（levels/词表/character_slots/节奏/默认文风/禁用词/卷弧提示）+ 通用
+  （unavailable_states 基础词表，其余空——可写任何类型）。`genres.py` 装载：id 精确 → 别名匹配
+  → 通用兜底，装载即过自身 schema 校验。
+- **CLI**：`novelist forge show <dir>`（项目直传或根唯一项目）——打印蓝图 rev/阶段/调用数/
+  meta/规模/人物伏笔卷章计数/缺口清单/provenance 分布。F1 的 seed 与 F2 的商讨命令挂同一 group。
+- 测试：`tests/test_m12_forge_f0.py` 21 用例（schema 自身校验 / 装载与兜底 / 缺口检测确定性 /
+  provenance 保护 / upsert 幂等 / ForgeState 往返 / transcript / CLI 集成）。全量 **314 passed**。
+- 注意：`Blueprint.filled()` 不认识 `characters[role:*]` 伪路径（缺口检测 `_resolve_key` 才解析）——
+  引擎填充时应走 `bp.section("characters")` + role 过滤，勿直接 `bp.filled()`。
 
 ### M3m — 时间线与定时事件（ADR-019，2026-09-01 拍板）
 
