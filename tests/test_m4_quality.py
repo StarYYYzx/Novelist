@@ -583,3 +583,73 @@ def test_existing_rules_still_work(tmp_path):
     _write(ws, pid, "bible/characters.json", [
         {"id": "char:a", "name": "A", "relationships": [{"target": "char:missing", "type": "ally"}]}])
     assert any(a.rule_id == "R-REF" for a in run_rule_checks(ws, pid))
+
+
+# ---------------------------------------------------------------- R-CAST 出场覆盖度（docs/05 检查员）
+
+
+def _cast_project(tmp_path, pid="proj-cast"):
+    """建档 3 人：苏晚/铁无涯 first_appear 1:1，赵虎 1:2（未来）。"""
+    ws, pid = _project(tmp_path, pid=pid)
+    _seed(ws, pid)
+    d = ws._abs(f"{pid}/chapters")
+    d.mkdir(parents=True, exist_ok=True)
+    return ws, pid, d
+
+
+def _cast_alerts(ws, pid):
+    return [a for a in run_rule_checks(ws, pid) if a.rule_id == "R-CAST"]
+
+
+def test_rule_cast_flags_planned_character_missing(tmp_path):
+    ws, pid, d = _cast_project(tmp_path)
+    (d / "1-1.md").write_text("苏晚负手而立，望着山门。", encoding="utf-8")
+    alerts = _cast_alerts(ws, pid)
+    # 铁无涯 first_appear 1:1 已越过且零出场 → 强信号；赵虎 1:2 在未来 → 不告警
+    assert any("铁无涯" in a.detail and "计划在 1:1" in a.detail for a in alerts)
+    assert not any("赵虎" in a.detail for a in alerts)
+
+
+def test_rule_cast_ok_when_all_planned_appear(tmp_path):
+    ws, pid, d = _cast_project(tmp_path)
+    (d / "1-1.md").write_text("苏晚与铁无涯并肩而立，望着山门。", encoding="utf-8")
+    assert _cast_alerts(ws, pid) == []
+
+
+def test_rule_cast_weak_signal_without_first_appear(tmp_path):
+    ws, pid = _project(tmp_path)
+    _write(ws, pid, "bible/characters.json", [
+        {"id": "char:sw", "name": "苏晚", "gender": "male", "status": "active"},
+        {"id": "char:mystery", "name": "神秘人", "gender": "male", "status": "active"},
+    ])
+    d = ws._abs(f"{pid}/chapters")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "1-1.md").write_text("苏晚负手而立。", encoding="utf-8")
+    alerts = _cast_alerts(ws, pid)
+    assert any("神秘人" in a.detail and "未声明 first_appear" in a.detail for a in alerts)
+
+
+def test_rule_cast_respects_aliases_and_skips_deceased(tmp_path):
+    ws, pid, d = _cast_project(tmp_path)
+    # 铁无涯别名「铁二爷」出场即算数；新增已死亡人物零出场不告警
+    (d / "1-1.md").write_text("苏晚望着山门。铁二爷从旁走过。", encoding="utf-8")
+    chars = [
+        {"id": "char:sw", "name": "苏晚", "gender": "male", "status": "active",
+         "core_traits": ["隐忍"], "power": {"level": "炼气三层", "faction": "青云宗"},
+         "first_appear": {"vol": 1, "ch": 1}, "is_protagonist": True},
+        {"id": "char:twy", "name": "铁无涯", "gender": "male", "status": "active",
+         "power": {"level": "金丹初期", "faction": "青云宗"}, "first_appear": {"vol": 1, "ch": 1},
+         "aliases": ["铁二爷"]},
+        {"id": "char:ghost", "name": "亡者", "status": "deceased",
+         "first_appear": {"vol": 1, "ch": 1}},
+    ]
+    _write(ws, pid, "bible/characters.json", chars)
+    alerts = _cast_alerts(ws, pid)
+    assert not any("铁无涯" in a.detail for a in alerts)
+    assert not any("亡者" in a.detail for a in alerts)
+
+
+def test_rule_cast_no_chapters_silent(tmp_path):
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    assert _cast_alerts(ws, pid) == []

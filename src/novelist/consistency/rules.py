@@ -8,6 +8,10 @@
 - R-TL   时间线单调：正文出现的时间线事件在 timeline 中有记录且顺序不矛盾。
 - R-LEX  用词纪律：正文中出现现代词、西方典故、style.json 禁用词（原完全不扫正文）。
 - R-PWR  战力体系表述一致：同一境界不得混用「层」「重」「级」等不同细分说法。
+- R-CAST 出场覆盖度：建档人物在已写正文中零出场 → warn（docs/05「检查员」职能；
+  端到端实测 22 建档人物 3 人零出场无告警）。区分「计划出场已越过但跳票」（强信号）
+  与「无 first_appear 无法判断」（弱信号）；first_appear 在未来（渐进写作，卷 2+
+  人物未在卷 1 出场）不告警。
 """
 
 from __future__ import annotations
@@ -221,7 +225,7 @@ def _load(ws: Workspace, project_id: str, rel: str) -> dict | list:
 
 
 def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """全部确定性规则（bible 引用 + 时间线 + 正文用词与战力表述 + 世界状态）。
+    """全部确定性规则（bible 引用 + 时间线 + 正文用词与战力表述 + 世界状态 + 出场覆盖）。
 
     注意：这里的"全部"也只是**能确定性判定**的部分。称谓是否合乎身份、
     情节逻辑是否自洽、伏笔是否回收等仍属 LLM 语义检（见 consistency/reviewer.py）。
@@ -232,6 +236,80 @@ def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
     alerts += run_lexicon_checks(ws, project_id)
     alerts += run_state_checks(ws, project_id)
     alerts += _thread_payoff_check(ws, project_id)
+    alerts += _cast_coverage_check(ws, project_id)
+    return alerts
+
+
+def _last_written_chapter(ws: Workspace, project_id: str) -> tuple[int, int] | None:
+    """已写正文的最大章节号（chapters/ 或 drafts/chapters/，stem 形如 `1-12`）。"""
+    best: tuple[int, int] | None = None
+    for name, _text in _iter_chapters(ws, project_id):
+        m = re.match(r"(\d+)-(\d+)", name)
+        if not m:
+            continue
+        cur = (int(m.group(1)), int(m.group(2)))
+        if best is None or cur > best:
+            best = cur
+    return best
+
+
+def _cast_coverage_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-CAST：建档人物出场覆盖度（docs/05「检查员」职能，端到端实测 22 建档 3 人零出场）。
+
+    - 已写正文从未出现姓名/别名的人物 → warn。匹配按全名/别名子串，**单字名跳过**
+      （正文随处单字，误报率高）；
+    - 人物卡有 `first_appear {vol,ch}` 且已写章节已越过 → 强信号（计划出场却跳票）；
+    - 无 `first_appear` → 弱信号（无法判断是否计划内，人工复核）；
+    - `first_appear` 在未来（渐进写作：卷 2+ 人物未在卷 1 出场属正常）→ 不告警；
+    - 已死亡/退场（status=deceased/dead/retired）不查——「出场覆盖」只约束活人；
+    - 无任何正文 → 空（避免全人物噪音）。
+    """
+    alerts: list[RuleAlert] = []
+    chapters = _iter_chapters(ws, project_id)
+    if not chapters:
+        return alerts
+    full = "\n".join(text for _n, text in chapters)
+    last = _last_written_chapter(ws, project_id)
+    if not last:
+        return alerts
+    chars = _load(ws, project_id, "bible/characters.json")
+    if not isinstance(chars, list):
+        return alerts
+    for c in chars:
+        if not isinstance(c, dict):
+            continue
+        if str(c.get("status") or "") in ("deceased", "dead", "retired"):
+            continue
+        cid = c.get("id") or "?"
+        name = str(c.get("name") or "").strip()
+        if len(name) < 2:
+            continue
+        aliases = [str(a).strip() for a in (c.get("aliases") or []) if isinstance(a, str) and len(a.strip()) >= 2]
+        appeared = name in full or any(a in full for a in aliases)
+        if appeared:
+            continue
+        fa = c.get("first_appear")
+        if isinstance(fa, dict) and isinstance(fa.get("vol"), int):
+            fa_at = (int(fa["vol"]), int(fa.get("ch") or 1))
+            if fa_at <= last:
+                alerts.append(RuleAlert(
+                    level="warn", rule_id="R-CAST", object_ref=cid,
+                    detail=(f"人物「{name}」计划在 {fa_at[0]}:{fa_at[1]} 出场，"
+                            f"已写到 {last[0]}:{last[1]} 仍零出场——细纲点名或 JIT 补卡遗漏，"
+                            "或出场安排被跳过（确认是伏笔延迟还是漏写）")))
+        elif isinstance(fa, dict):
+            fa_at = (int(fa.get("vol") or 0), int(fa.get("ch") or 1))
+            if fa_at > last:
+                continue  # 计划在未来，渐进写作正常
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-CAST", object_ref=cid,
+                detail=(f"人物「{name}」first_appear 格式异常（{fa}），无法判断是否该已出场")))
+        else:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-CAST", object_ref=cid,
+                detail=(f"人物「{name}」已写到 {last[0]}:{last[1]} 仍零出场，"
+                        "且人物卡未声明 first_appear——无法判断是否计划内，人工复核"
+                        "（若为后续卷重要角色可补 first_appear 豁免）")))
     return alerts
 
 
