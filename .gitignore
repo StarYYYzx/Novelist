@@ -18,9 +18,14 @@ novel_workspace/*
 # 会话记忆（本项目工作日志，非源码）
 .workbuddy/
 
+# WorkBuddy 桌面端话题元数据（会话管理自动产物，非源码）
+.reasonix/
+
 # AutoDL 云端 SSH 凭据（含明文密码，绝不入库）
 novel_workspace/_harness/autodl_ssh.txt
 
-# v5 运行产物（锁与日志不入库）
+# v5/v6 运行产物（锁与日志不入库）
 novel_workspace/_harness/.v5.lock
 novel_workspace/_harness/run_v5_log.jsonl
+novel_workspace/_harness/run_v6_log.jsonl
+novel_workspace/_harness/run_t5_log.jsonl

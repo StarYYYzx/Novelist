@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -113,7 +114,11 @@ class Reviewer:
         )
         res = self.llm.complete(
             LLMRequest(messages=[LLMMessage(role="user", content=prompt + text[-3000:])],
-                       max_tokens_out=800, temperature=0.2,
+                       # 审校预算可配：开思考时思考占预算大头（实测复杂 prompt 思考 >5K 字），
+                       # 默认 800 会被吃光导致空输出→静默失效。NOVELIST_REVIEWER_TOKENS
+                       # 覆盖（云端强模型给 4096，本地 9B 给 2048）。
+                       max_tokens_out=int(os.environ.get("NOVELIST_REVIEWER_TOKENS", "800")),
+                       temperature=0.2,
                        thinking=True)  # 判断类任务开思考（讨论）：审校 recall 优先
         )
         if res.blocked or not res.content:

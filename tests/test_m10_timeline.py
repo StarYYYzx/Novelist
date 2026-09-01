@@ -248,16 +248,24 @@ def test_tick_escalation_to_expired(ws_factory):
 
 
 def test_produce_chapter_injects_reminder_and_ticks(ws_factory, write_json, stub_llm):
-    """编排器集成：分档提醒进 goal prompt；章末记账进 pending_tick。"""
+    """编排器集成：分档提醒进 goal prompt；章末记账进 pending_tick。
+
+    注意：此测试曾在抽取提示词 few-shot 含「叶蓝出关」示例时假阳性通过——
+    `any("叶蓝出关" in c)` 命中的是 chronicler 抽取 prompt，不是提醒注入。
+    现已把 due 调到 now+5（≤30% 跨度）确保轻提示档真实触发。
+    """
     ws, pid = ws_factory()
     _seed_chars(ws, pid, write_json)
-    tl.add_pending(ws, pid, what="叶蓝出关", dt=30, vol=1, ch=1)  # span 30 → ≤30% 轻提示
+    tl.add_pending(ws, pid, what="叶蓝出关", dt=30, vol=1, ch=1)  # span 30
+    st = worldstate.load(ws, pid)
+    st["pending"][0]["due"] = st["time"]["now"] + 5   # now+5 ≤ 30%×30 → 轻提示档
+    worldstate.save(ws, pid, st)
     prov = stub_llm("叶蓝在山中赶路，忽见天光破晓。" * 20)
     res = produce_chapter(ws, pid, 1, 1, prov, prefer_direct=True,
                           jit_characters=False, validate=False, polish=False)
     assert res.ok, res.result
-    # 提醒注入：goal 包含「临近事项」
-    assert any("叶蓝出关" in c for c in prov.calls), "临近事项应注入生成 prompt"
+    # 提醒注入：goal 包含「临近事项」（轻提示档：叶蓝出关（还有 X 天））
+    assert any("叶蓝出关（还有" in c for c in prov.calls), "临近事项应注入生成 prompt"
     # 章末记账执行过（fired 与否取决于正文；至少结构存在）
     assert isinstance(res.pending_tick, dict)
 
@@ -352,3 +360,47 @@ def test_reminder_due_without_span_defaults(ws_factory):
           "characters": {}}
     lines = tl.reminder_lines(st)
     assert any("宜安排" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------- T1.5 pending 去重（3080ti 事故修复）
+
+
+def test_pending_dedup_same_chapter_near_name(ws_factory, write_json):
+    """同章同动作核的约定只登记一次；近形错名（叶蓝 vs 叶岚）归并；跨章不误并。
+
+    背景：3080ti 批量实测——模型照 few-shot 形状每章重复输出「出关」约定，
+    且幽灵名「叶蓝」（bible 已改名叶岚）与正名无法合并，11 条同类 pending
+    堆积 → 逾期后连环软 block 卡死 ch7-10。
+    去重范围限定**本章**：跨章同文约定按 ADR-019 绝对锚定各自登记
+    （test_ingest_preserves_chronicler_timeline 的 due=3/33 语义）。
+    """
+    from novelist.core.llm import LLMResult
+
+    class _Cycle:
+        """按次返回不同回复的 stub（stub_llm 只支持固定文本）。"""
+
+        def __init__(self, replies: list[str]) -> None:
+            self.replies = list(replies)
+
+        def complete(self, req) -> LLMResult:
+            return LLMResult(content=self.replies.pop(0), blocked=False, ok=True)
+
+    ws, pid = ws_factory()
+    _seed_chars(ws, pid, write_json)   # 姓名表：叶蓝（本测试建档名；刻意与项目实际正名"叶岚"相反，
+                                       #          证明近形归并与具体名字无关——谁正谁误机制对称）
+    c = Chronicler(ws, pid, llm=_Cycle([
+        "事件：测试 | discovery | 叶蓝",                        # run1 无约定
+        "事件：测试 | discovery | 叶蓝\n约定：叶蓝出关｜+90日",  # run2 (1,2) 登记
+        "事件：测试 | discovery | 叶蓝\n约定：叶岚出关｜+90日",  # run3 (1,2) 同章近形名→跳过
+        "事件：测试 | discovery | 叶蓝\n约定：叶岚渡劫｜+90日",  # run4 (1,3) 跨章不同动作→登记
+    ]))
+    c.run("正文略", 1, 1)
+    r2 = c.run("正文略", 1, 2)
+    r3 = c.run("正文略", 1, 2)   # 同章第二次（模拟每事件编纂重复抽同一约定）
+    r4 = c.run("正文略", 1, 3)
+    st = worldstate.load(ws, pid)
+    pend = [p for p in st.get("pending", []) if p.get("status") == "scheduled"]
+    what_set = {p["what"] for p in pend}
+    assert what_set == {"叶蓝出关", "叶岚渡劫"}, f"应只登记 2 条，实际 {what_set}"
+    assert any("重复" in w for w in r3.warnings), f"应有重复跳过告警：{r3.warnings}"
+    assert not any("重复" in w for w in r4.warnings)

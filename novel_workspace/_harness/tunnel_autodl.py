@@ -19,24 +19,44 @@ import paramiko
 
 HERE = Path(__file__).resolve().parent
 
-TUNNELS = [
+# 服务器 A（3080ti，当前主力）：6006 LLM 必建；6008 embedding 未部署（-e 才建）
+# 服务器 B（旧 T4，备用）：6006 LLM + 6008 embedding（nomic-embed）
+TUNNELS_A = [
+    (6006, ("127.0.0.1", 6006)),  # LLM
+]
+TUNNELS_B = [
     (6006, ("127.0.0.1", 6006)),  # LLM
     (6008, ("127.0.0.1", 6008)),  # embedding
 ]
 
 
-def creds() -> dict:
+def creds(server: str) -> dict:
     d = {}
     for line in (HERE / "autodl_ssh.txt").read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             d[k.strip()] = v.strip()
-    return d
+    p = {"A": "SSH_HOST_A", "B": "SSH_HOST_B"}[server]
+    return {
+        "SSH_HOST": d[p], "SSH_PORT": d[p.replace("HOST", "PORT")],
+        "SSH_USER": d[p.replace("HOST", "USER")], "SSH_PASSWORD": d[p.replace("HOST", "PASSWORD")],
+    }
 
 
 def main() -> None:
-    c = creds()
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--server", choices=["A", "B"], default="A", help="A=3080ti（默认） B=旧T4")
+    ap.add_argument("-e", "--with-embedding", action="store_true",
+                    help="额外建 6008 embedding 隧道（仅 B 服务器有 embedding 服务）")
+    args = ap.parse_args()
+    tunnels = list(TUNNELS_A if args.server == "A" else TUNNELS_B)
+    if args.with_embedding:
+        tunnels += TUNNELS_B[1:]
+
+    c = creds(args.server)
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(c["SSH_HOST"], port=int(c["SSH_PORT"]), username=c["SSH_USER"],
@@ -82,7 +102,7 @@ def main() -> None:
         threading.Thread(target=pump, args=(conn, chan, conn, chan), daemon=True).start()
         threading.Thread(target=pump, args=(chan, conn, chan, conn), daemon=True).start()
 
-    for port, remote in TUNNELS:
+    for port, remote in tunnels:
         listeners.append((make_listener(port, remote), remote))
 
     def accept_loop(listener: socket.socket, remote: tuple[str, int]) -> None:

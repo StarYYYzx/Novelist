@@ -54,12 +54,12 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 时间：+90日
 - 表示本章结束后故事时间推进了多少（**相对天数**，不是历法日期）
 - 只写正文明确写到的时间跨度；同章多线并进写「时间：同日」；回忆插叙写「时间：闪回」
-- 可加备注：时间：+90日 | 叶蓝闭关结束
+- 可加备注：时间：+90日 | 叶岚闭关结束
 
-约定：叶蓝出关｜+90日
+约定：叶岚出关｜+90日
 - 表示正文中角色**约定/宣告**在未来某时发生的事（闭关出关、三年之约、比试之期等）
 - 竖线前写"什么事"，竖线后写"距今多少天"
-- 只登记正文明确约定的，不要臆测
+- 只登记正文明确约定的，不要臆测；**正文里没有出现的承诺，即使与示例形状相似也不要写**
 
 时间行与约定行都**最多各 1 条**；没有就不写。
 
@@ -88,7 +88,7 @@ class Extraction:
     events: list[ExtractedEvent] = field(default_factory=list)
     state_changes: list[tuple[str, dict]] = field(default_factory=list)
     time_lines: list[str] = field(default_factory=list)      # 「时间：+90日（| 备注）」原文
-    pending_lines: list[str] = field(default_factory=list)   # 「约定：叶蓝出关｜+90日」原文
+    pending_lines: list[str] = field(default_factory=list)   # 「约定：叶岚出关｜+90日」原文
 
 
 @dataclass
@@ -352,10 +352,47 @@ class Chronicler:
     # ---- 时间轴（ADR-019）----
     def _apply_pending(self, pending_lines: list[str] | None, vol: int, ch: int,
                        report: ChroniclerReport) -> None:
-        """登记「约定：」行（按推进前的 now 算 due——登记先于推进）。"""
-        from . import worldstate as wsmod
-        from .timeline import add_pending, parse_pending_line, resolve_who
+        """登记「约定：」行（按推进前的 now 算 due——登记先于推进）。
 
+        去重（实测 3080ti 批量：模型照 few-shot 形状重复输出「出关」约定，
+        每章堆积同类 pending，逾期后连环软 block 卡死后续章节）：
+        把 what 剥掉姓名前缀归一化成"动作核"，已存在 scheduled/fired 的同核约定
+        不再重复登记。
+        """
+        from . import worldstate as wsmod
+        from .timeline import add_pending, parse_pending_line, pending_of, resolve_who
+
+        def _edit1(a: str, b: str) -> bool:
+            """同长且恰好 1 个字符不同（近形错名判定：叶蓝 vs 叶岚）。"""
+            if len(a) != len(b):
+                return False
+            return sum(x != y for x, y in zip(a, b)) == 1
+
+        def _key(what: str) -> str:
+            """归一化动作核：剥离姓名前缀（长名优先）。
+
+            表内无此名时回退 1 字编辑距离（实测幽灵名「叶蓝」vs 正名「叶岚」
+            同长近形，模型照旧示例写错名时也能归并到同一动作核）。
+            """
+            text = what.strip()
+            names = sorted(self._name_map, key=len, reverse=True)
+            for nm in names:
+                if text.startswith(nm):
+                    return text[len(nm):].strip()
+            for nm in names:
+                if (len(nm) >= 2 and text.startswith(nm[:1])
+                        and len(text) > len(nm) and _edit1(text[:len(nm)], nm)):
+                    return text[len(nm):].strip()
+            return text
+
+        state = wsmod.load(self.ws, self.project_id)
+        # 去重范围：**仅本章**（ADR-019 绝对锚定语义——跨章同文约定各自锚定，
+        # 见 test_ingest_preserves_chronicler_timeline；3080ti 事故里同章 2-3 条
+        # 才是堆积主因：每事件编纂各抽一次「出关」，本章重复即合并）
+        existing = {_key(str(p.get("what") or "")) for p in pending_of(state)
+                    if p.get("status") in ("scheduled", "fired")
+                    and (p.get("created_at") or {}).get("vol") == vol
+                    and (p.get("created_at") or {}).get("ch") == ch}
         for raw in pending_lines or []:
             parsed = parse_pending_line(raw)
             if parsed is None:
@@ -366,6 +403,11 @@ class Chronicler:
                 report.warnings.append(warn)
             if dt > 3650:  # MAX_DT_WARN
                 report.warnings.append(f"约定「{what[:20]}」跨度 {dt} 天，疑似抽取错误")
+            key = _key(what)
+            if key in existing:
+                report.warnings.append(f"约定「{what[:20]}」与已有日程重复，跳过登记")
+                continue
+            existing.add(key)
             who = resolve_who(what, self._name_map)
             item = add_pending(self.ws, self.project_id, what=what, dt=dt, vol=vol, ch=ch,
                                who=who, unavailable_states=wsmod.unavailable_keywords(
