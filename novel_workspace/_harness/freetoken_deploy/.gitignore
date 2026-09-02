@@ -1,0 +1,22 @@
+# 一次性诊断/废弃脚本（核心部署脚本已提交，此处仅排除探索期产物）
+probe_*.py
+check_*.py
+step*.py
+fix_*.py
+clean_*.py
+cleanup_wrong_model.py
+poll_ft_install.py
+poll_serve_ready.py
+start_serve.py
+start_serve2.py
+dl_fp8.py
+
+# 废弃的远程脚本旧尝试（成功路径已提交：remote_start_fp8 / remote_dl_fp8 /
+# remote_env_cuda13 / remote_install_*）
+remote_cuda_fallback.sh
+remote_dl_cuda_*.sh
+remote_dl_model.sh
+remote_install_cuda*.sh
+remote_pip_cuda*.sh
+remote_setup_cuda.sh
+remote_start_serve.sh
