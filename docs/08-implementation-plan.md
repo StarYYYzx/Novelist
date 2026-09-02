@@ -788,9 +788,11 @@ relationships、0 张有 behavior_rules，`render_cards` 注入的是无料卡�
 | 全量补喂 | yelan3 **26/26 缺料卡全部入 pending**（DeepSeek 提案，报告 `novel_workspace/proj-yelan3/reports/p0a_enrich_review.md`） | ✅ |
 | 全量入档 | 2026-09-02 用户拍板：① 同 target 重复关系**采纳提案详细描述**（叶岚「寄生」→「寄生宿主，互相利用，系统来历成谜」等主角级简略句被覆盖）；② 26/26 全部 `--allow`。`enrich-pending` 全部入档：26/26 卡有 rels（1-3 条）+ rules（各 3 条）、15 卡补 age、全打 origin=enrich。pending 清空 | ✅ |
 | 存量 schema 漂移修复 | 入档后跑 `novelist validate` 暴露：`memory/character_history` schema 缺 ADR-020 N4 视角字段（kind/stance/perspective/relations/event_ref）+ `at.t`（ADR-019）→ schema 补齐，proj-yelan3 契约校验全过（14 类映射） | ✅ |
+| 注入面收口（零 LLM 复验） | 复跑前审计发现渲染缺口：`render_card_line` 渲染 9 字段**不含 behavior_rules**——补喂的 3 条可执行规则到不了模型。修复：① 渲染追加「行为：」段（rules ≤3 条整句，M3r 补喂字段进注入面）；② 关系目标 `char:xxx` 经 `render_cards(cards, all_chars=bible_chars)` 回查成**角色名**（此前显示半英文 id "yun"，模型认"云清瑶"不认"yun"）；③ gender=unknown（forge 占位）不再进 prompt。测试 36 条过，真卡复验：主角行含完整关系+行为 | ✅ 836877e 后追加（本提交） |
 
 **验收**：人工审阅提案无与已发生事件冲突、确认入档后跑一章对照（关系/行为规则实际出现在
-生成上下文）→ 目标：行为漂移/AI 味显著下降。**待办**：复跑 yelan3 一章验证注入面吃到新料。
+生成上下文）→ 目标：行为漂移/AI 味显著下降。**待办**：注入面收口已完成（渲染确定性复验
+通过）；剩**真实模型跑一章**（章节 ≥6，v7 已写到 ch5）对照 v7 同章行为漂移——需消耗 API。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。

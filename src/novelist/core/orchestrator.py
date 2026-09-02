@@ -1283,7 +1283,8 @@ def produce_chapter(
                             else _director.cast_from_text(bible_chars, ev_text)
                         cast_names = [str(c.get("name") or "") for c in cast_cards]
                         if cast_injection:
-                            cast_lines = _director.render_cards(cast_cards)
+                            # all_chars=bible_chars：关系目标 char:xxx 回查成角色名
+                            cast_lines = _director.render_cards(cast_cards, bible_chars)
                             hist_lines = _director.render_history_lines(
                                 ws, project_id, cast_cards)
                         # 回读（双阈值：事件计数 ≥3 或故事内 ≥30 天未见）

@@ -137,19 +137,56 @@ def test_cast_from_text_long_name_first_no_double_hit():
     assert [c["id"] for c in got] == ["c1"]  # 长名先命中，短名不再重复
 
 
-def test_render_card_line_nine_fields():
+def test_render_card_line_ten_fields():
     line = render_card_line({
         "id": "c1", "name": "叶岚", "gender": "male",
         "power": {"level": "炼气三层", "faction": "青云宗"},
         "core_traits": ["冷静", "心机深"],
         "arc": "弃徒到中坚", "relationships": [{"target": "char:sw", "type": "青梅竹马"}],
+        "behavior_rules": ["遇险先示弱", "不主动暴露系统"],
         "aliases": ["叶师兄"], "possessions": ["残玉"], "status": "active"})
     assert "弧线" in line and "关系" in line and "称谓" in line and "持有" in line
+    assert "行为：遇险先示弱；不主动暴露系统" in line  # M3r 补喂字段进注入面
+
+
+def test_render_card_line_without_rules_keeps_old_shape():
+    # 无 behavior_rules 的旧卡：不出现"行为"段（向后兼容，行结构与改动前一致）
+    line = render_card_line({
+        "id": "c1", "name": "叶岚", "gender": "male",
+        "power": {"level": "炼气"}, "relationships": [{"target": "char:sw", "type": "青梅竹马"}]})
+    assert "行为" not in line
+    assert line.startswith("叶岚｜男｜炼气") and "关系" in line
 
 
 def test_render_cards_unconditional_lines():
     cards = [{"id": "c1", "name": "叶岚", "gender": "male", "power": {"level": "炼气"}}]
     assert render_cards(cards) == ["- 叶岚｜男｜炼气"]
+
+
+def test_render_card_line_skips_unknown_gender():
+    # gender=unknown 是 forge/模板占位，不是信息——不进 prompt
+    line = render_card_line({"id": "c1", "name": "五五开系统", "gender": "unknown"})
+    assert line == "五五开系统"
+    assert "unknown" not in line
+
+
+def test_render_cards_resolves_rel_target_to_name():
+    # 关系目标 char:xxx 应显示角色名而非半英文 id（模型认"云清瑶"不认"yun"）
+    chars = [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male",
+         "relationships": [{"target": "char:yun", "type": "绑定对象"}]},
+        {"id": "char:yun", "name": "云清瑶", "gender": "female"},
+    ]
+    lines = render_cards(chars)
+    assert any("关系：云清瑶（绑定对象）" in ln and "yun" not in ln for ln in lines)
+    # 目标不在卡集里时回退 id 尾段（不崩）
+    solo = render_card_line({"id": "char:yelan", "name": "叶岚",
+                             "relationships": [{"target": "char:sw", "type": "青梅竹马"}]})
+    assert "关系：sw（青梅竹马）" in solo
+    # 非 char: 前缀（组织/物品）原样
+    org = render_card_line({"id": "char:yelan", "name": "叶岚",
+                            "relationships": [{"target": "青云宗", "type": "弟子"}]})
+    assert "关系：青云宗（弟子）" in org
 
 
 # ---------------------------------------------------------------- 决策三：人物调度层

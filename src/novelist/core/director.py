@@ -111,7 +111,7 @@ class DirectionSheet:
 # ---------------------------------------------------------------- 人物卡装配（无条件注入）
 
 _CARD_FIELDS_ORDER = ("gender", "power", "core_traits", "arc", "relationships",
-                      "aliases", "possessions", "status")
+                      "behavior_rules", "aliases", "possessions", "status")
 
 
 def load_characters(ws, project_id: str) -> list[dict]:
@@ -180,16 +180,19 @@ def cast_from_text(chars: list[dict], text: str, limit: int = 8) -> list[dict]:
     return out
 
 
-def render_card_line(c: dict) -> str:
-    """把一张人物卡渲染成一行（9 字段，ADR-020 决策二：注入字段 6 → 9）。
+def render_card_line(c: dict, _names: dict | None = None) -> str:
+    """把一张人物卡渲染成一行（10 字段，ADR-020 决策二：注入字段 6 → 9，M3r 再 +1）。
 
     原来只注 6 个字段，漏了 `arc`（人物弧线——"他要去哪"是表演的方向盘）、
     `aliases`（称谓——"本小姐"这类性别/身份错乱的源头）、`relationships`
-    （关系——对谁什么态度，直接决定对白腔调）。
+    （关系——对谁什么态度，直接决定对白腔调）。P0-A 补喂（M3r）后追加
+    `behavior_rules`（可执行行为规则——危机下怎么做，压制行为漂移与 AI 味）。
+    `_names`：id→name 映射（render_cards 注入），把关系目标的 `char:xxx`
+    回查成角色名——模型记的是"云清瑶"，不是半英文 id "yun"。
     """
     seg: list[str] = [str(c.get("name") or c.get("id"))]
     gender = c.get("gender")
-    if gender:
+    if gender in ("male", "female"):  # unknown 是 forge 占位，不是信息，不进 prompt
         seg.append({"male": "男", "female": "女"}.get(str(gender), str(gender)))
     power = c.get("power") if isinstance(c.get("power"), dict) else {}
     lvl = power.get("level")
@@ -207,9 +210,12 @@ def render_card_line(c: dict) -> str:
         parts = []
         for r in rels[:4] if isinstance(rels, list) else []:
             if isinstance(r, dict) and r.get("type"):
-                parts.append(f"{_rel_name(r.get('target'))}（{r['type']}）")
+                parts.append(f"{_rel_name(r.get('target'), _names)}（{r['type']}）")
         if parts:
             seg.append("关系：" + "、".join(parts))
+    rules = c.get("behavior_rules") or []
+    if rules:
+        seg.append("行为：" + "；".join(str(x) for x in rules[:3] if str(x).strip()))
     aliases = c.get("aliases") or []
     if aliases:
         seg.append("称谓：" + "、".join(str(a) for a in aliases[:4]))
@@ -222,14 +228,24 @@ def render_card_line(c: dict) -> str:
     return "｜".join(seg)
 
 
-def _rel_name(target) -> str:
-    """关系目标：char:xxx 取尾段，其它原样。"""
+def _rel_name(target, names: dict | None = None) -> str:
+    """关系目标显示名：`char:xxx` 先回查 bible 角色名（`_names`: id→name），
+    查不到才取 id 尾段；非 `char:` 前缀的原样返回。"""
     s = str(target or "")
-    return s.split(":")[-1] if ":" in s else s
+    if ":" in s:
+        if names and s in names:
+            return str(names[s])
+        return s.split(":")[-1]
+    return s
 
 
-def render_cards(cards: list[dict]) -> list[str]:
-    return [f"- {render_card_line(c)}" for c in cards]
+def render_cards(cards: list[dict], all_chars: list[dict] | None = None) -> list[str]:
+    """渲染人物卡清单；`all_chars` 给全量圣经卡（缺省取 cards 自身），
+    用于把关系目标 id 回查成角色名。"""
+    src = all_chars if all_chars else cards
+    names = {str(c.get("id") or ""): str(c.get("name") or "")
+             for c in src if c.get("id") and c.get("name")}
+    return [f"- {render_card_line(c, names)}" for c in cards]
 
 
 # ---------------------------------------------------------------- 调度单生成
