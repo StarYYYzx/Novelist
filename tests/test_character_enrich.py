@@ -136,7 +136,8 @@ def test_gate_rejects_dangling_target(tmp_path):
     assert any("指向不存在角色" in r for r in reasons)
 
 
-def test_gate_rejects_self_ref_and_dup(tmp_path):
+def test_gate_rejects_self_ref_but_skips_dup(tmp_path):
+    """自指拒整卡；重复 target（同批/已有）只跳过该条——不拒整卡（rules/age 仍有效）。"""
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     card = {"id": "char:yelan", "name": "叶岚",
@@ -144,12 +145,17 @@ def test_gate_rejects_self_ref_and_dup(tmp_path):
             "behavior_rules": ["a", "b"]}
     reasons = check_proposal(card, {
         "name": "叶岚",
-        "relationships": [{"target": "叶岚", "type": "自指"},
-                          {"target": "苏晚", "type": "重复已有"},
-                          {"target": "苏晚", "type": "重复同批"}],
+        "relationships": [{"target": "叶岚", "type": "自指"}],
     }, ws=ws, project_id=pid)
     assert any("自指" in r for r in reasons)
-    assert sum("重复" in r for r in reasons) >= 1
+    # 只含重复 target（与已有 char:sw 重复 + 同批重复）→ 全部跳过，不拒
+    reasons2 = check_proposal(card, {
+        "name": "叶岚",
+        "relationships": [{"target": "苏晚", "type": "与已有重复"},
+                          {"target": "苏晚", "type": "同批重复"}],
+        "behavior_rules": ["规则一", "规则二"],
+    }, ws=ws, project_id=pid)
+    assert reasons2 == []
 
 
 def test_gate_accepts_valid_proposal(tmp_path):

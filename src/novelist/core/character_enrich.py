@@ -144,8 +144,7 @@ def check_proposal(card: dict, proposal: dict, *, ws, project_id: str) -> list[s
             reasons.append(f"自指关系被拒：{card_name} 不能指向自己")
             continue
         if tid in seen or tid in existing_targets:
-            reasons.append(f"重复关系目标：{tgt}")
-            continue
+            continue  # 重复 target（同批/已有）：跳过该条——不拒整卡，rules/age 仍有效
         if not rel or len(rel) > 30:
             reasons.append(f"关系描述须 1-30 字（现 {len(rel)} 字）：{rel!r}")
             continue
