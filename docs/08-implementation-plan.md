@@ -186,6 +186,13 @@ novelist/
   与 **R-PWR**（同一境界混用「层」「重」等细分表述）。语义层：新增 `consistency/reviewer.py`
   审校师（设定矛盾 / 人设漂移 / 称谓失当 / 时间线 / 战力越级 / 事实前后矛盾 / 细纲未覆盖），
   `run_consistency(ws, pid, llm=...)` 追加为 `R-SEM` 告警；CLI `novelist review --provider ...`。
+  *现代喻体词表（2026-09-02，v7 真机 ch4「指甲刮过黑板」收口）*：`worldview.modern_words`
+  显式设空（穿越文放弃默认指称表）会连喻体防线一起关闭——喻体属**叙事修辞**，
+  与穿越文合理指称（前世的手机/电脑）性质不同。新增 `MODERN_SIMILES` 独立常开
+  （黑板/键盘/鼠标/摄像头/投影/狙击/雷达/像素/充电/电路…），`worldview.modern_similes`
+  可覆盖，豁免仍走 `modern_words_exempt`；`_lexicon_check()` 输出
+  「现代喻体「w」出戏（叙事修辞用了现代物）」。首版含"屏幕"，实测误伤
+  前世指称（"电脑屏幕赶论文"）后抽离。测试 `test_m4_quality` +3。
 - **B-09 敏感词表** ✅ `core/moderation.py` 内置起步词表（违禁品 / 赌博 / 极端暴力 / 违规导流），
   支持 `.txt`/`.json` 词表文件与 `bible/moderation.json`、`NOVELIST_BANNED_WORDS` 环境变量。
   ⚠️ 起步清单**不构成本地合规词表**，生产环境须加载完整词表或对接专业审核服务。
