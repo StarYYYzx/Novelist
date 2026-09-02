@@ -1082,6 +1082,100 @@ def settings_pending(ctx: click.Context, directory: str | None, allow: str | Non
     click.echo(f"allow {moved} / deny {dropped} / remaining {len(kept)}")
 
 
+@cli.command("characters-enrich")
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="fake",
+              help="LLM provider：fake/lmstudio/deepseek/openai（默认 fake 防手滑）")
+@click.option("--card", default=None, help="只提案指定角色名，逗号分隔（缺省=全部缺料卡）")
+@click.pass_context
+def characters_enrich(ctx: click.Context, directory: str | None, provider: str,
+                      card: str | None) -> None:
+    """P0-A 人物数据补喂：为缺 relationships/behavior_rules 的卡跑 LLM 提案。
+
+    提案只进 bible/characters_enrich_pending.json（绝不自动改写 characters.json），
+    人工确认走 `novelist enrich-pending --allow/--deny`（settings-pending 同款）。
+    提案输入含该卡 character_histories 与涉卡事件——应然设定不与已发生事实冲突。
+    """
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    project_id = _locate_project(ws._abs(""))
+    from novelist.core.character_enrich import propose
+
+    cards = {c.get("id"): c for c in _read_chars(ws, project_id)}
+    card_ids = None
+    if card:
+        names = {x.strip() for x in card.split(",") if x.strip()}
+        card_ids = {cid for cid, c in cards.items() if c.get("name") in names}
+        unknown = names - {c.get("name") for c in cards.values()}
+        if unknown:
+            click.echo(f"warning: 名册中无这些角色: {sorted(unknown)}")
+        if not card_ids:
+            raise click.ClickException("no matching characters in roster")
+    if provider == "fake":
+        raise click.ClickException("--provider fake 仅为默认防手滑；请指定 deepseek/lmstudio/openai")
+    llm = _make_cli_provider(provider)
+    results = propose(ws, project_id, llm, card_ids=card_ids)
+    moved = sum(1 for r in results if r.get("proposed"))
+    bad = [r for r in results if not r.get("ok")]
+    for r in results:
+        tag = "✓" if r.get("ok") else "✗"
+        why = f" —— {r['reasons']}" if r.get("reasons") else ""
+        click.echo(f"  {tag} {r.get('name')}: {why}")
+    click.echo(f"proposed {moved} / rejected {len(bad)} / total {len(results)}")
+    if moved:
+        click.echo("next: `novelist enrich-pending` 审阅，`--allow 名 --deny 名` 确认/拒绝")
+
+
+@cli.command("enrich-pending")
+@click.argument("directory", required=False, default=None)
+@click.option("--allow", default=None, help="确认合并的角色名，逗号分隔（写入 characters.json）")
+@click.option("--deny", default=None, help="拒绝的角色名，逗号分隔（从 pending 移除）")
+@click.pass_context
+def enrich_pending(ctx: click.Context, directory: str | None, allow: str | None,
+                   deny: str | None) -> None:
+    """审阅 P0-A 人物补喂待确认队列（bible/characters_enrich_pending.json）。
+
+    --allow 确认合并（relationships/behavior_rules 并入卡，打 provenance=enrich），
+    --deny 拒绝丢弃；无参数时列出全部待确认项。
+    """
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    project_id = _locate_project(ws._abs(""))
+    from novelist.core.character_enrich import apply_pending, list_pending
+
+    if not allow and not deny:
+        lines = list_pending(ws, project_id)
+        if not lines:
+            click.echo("no pending character enrichments")
+            return
+        for line in lines:
+            click.echo(line)
+        return
+
+    def _split(s: str | None) -> set[str]:
+        return {x.strip() for x in (s or "").split(",") if x.strip()}
+
+    moved, dropped, remaining = apply_pending(
+        ws, project_id, allow=_split(allow), deny=_split(deny))
+    click.echo(f"allow {moved} / deny {dropped} / remaining {remaining}")
+
+
+def _read_chars(ws, project_id: str) -> list[dict]:
+    """读 bible/characters.json（enrich 命令用，避免在 cli 顶层重复 import json）。"""
+    import json as _json
+
+    p = ws._abs(f"{project_id}/bible/characters.json")
+    if not p.exists():
+        return []
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return []
+    return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+
+
 @cli.group()
 def docx() -> None:
     """Markdown ⇄ Word(.docx) 互转（M3o，零第三方依赖）。

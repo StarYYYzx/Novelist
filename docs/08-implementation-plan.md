@@ -755,8 +755,40 @@ zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `co
 
 **关联决策**：世界广播/角色工厂联动用户拍板——广播=需求匹配器（池内找人优先），
 工厂=缺货补货通道（生产→闸门→自动注册 active→本事件可入场），见 ADR-021/022
-修订（2c5b74c）。**待做**：P0-A bible 数据补喂（yelan3：set:wuwu 协议条款/
-26 卡 relationships/worldview 境界压制）；角色工厂实施（ADR-022，依赖 P0-A）。
+修订（2c5b74c）。P0-A bible 数据补喂与角色工厂实施已完成（见 M3q/M3r 条目）。
+
+### M3q — 角色工厂实施（ADR-022，2026-09-02 用户拍板"3做完继续讨论" ✅ 已完成）
+
+用户口径：广播先在可及池内找人 → 找不到合适人选 → 输出结构化缺人需求 → 转交工厂
+生产 → 过确定性闸门 → 自动注册 active → 本事件即可注卡入场（同步）。JIT 补卡
+（字面追认，与 P0-B 合围）**降级为告警器**——细纲声明出场但缺卡不再 LLM 补卡。
+
+| 件 | 实现 | 提交 |
+| --- | --- | --- |
+| 需求队列 | `core/character_factory.py`：`CharacterNeed`（role/desc/realm_hint/faction_hint/hooks/source/vol/ch）+ `queue_need/load_queue/drain_queue`（bible/character_needs_pending.json，每章配额 ≤2 超出留队） | 27e5c5c |
+| 生产管线 | `produce()`：LLM 草卡（最小卡规格约束）→ 五类确定性闸门（名字撞名册/境界 parse_realm ∈ 表/宗门 ∈ 名册/关系钩子 target 指向已存在角色且 ≥1/行为规格 2-3 条）→ 注册 active + provenance=factory | 27e5c5c |
+| 事件循环接线 | `produce_chapter` 章前 `drain_queue` + `ProductionResult.factory_added`；`_jit_characters` 降级告警器（缺名入队 source=jit_alarm，队列幂等防重） | 27e5c5c |
+| 文档 | ADR-022 状态改"已拍板/已实施"——配额 ≤2、触发源=广播+CLI、同步入戏、pending 确认 | d29ba2c |
+
+**验收**：新测试 13 条（`tests/test_character_factory.py`，含 JIT 告警降级）；m9 旧 JIT
+测试改新语义；全量 **495 passed**。修复 `_PROMPT.format` 传未定义 `hook_block` 的 NameError。
+
+### M3r — P0-A bible 数据补喂（2026-09-02 用户拍板"1可以做"；工具 ✅ 试点 ✅，全量待人工确认）
+
+注入面审计结论：`produce_chapter` 注入代码已齐（B-02 → `build_chapter_context` + ADR-020
+`cast_injection` 事件级人物卡注入）——断点在**数据**：yelan3 实测 26 卡仅 3 张有
+relationships、0 张有 behavior_rules，`render_cards` 注入的是无料卡，模型只能现编关系
+→ 行为漂移/AI 味。修复 = 数据补喂（补数据是 prompt 的原料，同 P0-B 追认闸门哲学）。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 补喂工具 | `core/character_enrich.py`：缺料判定（rels/rules 空即缺）→ LLM 提案（输入=全员名册+该卡 character_histories+涉卡 plot_events，保证应然不与实然冲突）→ 确定性闸门（串卡/悬空 target/自指/重复/规则条数/age 越界）→ `characters_enrich_pending.json` | 代码完成，测试 8 条 ✅ |
+| 确认通道 | CLI `characters-enrich --provider deepseek [--card 名]`（提案）+ `enrich-pending --allow/--deny`（合并入档：rels/rules 并集去重、age 只补缺、provenance=enrich；settings-pending 同款） | 代码完成 ✅ |
+| DeepSeek 试点 | yelan3 三卡（李慕白/苏婉/秦叔）：提案质量好——关系与 arc/前情对齐，规则为带条件的可执行句，全过闸门入 pending | ✅ |
+| 全量补喂 | 余 20+ 缺料卡提案 → 用户 `enrich-pending` 审阅确认（样例见 `novel_workspace/proj-yelan3/bible/characters_enrich_pending.json`） | 待用户确认后跑 |
+
+**验收**：人工审阅提案无与已发生事件冲突、确认入档后跑一章对照（关系/行为规则实际出现在
+生成上下文）→ 目标：行为漂移/AI 味显著下降。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
