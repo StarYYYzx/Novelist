@@ -50,6 +50,13 @@ class LMStudioProvider:
         # 关闭思考（云端 llama.cpp 实测：chat_template_kwargs.enable_thinking=false 有效，
         # 思考 0 token 直接出正文；LM-Studio 本地忽略该字段，行为不变）
         enable_thinking: bool | None = None,
+        # OpenAI reasoning_effort 协议（FreeToken ft serve 等后端，2026-09-02 服务器 C 接入）：
+        # 设为 "none"/"low"/"medium"/"high" 后每次请求都带该字段——FreeToken 上
+        # Qwen3.6 默认开思考且计入 max_tokens，不传会被思考吃光预算（content 空 + finish=length）。
+        # 请求级映射：req.thinking=False → 强制 "none"；req.thinking=True 且默认 "none" →
+        # 自动升 "low"（审校等判断类任务）。None = 不发该字段（LM-Studio/llama.cpp 走
+        # chat_template_kwargs 路径，行为不变）。
+        reasoning_effort: str | None = None,
         _client: "httpx.Client | None" = None,
     ) -> None:
         if httpx is None:
@@ -66,6 +73,7 @@ class LMStudioProvider:
         self.budget_retries = budget_retries
         self.default_max_tokens = default_max_tokens
         self.enable_thinking = enable_thinking
+        self.reasoning_effort = reasoning_effort
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -134,6 +142,15 @@ class LMStudioProvider:
             # LM-Studio 本地忽略该字段，不报错。请求级 req.thinking 优先。
             thinking = req.thinking if req.thinking is not None else self.enable_thinking
             payload["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
+        if self.reasoning_effort is not None:
+            # FreeToken ft serve（服务器 C / Qwen3.6）走 OpenAI reasoning_effort 协议。
+            # 与 chat_template_kwargs 可共存：各后端只认自己的字段，忽略对方的。
+            effort = self.reasoning_effort
+            if req.thinking is False:
+                effort = "none"
+            elif req.thinking is True and effort == "none":
+                effort = "low"  # 判断类任务（审校）请求级开思考 → 从 none 升一档
+            payload["reasoning_effort"] = effort
         if budget:
             payload["max_tokens"] = budget
 

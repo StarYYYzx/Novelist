@@ -97,6 +97,50 @@ def test_lmstudio_json_object_drops_response_format(monkeypatch):
     assert "response_format" not in body_capture["json"], "LM-Studio 不接受 json_object，必须剥掉"
 
 
+def test_lmstudio_reasoning_effort_payload(monkeypatch):
+    """reasoning_effort 设置后必须每次请求都带（FreeToken 硬约束：不传则思考吃光预算）。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    p = LMStudioProvider(api_key="", model="qwen3.6-35b-a3b-fp8",
+                         reasoning_effort="none", _client=client)
+    from novelist.core.llm import LLMMessage, LLMRequest
+
+    # 默认：provider 级 effort 原样发送
+    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="hi")]))
+    assert bodies[-1].get("reasoning_effort") == "none"
+
+    # 请求级 thinking=False → 强制 none（正文生成关思考）
+    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="hi")], thinking=False))
+    assert bodies[-1].get("reasoning_effort") == "none"
+
+    # 请求级 thinking=True（审校等判断类任务）→ 从 none 自动升 low
+    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="judge")], thinking=True))
+    assert bodies[-1].get("reasoning_effort") == "low", "判断类任务请求级开思考应升一档"
+
+
+def test_lmstudio_reasoning_effort_absent_by_default(monkeypatch):
+    """默认不传 reasoning_effort 字段——LM-Studio/llama.cpp 路径行为不得改变。"""
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    p = LMStudioProvider(api_key="", model="qwen/qwen3.5-9b", _client=client,
+                         enable_thinking=False)
+    from novelist.core.llm import LLMMessage, LLMRequest
+
+    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="hi")]))
+    assert "reasoning_effort" not in bodies[-1]
+    assert bodies[-1].get("chat_template_kwargs") == {"enable_thinking": False}
+
+
 # ---------- 集成：连通性（服务未运行/未授权则跳过） ----------
 
 

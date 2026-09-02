@@ -28,6 +28,11 @@ TUNNELS_B = [
     (6006, ("127.0.0.1", 6006)),  # LLM
     (6008, ("127.0.0.1", 6008)),  # embedding
 ]
+# 服务器 C（bjb2/3080 Ti，FreeToken + Qwen3.6-35B-A3B-FP8，2026-09-02）：
+# 本地 18006 → 远端 6006；chat 请求必须传 reasoning_effort:"none"（见 freetoken_deploy/DEPLOY.md）
+TUNNELS_C = [
+    (18006, ("127.0.0.1", 6006)),  # LLM (ft serve)
+]
 
 
 def creds(server: str) -> dict:
@@ -37,7 +42,7 @@ def creds(server: str) -> dict:
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             d[k.strip()] = v.strip()
-    p = {"A": "SSH_HOST_A", "B": "SSH_HOST_B"}[server]
+    p = {"A": "SSH_HOST_A", "B": "SSH_HOST_B", "C": "SSH_HOST_C"}[server]
     return {
         "SSH_HOST": d[p], "SSH_PORT": d[p.replace("HOST", "PORT")],
         "SSH_USER": d[p.replace("HOST", "USER")], "SSH_PASSWORD": d[p.replace("HOST", "PASSWORD")],
@@ -48,11 +53,12 @@ def main() -> None:
     import argparse
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--server", choices=["A", "B"], default="A", help="A=3080ti（默认） B=旧T4")
+    ap.add_argument("--server", choices=["A", "B", "C"], default="A",
+                    help="A=3080ti（默认） B=旧T4 C=bjb2 FreeToken/Qwen3.6-35B")
     ap.add_argument("-e", "--with-embedding", action="store_true",
                     help="额外建 6008 embedding 隧道（仅 B 服务器有 embedding 服务）")
     args = ap.parse_args()
-    tunnels = list(TUNNELS_A if args.server == "A" else TUNNELS_B)
+    tunnels = list({"A": TUNNELS_A, "B": TUNNELS_B, "C": TUNNELS_C}[args.server])
     if args.with_embedding:
         tunnels += TUNNELS_B[1:]
 
