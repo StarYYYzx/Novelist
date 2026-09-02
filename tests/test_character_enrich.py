@@ -4,7 +4,8 @@
 - 缺料判定：缺 relationships / behavior_rules 才提案，有料卡跳过
 - 确定性闸门：串卡 / 悬空关系 / 自指 / 重复 target / 行为规格条数 / age 越界
 - 合法提案 → 写 characters_enrich_pending.json（target 保留名册原样，合并时解析 id）
-- apply --allow：relationships/behavior_rules 并集去重、age 只补缺、provenance=enrich
+- apply --allow：relationships 同 target 采纳提案描述/新 target 追加、behavior_rules 并集
+  去重、age 只补缺、provenance=enrich（拍板 2026-09-02：主角级卡简略句被提案覆盖）
 - apply --deny：移除；已有 relationships 的卡不被清空
 - 幂等：已在 pending 的卡不重复提案
 
@@ -224,30 +225,39 @@ def test_apply_allow_merges_and_keeps_existing(tmp_path):
     assert load_pending(ws, pid) == []
 
 
-def test_apply_merges_with_existing_rels_no_dup(tmp_path):
-    """卡已有关系时 allow 合并：同 target 不重复、不同 target 追加。"""
+def test_apply_duplicate_target_adopts_proposal_type(tmp_path):
+    """卡已有关系时 allow 合并：同 target 采纳提案详细描述（拍板 2026-09-02）、
+    不同 target 追加、行为规则并集去重截断 ≤3。"""
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
-    # 给叶岚造一条已有关系
+    # 给叶岚造一条已有简略关系 + 一张可追加的新 target 卡
     _write(ws, pid, "bible/characters.json", [
         {"id": "char:sw", "name": "苏晚", "gender": "female", "age": 18,
          "power": {"level": "炼气三层", "faction": "青云宗"},
          "relationships": [{"target": "char:yelan", "type": "同门"}], "is_protagonist": True},
         {"id": "char:yelan", "name": "叶岚", "gender": "male",
          "power": {"level": "炼气三层", "faction": "青云宗"},
-         "relationships": [{"target": "char:sw", "type": "旧关系"}],
+         "relationships": [{"target": "char:sw", "type": "寄生"}],   # 旧简略句
          "behavior_rules": ["旧规则"]},
+        {"id": "char:zhao", "name": "赵虎", "gender": "male",
+         "power": {"level": "炼气五层", "faction": "青云宗"},
+         "relationships": [], "behavior_rules": []},
     ])
     _write(ws, pid, "bible/characters_enrich_pending.json", [
         {"card_id": "char:yelan", "card_name": "叶岚",
          "missing": ["relationships", "behavior_rules"], "age": None,
-         "relationships": [{"target": "苏晚", "type": "同门相互照应"}],  # 与旧 target 重复
+         # 与旧 target 重复（描述更详）→ 应覆盖旧 type；赵虎为新 target → 追加
+         "relationships": [{"target": "苏晚", "type": "寄生宿主，互相利用"},
+                           {"target": "赵虎", "type": "外门对头"}],
          "behavior_rules": ["旧规则", "新规则一", "新规则二", "新规则三"]},
     ])
     moved, dropped, remaining = apply_pending(ws, pid, allow={"叶岚"})
     assert (moved, remaining) == (1, 0)
     chars = json.loads(ws._abs(f"{pid}/bible/characters.json").read_text(encoding="utf-8"))
     yelan = next(c for c in chars if c["id"] == "char:yelan")
-    # 同 target 保留旧关系（不重复追加）；行为规则并集去重、截断 ≤3
-    assert yelan["relationships"] == [{"target": "char:sw", "type": "旧关系"}]
+    # 同 target：旧「寄生」被提案详细描述覆盖；新 target 追加
+    assert yelan["relationships"] == [
+        {"target": "char:sw", "type": "寄生宿主，互相利用"},
+        {"target": "char:zhao", "type": "外门对头"},
+    ]
     assert yelan["behavior_rules"] == ["旧规则", "新规则一", "新规则二"]

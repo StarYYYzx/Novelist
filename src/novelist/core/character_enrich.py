@@ -10,7 +10,9 @@
 - LLM 提案基于**实然**（ADR-011）：该卡 character_histories + 涉卡 plot_events + 全员名册，
   保证"应然设定"不与已发生事实冲突。
 - 确定性闸门**零模型调用**：不串卡（name 必须等于目标卡）/ 不造人（target ∈ 名册，含别名，
-  解析为 id）/ 无自指 / 行为规则 2-3 条可执行 / age 合法 / 不丢已有 relationships。
+  解析为 id）/ 无自指 / 行为规则 2-3 条可执行 / age 合法。
+- 合并策略（2026-09-02 用户拍板）：同 target 重复关系**采纳提案详细描述**（主角级卡的旧
+  2-4 字简略句如"寄生"被提案完整句覆盖），新 target 追加（单卡 ≤ MAX_RELS 条）。
 - 确认走 `novelist enrich-pending --allow/--deny`（settings-pending 同款）；pending 条目按
   card_id 落键，allow 时合并进 characters.json 并打 provenance（origin=enrich）。
 
@@ -166,16 +168,22 @@ def check_proposal(card: dict, proposal: dict, *, ws, project_id: str) -> list[s
 def _apply_one_card(card: dict, proposal: dict, *, ws, project_id: str) -> dict:
     """闸门通过后的合并（新值并入，已有值保全）。返回更新后的卡。"""
     idx = _char_index(ws, project_id)
-    # relationships：并集去重（已有优先，按 target id 判重）
+    # relationships：按 target id 判重——同 target 采纳提案描述（拍板 2026-09-02，
+    # 旧 2-4 字简略句被提案完整句覆盖）；新 target 追加（[:MAX_RELS] 与闸门同口径）
     rels = list(card.get("relationships") or [])
-    have = {str(r.get("target") or "") for r in rels if isinstance(r, dict)}
+    at = {str(r.get("target") or ""): i for i, r in enumerate(rels) if isinstance(r, dict)}
     for r in (proposal.get("relationships") or [])[:MAX_RELS]:
         if not isinstance(r, dict):
             continue
         tid = idx.get(str(r.get("target") or ""))
-        if tid and tid not in have:
-            rels.append({"target": tid, "type": str(r.get("type") or "关联")[:30]})
-            have.add(tid)
+        if not tid:
+            continue
+        new_type = str(r.get("type") or "关联")[:30]
+        if tid in at:
+            rels[at[tid]]["type"] = new_type
+        else:
+            rels.append({"target": tid, "type": new_type})
+            at[tid] = len(rels) - 1
     card["relationships"] = rels
     # behavior_rules：并集去重截断上限
     rules = [str(x) for x in (card.get("behavior_rules") or []) if str(x).strip()]

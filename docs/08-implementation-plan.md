@@ -738,7 +738,7 @@ zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `co
 `novelist forge ingest <目录>`（`_gather_files` 收 .md/.txt，天然兼容）；
 成稿 `novelist export --output book.md` 后再 `docx to-docx`。
 
-### M3p — P0 闸门落地（2026-09-02 用户拍板开工；P0-A 之外 ✅ 已完成）
+### M3p — P0 闸门落地（2026-09-02 用户拍板开工；✅ P0-A/B/C/F 全部完成，P0-A 数据补喂见 M3r）
 
 依据 `prompt作用审计.md` 优先级表：修复重心不是改 prompt 文案，而是
 **补数据（P0-A）+ 加确定性闸门（P0-B/C）+ 删死代码（P1-F）**。
@@ -773,7 +773,7 @@ zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `co
 **验收**：新测试 13 条（`tests/test_character_factory.py`，含 JIT 告警降级）；m9 旧 JIT
 测试改新语义；全量 **495 passed**。修复 `_PROMPT.format` 传未定义 `hook_block` 的 NameError。
 
-### M3r — P0-A bible 数据补喂（2026-09-02 用户拍板"1可以做"；工具 ✅ 试点 ✅，全量待人工确认）
+### M3r — P0-A bible 数据补喂（2026-09-02 用户拍板"1可以做"；✅ 全部完成）
 
 注入面审计结论：`produce_chapter` 注入代码已齐（B-02 → `build_chapter_context` + ADR-020
 `cast_injection` 事件级人物卡注入）——断点在**数据**：yelan3 实测 26 卡仅 3 张有
@@ -783,12 +783,14 @@ relationships、0 张有 behavior_rules，`render_cards` 注入的是无料卡�
 | 件 | 实现 | 状态 |
 | --- | --- | --- |
 | 补喂工具 | `core/character_enrich.py`：缺料判定（rels/rules 空即缺）→ LLM 提案（输入=全员名册+该卡 character_histories+涉卡 plot_events，保证应然不与实然冲突）→ 确定性闸门（串卡/悬空 target/自指/重复/规则条数/age 越界）→ `characters_enrich_pending.json` | 代码完成，测试 8 条 ✅ |
-| 确认通道 | CLI `characters-enrich --provider deepseek [--card 名]`（提案）+ `enrich-pending --allow/--deny`（合并入档：rels/rules 并集去重、age 只补缺、provenance=enrich；settings-pending 同款） | 代码完成 ✅ |
+| 确认通道 | CLI `characters-enrich --provider deepseek [--card 名]`（提案）+ `enrich-pending --allow/--deny`（合并入档：同 target 采纳提案描述/新 target 追加、rules 并集去重、age 只补缺、provenance=enrich；settings-pending 同款） | 代码完成 ✅ |
 | DeepSeek 试点 | yelan3 三卡（李慕白/苏婉/秦叔）：提案质量好——关系与 arc/前情对齐，规则为带条件的可执行句，全过闸门入 pending | ✅ |
-| 全量补喂 | 余 20+ 缺料卡提案 → 用户 `enrich-pending` 审阅确认（样例见 `novel_workspace/proj-yelan3/bible/characters_enrich_pending.json`） | 待用户确认后跑 |
+| 全量补喂 | yelan3 **26/26 缺料卡全部入 pending**（DeepSeek 提案，报告 `novel_workspace/proj-yelan3/reports/p0a_enrich_review.md`） | ✅ |
+| 全量入档 | 2026-09-02 用户拍板：① 同 target 重复关系**采纳提案详细描述**（叶岚「寄生」→「寄生宿主，互相利用，系统来历成谜」等主角级简略句被覆盖）；② 26/26 全部 `--allow`。`enrich-pending` 全部入档：26/26 卡有 rels（1-3 条）+ rules（各 3 条）、15 卡补 age、全打 origin=enrich。pending 清空 | ✅ |
+| 存量 schema 漂移修复 | 入档后跑 `novelist validate` 暴露：`memory/character_history` schema 缺 ADR-020 N4 视角字段（kind/stance/perspective/relations/event_ref）+ `at.t`（ADR-019）→ schema 补齐，proj-yelan3 契约校验全过（14 类映射） | ✅ |
 
 **验收**：人工审阅提案无与已发生事件冲突、确认入档后跑一章对照（关系/行为规则实际出现在
-生成上下文）→ 目标：行为漂移/AI 味显著下降。
+生成上下文）→ 目标：行为漂移/AI 味显著下降。**待办**：复跑 yelan3 一章验证注入面吃到新料。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
