@@ -32,7 +32,7 @@ class ProductionResult:
                  mode: str = "tool", *, bible_injected: bool = False, attempts: int = 1,
                  completeness: dict | None = None, polish=None, chronicle=None,
                  review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0,
-                 jit_added: int = 0, settings_added: int = 0,
+                 jit_added: int = 0, settings_pending: int = 0,
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
                  phase: str = "writing", phase_reason: str = "",
                  length_truncated: bool = False, events_capped: int = 0,
@@ -53,7 +53,7 @@ class ProductionResult:
         self.events_revised = events_revised    # 因 block 重写的事件数
         self.lessons_added = lessons_added      # 本轮沉淀的历史教训数
         self.jit_added = jit_added              # 本轮 JIT 补卡数（递归分层 A）
-        self.settings_added = settings_added    # 本轮设定补充数（递归分层 B）
+        self.settings_pending = settings_pending  # 本轮设定待确认数（P0-B 闸门，settings_pending.json）
         self.entity_new = entity_new            # 本轮新增实体数（统一实体追踪）
         self.entity_alerts = entity_alerts or []  # 本轮实体预算告警
         self.phase = phase                      # 本卷阶段：opening | writing | tail（第九批）
@@ -300,7 +300,11 @@ def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: in
 # ---------------------------------------------------------------- 递归分层 B：世界观滚动补充
 
 def _known_setting_terms(ws, project_id: str) -> set[str]:
-    """已知设定名词集合（人物名/别名/地名/设定条目关键词/注册表规范名）。"""
+    """已知设定名词集合（人物名/别名/地名/物品/功法/设定条目关键词/注册表规范名）。
+
+    items/skills 曾缺席——物品名不在核对范围是"强化符追认"闭环的洞（prompt 作用审计
+    §2.6/P0-B：自造词绕过名册直接洗白成设定）。
+    """
     terms: set[str] = set()
     try:
         import json as _json
@@ -318,6 +322,13 @@ def _known_setting_terms(ws, project_id: str) -> set[str]:
         for loc in (_load("locations.json") or []):
             if isinstance(loc, dict) and loc.get("name"):
                 terms.add(str(loc["name"]))
+        for rel in ("items.json", "skills.json"):
+            for e in (_load(rel) or []):
+                if isinstance(e, dict):
+                    if e.get("name"):
+                        terms.add(str(e["name"]))
+                    for a in (e.get("aliases") or []):
+                        terms.add(str(a))
         for s in (_load("settings.json") or []):
             if isinstance(s, dict):
                 for kw in (s.get("keywords") or []):
@@ -334,10 +345,14 @@ def _known_setting_terms(ws, project_id: str) -> set[str]:
 
 
 def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
-    """世界观滚动补充（递归分层 B）：事件文本中出现的新专有名词 → LLM 补 settings 条目。
+    """世界观滚动补充（递归分层 B）——P0-B 闸门版：纯提案器，不自动入档。
 
-    与首次交代状态机互补：状态机管"已建条目何时交代"，这里管"条目本身何时补全"。
-    失败静默返回 0。
+    事件文本新专有名词 → LLM 提案 → **全部写 `bible/settings_pending.json` 待人工
+    确认**。理由：命中名册的词本就是"已知"（提前跳过），能到这里的名册外新词一律
+    不入 settings.json——反向追认通道关死（prompt 作用审计 P0-B："强化符"类自造词
+    不能再洗白成设定）。人工确认走 `novelist settings-pending --allow/--deny`。
+
+    返回待确认条数。LLM/解析失败静默 0。
     """
     if provider is None or not ev_text.strip():
         return 0
@@ -363,25 +378,29 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
         data = _json.loads(res.content.strip())
         if not isinstance(data, list):
             return 0
-        path = ws._abs(f"{project_id}/bible/settings.json")
-        entries = _json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        pending_path = ws._abs(f"{project_id}/bible/settings_pending.json")
+        pending = _json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
+        pending = pending if isinstance(pending, list) else []
+        pending_terms = {p.get("term") for p in pending if isinstance(p, dict)}
         n = 0
         for item in data:
             if not isinstance(item, dict) or not item.get("term"):
                 continue
             term = str(item["term"]).strip()
-            if not term or term in known or any(e.get("term") == term for e in entries):
+            if not term or term in known or term in pending_terms:
                 continue
-            entries.append({
-                "id": f"setting:jit{len(entries) + 1}",
+            pending.append({
                 "term": term,
                 "text": str(item.get("text") or f"关于{term}的设定")[:80],
                 "keywords": [str(k) for k in (item.get("keywords") or []) if k][:4],
-                "revealed": False,
+                "reason": "未命中已登记名册（characters/locations/items/skills/registry），"
+                          "待人工确认（P0-B 闸门）",
             })
+            pending_terms.add(term)
             n += 1
         if n:
-            path.write_text(_json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+            pending_path.write_text(_json.dumps(pending, ensure_ascii=False, indent=2),
+                                    encoding="utf-8")
         return n
     except Exception:  # noqa: BLE001
         return 0
@@ -839,7 +858,8 @@ class _UsageCounter:
 
 def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _UsageCounter,
                             *, ok: bool, mode: str = "tool", events: int = 0,
-                            phase: str = "", note: str = "", jit: int = 0, settings: int = 0) -> None:
+                            phase: str = "", note: str = "", jit: int = 0, settings: int = 0,
+                            settings_pending: int = 0) -> None:
     """F7.1：正文生成审计双落——`reports/stats/generation-<ts>.md`（人读持久）+ `.index.db`
     `audit_log`（机器查，ADR-016 辅助索引可重建）。先落报告文件、后同步索引（ADR-016
     写操作先文件后索引）；审计失败静默——审计不该阻断写章。
@@ -859,7 +879,7 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
         lines = [
             f"# 正文生成报告 第 {vol} 卷第 {ch} 章（{ts}）",
             f"- 结果：{status}（mode={mode}）" + (f"，{note}" if note else ""),
-            f"- 事件回写：{events} 条；JIT 补卡 {jit}；设定补充 {settings}；阶段 {phase or '-'}",
+            f"- 事件回写：{events} 条；JIT 补卡 {jit}；设定补充 {settings}；阶段 {phase or '-'}" + (f"；设定待确认 {settings_pending}" if settings_pending else ""),
             f"- LLM 调用 {counter.calls} 次：in={counter.tokens_in} / out={counter.tokens_out} tokens，"
             f"估算成本 ¥{cost:.4f}",
         ]
@@ -873,7 +893,8 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
                            "ok": ok, "mode": mode, "events": events, "calls": counter.calls,
                            "tokens_in": counter.tokens_in, "tokens_out": counter.tokens_out,
                            "cost": round(cost, 6), "phase": phase, "jit": jit,
-                           "settings": settings, "note": note, "ts": ts,
+                           "settings": settings, "settings_pending": settings_pending,
+                           "note": note, "ts": ts,
                        }, ensure_ascii=False))
     except Exception:  # noqa: BLE001 - 审计失败不影响写章
         pass
@@ -1090,15 +1111,14 @@ def produce_chapter(
     # 递归分层 A（第七批第 5 条·用户拍板）：人物 JIT 补卡——细纲声明出场但 bible 缺卡，
     # 生成前先补全（出场即建档，防造人红线）。补卡吸收前文实际发展（滚动设计）。
     jit_added = 0
-    settings_added = 0
+    settings_pending = 0  # P0-B：未命中名册、进 settings_pending.json 待人工确认数
     if jit_characters:
         jit_added = _jit_characters(ws, project_id, vol, ch, gist_text_for_events, provider)
     if system_prompt is None and final_goal is None and inject_bible:
         try:
-            # 历史教训（讨论第 7 轮）：此前审校 block 沉淀的纪律，随圣经注入
-            lesson_lines = _lesson_lines(ws, project_id)
-            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories, genre=genre,
-                                        lessons=lesson_lines or None)
+            # 历史教训不进 system prompt（第 8 轮 RAG 化后死参数已删，审计 §2.1）——
+            # review_lessons.json 只走知识层检索路径
+            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories, genre=genre)
             system_prompt, final_goal = ctx.system_prompt, ctx.user_goal
             bible_injected = True
         except Exception:  # noqa: BLE001 - 工作区不全时退回默认提示，不阻断写章
@@ -1331,12 +1351,13 @@ def produce_chapter(
                                          direction_lines=direction_lines,
                                          extra_readback=extra_rb)
 
-                    # 递归分层 B（第七批第 5 条·用户拍板）：世界观滚动补充——
-                    # 事件文本出现新专有名词 → LLM 补 settings 条目（后续事件可命中）。
+                    # 递归分层 B（第七批第 5 条·用户拍板；P0-B 闸门化）：世界观滚动补充——
+                    # 事件文本新专有名词 → LLM 提案 → 全部进 settings_pending.json
+                    # 待人工确认（追认通道关死），确认后经 settings-pending 入档。
                     if supplement_settings:
                         try:
-                            settings_added += _supplement_settings(ws, project_id, ev_text,
-                                                                   provider)
+                            settings_pending += _supplement_settings(ws, project_id, ev_text,
+                                                                     provider)
                         except Exception:  # noqa: BLE001
                             pass
 
@@ -1645,14 +1666,14 @@ def produce_chapter(
     # F7.1：正文生成审计（reports/ + .index.db audit_log）
     _write_generation_audit(ws, project_id, vol, ch, provider, ok=True, mode=mode,
                             events=events, phase=getattr(phase, "value", phase),
-                            jit=jit_added, settings=settings_added)
+                            jit=jit_added, settings_pending=settings_pending)
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
                             completeness=comp, polish=polish_res, chronicle=chronicle,
                             review_blocks=review_blocks, events_revised=events_revised,
                             lessons_added=lessons_added, jit_added=jit_added,
-                            settings_added=settings_added,
+                            settings_pending=settings_pending,
                             entity_new=entity_new, entity_alerts=entity_alerts,
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
                             length_truncated=length_truncated, events_capped=events_capped,

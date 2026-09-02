@@ -1022,6 +1022,66 @@ def server(ctx: click.Context, host: str, port: int) -> None:
     uvicorn.run("novelist.server:app", host=host, port=port, reload=False)
 
 
+@cli.command("settings-pending")
+@click.argument("directory", required=False, default=None)
+@click.option("--allow", default=None, help="确认入档的术语，逗号分隔（写入 settings.json）")
+@click.option("--deny", default=None, help="拒绝的术语，逗号分隔（从 pending 移除）")
+@click.pass_context
+def settings_pending(ctx: click.Context, directory: str | None, allow: str | None,
+                     deny: str | None) -> None:
+    """审阅 P0-B 设定待确认队列（bible/settings_pending.json）。
+
+    supplement_settings 闸门把未命中名册的新词拦进 pending（不入档）；
+    用 --allow 确认入档 / --deny 拒绝；无参数时列出全部待确认项。
+    """
+    import json as _json
+
+    ws: Workspace = ctx.obj["workspace"]
+    if directory:
+        ws = Workspace(root=directory)
+    root = ws._abs("")
+    project_id = _locate_project(root)
+    pending_path = ws._abs(f"{project_id}/bible/settings_pending.json")
+    settings_path = ws._abs(f"{project_id}/bible/settings.json")
+    pending = _json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
+    pending = pending if isinstance(pending, list) else []
+
+    if not allow and not deny:
+        if not pending:
+            click.echo("no pending settings")
+            return
+        for p in pending:
+            click.echo(f"  {p.get('term')}  —— {p.get('text')}")
+            click.echo(f"    reason: {p.get('reason')}")
+        return
+
+    def _split(s: str | None) -> set[str]:
+        return {x.strip() for x in (s or "").split(",") if x.strip()}
+
+    allow_set, deny_set = _split(allow), _split(deny)
+    settings = _json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else []
+    settings = settings if isinstance(settings, list) else []
+    kept, moved, dropped = [], 0, 0
+    for p in pending:
+        term = str(p.get("term") or "")
+        if term in allow_set:
+            p.pop("reason", None)
+            p["id"] = f"setting:jit{len(settings) + 1}"
+            settings.append(p)
+            moved += 1
+        elif term in deny_set:
+            dropped += 1
+        else:
+            kept.append(p)
+    if moved:
+        settings_path.write_text(_json.dumps(settings, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+    if moved or dropped:
+        pending_path.write_text(_json.dumps(kept, ensure_ascii=False, indent=2),
+                                encoding="utf-8")
+    click.echo(f"allow {moved} / deny {dropped} / remaining {len(kept)}")
+
+
 @cli.group()
 def docx() -> None:
     """Markdown ⇄ Word(.docx) 互转（M3o，零第三方依赖）。

@@ -141,12 +141,12 @@ def _mark_protagonist(bible: dict) -> None:
 
 
 def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
-                        *, genre: str | None = None,
-                        lessons: list[str] | None = None) -> str:
+                        *, genre: str | None = None) -> str:
     """装配 system prompt：世界观 + 文风 + 人物卡 + 输出纪律。
 
-    `lessons`：审校历史教训行（bible/review_lessons.json 的注入形态，讨论第 7 轮——
-    把历史 block 问题变成后续生成纪律，避免重复犯错）。
+    历史教训（review_lessons.json）不在此注入：第 8 轮已 RAG 化改由知识层检索
+    （knowledge.py），system prompt 级无条件注入会诱发"细纲未覆盖误报→提前补写
+    后续事件"（prompt 作用审计 §2.1，lessons 死参数已删）。
     """
     wv = bible.get("worldview") or {}
     st = bible.get("style") or {}
@@ -255,12 +255,8 @@ def build_chapter_context(
     genre: str | None = None,
     gist_max_chars: int = 1200,
     max_cast: int = 16,
-    lessons: list[str] | None = None,
 ) -> ChapterContext:
-    """装配一章的完整生成上下文（圣经注入的入口）。
-
-    `lessons`：审校历史教训注入行（bible/review_lessons.json），见 build_system_prompt。
-    """
+    """装配一章的完整生成上下文（圣经注入的入口）。"""
     bible = load_bible(ws, project_id)
     _mark_protagonist(bible)
 
@@ -279,7 +275,7 @@ def build_chapter_context(
     if not cast and bible.get("characters"):
         cast = [c for c in bible["characters"] if isinstance(c, dict)][:1]
 
-    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre, lessons=lessons)
+    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre)
 
     goal: list[str] = [f"请撰写第 {vol} 卷第 {ch} 章正文。"]
     if gist_text:

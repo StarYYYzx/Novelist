@@ -192,8 +192,9 @@ def test_jit_characters_fills_missing(tmp_path):
 
 # ---------------------------------------------------------------- 递归分层 B：世界观补充
 
-def test_supplement_settings_adds_new_terms(tmp_path):
-    """递归分层 B：事件出现新名词 → 补 settings 条目（revealed=False）。"""
+def test_supplement_settings_new_terms_go_pending(tmp_path):
+    """递归分层 B（P0-B 闸门化）：事件新名词 → 进 settings_pending.json 待人工确认，
+    不再自动入档 settings.json（"强化符"反向追认通道关死）。"""
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     _write(ws, pid, "bible/settings.json", [])
@@ -204,7 +205,9 @@ def test_supplement_settings_adds_new_terms(tmp_path):
     n = _supplement_settings(ws, pid, "血月之夜降临，宗门大阵震动", llm)
     assert n == 1
     entries = json.loads(ws._abs(f"{pid}/bible/settings.json").read_text(encoding="utf-8"))
-    assert entries[0]["term"] == "血月之夜" and entries[0]["revealed"] is False
+    assert entries == []  # 闸门：绝不自动入档
+    pending = json.loads(ws._abs(f"{pid}/bible/settings_pending.json").read_text(encoding="utf-8"))
+    assert pending[0]["term"] == "血月之夜" and "待人工确认" in pending[0]["reason"]
     # 已知词（叶岚/沈青梧）不会被重复提取——第二次调用传已知名词应返回 0
     llm2 = _StubLLM(["[]"])
     assert _supplement_settings(ws, pid, "叶岚与沈青梧交谈", llm2) == 0
