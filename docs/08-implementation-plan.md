@@ -715,10 +715,24 @@ zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `co
 3. **XML 非法控制字符必须剔除**（`_xml_safe`）。模型偶发的 0x0B/0x0C 会让 Word
    直接报"文件损坏"，这是转换类代码最常见的翻车点。
 4. **相邻 `w:tbl` 之间要插空段落**，否则 Word 判定包损坏。
+5. **OOXML 子元素顺序敏感**（自查发现，测试抓不到）：`w:pPr`/`w:rPr`/`w:tblPr` 的子元素
+   必须严格按 CT_PPr 序列排（如 rStyle→rFonts→b→i→strike→u→color→sz；pPr 中 shd 在
+   spacing 前、spacing 在 ind/jc 前；tblBorders 在 tblLayout 前；outlineLvl 最后）。
+   `ElementTree` 解析不校验顺序、pytest 全绿，只有 Word 打开才报"文件已损坏"。
+   已修 5 处（13cf594）。
+
+**系统接线（1250fd1，用户后续要求补全两端）**：
+- **输入**：`forge ingest book.docx` 直达——`_gather_files` 收 .docx，
+  `_convert_docx_files` 预转同名 md（图片不导出；同名 md 视为派生物，重跑以 docx 为准覆盖）；
+  `_CHAPTER_RE` 兼容 `# 第X章` 标题前缀（docx 转出的 md 标题带 `#`），章题剥 `#` 入细纲。
+- **输出**：`export --format docx --output book.docx` 直接产 Word 成稿
+  （`export_project` 出 md → `markdown_to_docx`；`--output` 必填，无法打印二进制）。
+- 测试 +5（切片转换/带#标题/docx 全链路 ingest/export docx 往返与缺参）；
+  真机冒烟：天道修改器.docx dry-run 切片正常、yelan3 草稿 16791 字导出 docx 读回保真。
 
 **验收**：22 条新测试（`tests/test_m20_docxconv.py`，含手工构造极简 docx 精确测读侧）；
 真机跑 yelan3 五章 16695 字往返——去空白后 15681 字符**零丢失**，5 个章标题 +
-书名页结构保真、关键实体无缺失。全量 **468 passed, 0 failed**。
+书名页结构保真、关键实体无缺失。全量 **473 passed, 0 failed**（接线后）。
 
 **与既有流程的接缝**（未改动，仅路径指引）：转出的 md 直接喂
 `novelist forge ingest <目录>`（`_gather_files` 收 .md/.txt，天然兼容）；
