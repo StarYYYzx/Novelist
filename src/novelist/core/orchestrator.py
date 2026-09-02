@@ -38,7 +38,7 @@ class ProductionResult:
                  length_truncated: bool = False, events_capped: int = 0,
                  pending_tick: dict | None = None,
                  chapter_title: str = "", directions_built: int = 0,
-                 perspectives_written: int = 0):
+                 perspectives_written: int = 0, broadcasts_built: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -65,6 +65,7 @@ class ProductionResult:
         self.chapter_title = chapter_title        # 延迟拟定的章节标题（ADR-020 决策一）
         self.directions_built = directions_built  # 本轮生成的人物调度单数（ADR-020 决策三）
         self.perspectives_written = perspectives_written  # 本轮写入的角色视角条数（决策四）
+        self.broadcasts_built = broadcasts_built  # 本轮广播成功次数（ADR-021 选角推理）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -1030,6 +1031,9 @@ def produce_chapter(
     cast_injection: bool = True,     # 决策二：出场人物卡无条件注入
     character_direction: bool = True,  # 决策三：人物调度层（细纲与正文之间的第 3 次细化）
     perspective_memory: bool = True,   # 决策四：角色视角记忆（事件末调用 + 无条件注入 + 双阈值回读）
+    # ---- ADR-021 世界广播选角（一致性栈第 0 层：先定"谁该在场"，N3 调度才有意义）----
+    broadcast_casting: bool = False,   # 事件级选角 LLM 推理（v1 默认关；harness/CLI 显式开，
+                                       # 真机验证稳定后转 True，与四件套同哲学）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -1143,6 +1147,7 @@ def produce_chapter(
     chapter_title = ""
     directions_built = 0
     perspectives_written = 0
+    broadcasts_built = 0  # ADR-021：本章广播成功次数（事件级选角推理）
 
     # ---- 2.1) 定时事项软 block（ADR-019 §3.3.3，M3m T2）----
     # 已到期且连续 block 的 pending：本章细纲/key_events 未体现 → 拦截。
@@ -1201,6 +1206,7 @@ def produce_chapter(
                 # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
                 pieces: list[str] = []
                 seam = max(200, min(400, _SEAM_CHARS))
+                _prev_cast_names: list[str] = []  # ADR-021：上一事件出场者（广播"前情"输入）
                 settings_idx = (settings if settings is not None
                                 else _load_settings(ws, project_id))
                 # 知识检索层（讨论第 8 轮 RAG）：每章构建一次（语义向量化秒级），
@@ -1274,14 +1280,46 @@ def produce_chapter(
                     direction_lines: list[str] = []
                     extra_rb: list[str] = []
                     if bible_chars:
-                        cast_cards = _director.match_cast(bible_chars, declared_cast) \
-                            if declared_cast else []
-                        # 细纲声明为准，再补事件文本里出现但声明漏掉的（≤2 人，防噪声）
-                        extra = [c for c in _director.cast_from_text(bible_chars, ev_text)
-                                 if c["id"] not in {x["id"] for x in cast_cards}]
-                        cast_cards = (cast_cards + extra[:2]) if cast_cards \
-                            else _director.cast_from_text(bible_chars, ev_text)
-                        cast_names = [str(c.get("name") or "") for c in cast_cards]
+                        # ADR-021 世界广播选角（一致性栈第 0 层，事件级"谁该在场"推理）：
+                        # 语义推理 → 确定性校验（细纲声明不可删/池内/文本命中必含/≤6/不造名）
+                        # → 名单驱动 match_cast；广播失败/关 → 静默降级走细纲声明+字面兜底
+                        # 的确定性路径（绝不阻断生成，与 ADR-020 新增调用同一纪律）。
+                        cast_source: list[str] = []
+                        if broadcast_casting:
+                            try:
+                                from . import broadcast as _broadcast
+                                _text_hits = [str(c.get("name") or "") for c in
+                                              _director.cast_from_text(bible_chars, ev_text)]
+                                _seam_txt = (pieces[-1][-300:] if pieces
+                                             else (readback_text or "")[-300:])
+                                _dec = _broadcast.broadcast_cast(
+                                    ws, project_id, provider, vol=vol, ch=ch, idx=idx,
+                                    ev_text=ev_text, seam=_seam_txt,
+                                    declared=declared_cast, prev=_prev_cast_names,
+                                    text_hits=_text_hits, system_prompt=system_prompt)
+                            except Exception:  # noqa: BLE001 - 广播任何异常都降级
+                                _dec = None
+                            if _dec is not None and _dec.names:
+                                cast_source = _dec.names
+                                broadcasts_built += 1
+                                if _dec.alarms:
+                                    print(f"[ch{ch} e{idx}] 广播校验: "
+                                          + "; ".join(_dec.alarms)[:300], flush=True)
+                        if cast_source:
+                            # 广播名单（细纲声明与文本命中已由校验强制涵盖，勿再重复补）
+                            cast_cards = _director.match_cast(bible_chars, cast_source)
+                            cast_names = [str(c.get("name") or "") for c in cast_cards]
+                        else:
+                            # 降级路径（原确定性选角）：细纲声明为准，
+                            # 再补事件文本里出现但声明漏掉的（≤2 人，防噪声）
+                            cast_cards = _director.match_cast(bible_chars, declared_cast) \
+                                if declared_cast else []
+                            extra = [c for c in _director.cast_from_text(bible_chars, ev_text)
+                                     if c["id"] not in {x["id"] for x in cast_cards}]
+                            cast_cards = (cast_cards + extra[:2]) if cast_cards \
+                                else _director.cast_from_text(bible_chars, ev_text)
+                            cast_names = [str(c.get("name") or "") for c in cast_cards]
+                        _prev_cast_names = list(cast_names)
                         if cast_injection:
                             # all_chars=bible_chars：关系目标 char:xxx 回查成角色名
                             cast_lines = _director.render_cards(cast_cards, bible_chars)
@@ -1645,4 +1683,5 @@ def produce_chapter(
                             length_truncated=length_truncated, events_capped=events_capped,
                             pending_tick=pending_tick,
                             chapter_title=chapter_title, directions_built=directions_built,
-                            perspectives_written=perspectives_written)
+                            perspectives_written=perspectives_written,
+                            broadcasts_built=broadcasts_built)

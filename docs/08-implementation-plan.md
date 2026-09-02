@@ -803,6 +803,23 @@ relationships、0 张有 behavior_rules，`render_cards` 注入的是无料卡�
 严格 A/B 待下次 qwen3.6 跑批同开补喂数据再量化。存量缺口再确认：bible set:wuwu 无绑定时长
 条款（P0-A 已知待补项，正文被迫自创"短暂绑定"语义）。
 
+### M3s — ADR-021 世界广播选角落地（2026-09-02；✅ 代码+测试完成，v1 默认关待真机验证）
+
+M3r 验收后用户口径"做完继续讨论"的下一里程碑（人物一致性栈表层第 0 层）。把事件选角从
+"细纲声明 + 文本字面兜底"的确定性集合升级为：事件级 +1 次 LLM 语义推理"谁该在场" →
+确定性校验（五条硬约束）→ 名单驱动 `match_cast` 注卡。调度/视角的上游人选先定对。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 广播模块 | `core/broadcast.py`：可及池（worldstate dead / unavailable_until>now / bible status dead·unknown 剔除，零调用）；prompt（事件+接缝+天数+细纲声明+上事件+池≤40）；解析纪律（防造名拒绝+告警、```json 围栏容错、非 JSON 不崩）；校验（细纲声明补回/池外剔除/文本命中补回/≤6 裁）；落盘 `memory/castings/v{vol}-c{ch}-e{idx}.json`；needs → 工厂队列（source=broadcast） | ✅ |
+| orchestrator 接线 | 事件循环注卡前 +1 次广播；`broadcast_casting: bool = False`（v1 默认关）；成功 → 名单驱动 cast、`ProductionResult.broadcasts_built` 回传；任何异常 → 静默回退确定性选角（与 ADR-020 同纪律） | ✅ |
+| 测试 | `tests/test_broadcast.py` 17 条：池过滤/解析纪律/校验四场景/落盘/needs 入队/失败纪律(挂·blocked·垃圾·None)/orchestrator 集成（开启广播名单驱动 + 垃圾降级不阻生成） | ✅ 17 passed |
+| 文档 | ADR-021 状态改"已实施"；4 项拍板记录（细纲不可删 / 新人必经工厂 / 独立成次 / 落盘） | ✅ |
+
+**验收口径**：v1 默认关（与 ADR-020 四件套同哲学——先默认不改变产出，harness/CLI 显式开启，
+真机验证稳定后转 True）。开启后跑批需比对"广播名单 vs 细纲/文本兜底名单"的差异是否真的
+减少了"职能上该在场的人缺席"（前两章归因 A 类主因）。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
