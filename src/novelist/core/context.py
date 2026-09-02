@@ -151,8 +151,10 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     wv = bible.get("worldview") or {}
     st = bible.get("style") or {}
     levels = ((wv.get("power_system") or {}).get("levels")) or []
+    ps_note = ((wv.get("power_system") or {}).get("note")) or ""
     rules = wv.get("rules") or []
     banned = st.get("forbidden_words") or []
+    modern = wv.get("modern_words") or []  # 世界观层现代词禁令（forge 产出，装配补读）
     glossary = st.get("glossary") or []
     threads = bible.get("plot_threads") or []
     volumes = bible.get("volumes") or []
@@ -171,11 +173,25 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         L.append("【世界设定】")
         if wv.get("name"):
             L.append(f"- 世界：{wv['name']}")
+        if wv.get("summary"):
+            L.append(f"- 概要：{wv['summary']}")
         if levels:
             L.append(f"- 境界体系：{'、'.join(levels)}（表述必须统一，不得混用「层」「重」等不同划分）")
+            if ps_note:
+                L.append(f"  说明：{ps_note}")
         for r in rules:
             L.append(f"- 铁律：{r}")
+        civs = wv.get("civilizations") or []
+        if civs:
+            L.append(f"- 文明：{'、'.join(str(x) for x in civs)}")
+        systems = wv.get("systems") or []
+        if systems:
+            L.append(f"- 体系：{'、'.join(str(x) for x in systems)}")
         # 势力不在此全量注入（讨论第 8 轮 RAG）：按事件相关性由知识层检索，事件级注入
+        fluctuates = wv.get("realm_fluctuates") or []
+        if fluctuates:
+            L.append("- 境界波动：下列角色/对象的境界随系统绑定/解除而变动，"
+                     "写作时不得写死为固定境界——" + "、".join(str(x) for x in fluctuates))
 
     if st:
         L.append("")
@@ -189,6 +205,8 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             L.append(f"- 目标篇幅：约 {st['target_words_per_chapter']} 字")
         if banned:
             L.append(f"- 禁用词，出现即失败：{'、'.join(banned)}")
+        if modern:
+            L.append(f"- 禁用现代词/现代概念（出现即失败）：{'、'.join(modern)}")
         if glossary:
             L.append("- 专有名词（写法必须固定）：" + "、".join(
                 f"{g.get('term')}（{g.get('note', '')}）" for g in glossary if isinstance(g, dict)))

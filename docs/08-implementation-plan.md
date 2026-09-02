@@ -165,6 +165,12 @@ novelist/
   `produce_chapter(inject_bible=True)` 默认开启。
   *出场人物取"已登场且仍在场"而非"细纲点名"*——只按细纲点名会让模型忘记既有角色，
   转而在正文里另造名字填坑，反而加剧凭空造人。
+  *装配补读（2026-09-02，P0-1 残留收口）*：`power_system.note` / `worldview.summary` /
+  `civilizations` / `systems` / `realm_fluctuates`（境界波动角色纪律行）与
+  `worldview.modern_words`（现代词禁令）此前 forge 产出但装配层不读——扫描 6 个项目的
+  `power_system.note` **6/6 全部静默丢失**，叶岚主线 `realm_fluctuates`/`modern_words` 0 条
+  进上下文。补读后 schema 声明字段全有注入路径；约定：worldview 自定义附加字段不入顶层，
+  写 `settings.json`（知识层可检索）。测试 `test_m4_quality` +2。
 - **B-03 编纂员** ✅ 新增 `core/chronicler.py`。LLM 从成章正文抽取真实情节事件 →
   `MemoryWriter` 冲突双检 → 写 `plot_events` 与各人物经历。
   章级合成事件改为**自动兜底**：有真实事件就不写，编纂不可用才写（`commit_chapter_event=None`）。

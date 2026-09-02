@@ -131,6 +131,48 @@ def test_context_includes_output_discipline(tmp_path):
     assert "完整性" in sp, "必须要求结尾完整收束"
 
 
+def test_context_injects_worldview_extra_fields(tmp_path):
+    """装配补读：power_system.note / summary / civilizations / systems / realm_fluctuates
+    不能因 build_system_prompt 没读就静默丢失（proj-yelan 实测：境界波动角色设定 0 条进上下文）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    _write(ws, pid, "bible/worldview.json", {
+        "name": "青冥界",
+        "summary": "五境修仙界，宗门林立，灵脉之争暗流涌动",
+        "power_system": {
+            "levels": ["炼气", "筑基", "金丹", "元婴"],
+            "note": "炼气纳灵气、筑基筑道基、金丹凝丹、元婴出窍",
+        },
+        "rules": ["修士不可对凡人出手"],
+        "civilizations": ["人族", "妖族"],
+        "systems": ["宗门体系"],
+        "realm_fluctuates": ["char:sw", "苏晚"],
+    })
+    sp = build_chapter_context(ws, pid, 1, 1).system_prompt
+    assert "青冥界" in sp
+    assert "炼气纳灵气" in sp, "power_system.note 必须进上下文（此前 6/6 项目全丢）"
+    assert "五境修仙界" in sp, "worldview.summary 必须进上下文"
+    assert "人族、妖族" in sp, "civilizations 必须进上下文"
+    assert "宗门体系" in sp, "systems 必须进上下文"
+    assert "境界波动" in sp and "苏晚" in sp, "realm_fluctuates 必须作为纪律行进上下文"
+
+
+def test_context_injects_worldview_modern_words(tmp_path):
+    """装配补读：worldview.modern_words（现代词禁令）须进上下文——与端到端教训
+    「修仙文出现『厚眼镜』」直接相关（forge 写了这份清单，装配层此前不读）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    _write(ws, pid, "bible/worldview.json", {
+        "name": "青冥界",
+        "power_system": {"levels": ["炼气", "筑基", "金丹", "元婴"]},
+        "rules": ["修士不可对凡人出手"],
+        "modern_words": ["厚眼镜", "WiFi", "白领"],
+    })
+    sp = build_chapter_context(ws, pid, 1, 1).system_prompt
+    assert "禁用现代词" in sp
+    assert "厚眼镜" in sp and "WiFi" in sp and "白领" in sp
+
+
 # ---------------------------------------------------------------- B-03 编纂员
 
 
