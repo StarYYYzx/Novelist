@@ -283,7 +283,17 @@ def build_chapter_context(
 
     goal: list[str] = [f"请撰写第 {vol} 卷第 {ch} 章正文。"]
     if gist_text:
-        goal += ["", "【细纲】（必须逐条落实，不得遗漏要点）", gist_text[:gist_max_chars]]
+        # ADR-020 决策一（延迟拟题）：细纲 md 首行的 `# 第 X 章 <标题>` 必须剥掉再进
+        # 生成 prompt——qwen3.6 真机实测：标题留在上下文里模型会概率性在事件边界
+        # 复述成「## 第X章 <细纲标题>」卡进正文（元叙事泄漏，ch2/ch5 均中招）。
+        # 标题只在章末由 _title_chapter 依据正文拟写（forge 的 render_gist_md 已剥，
+        # 但 produce_chapter 真实链路读 outline/*.md 原文，此前从未剥过）。
+        _g = gist_text
+        if _g.lstrip().startswith("# "):
+            _g = _g.lstrip()
+            _nl = _g.find("\n")
+            _g = _g[_nl + 1:] if _nl >= 0 else ""
+        goal += ["", "【细纲】（必须逐条落实，不得遗漏要点）", _g.strip()[:gist_max_chars]]
     if memories:
         goal += ["", "【前情提要】（先忆：必须与以下已发生的事实保持连续）", *memories]
     goal += ["", "要求：严格按细纲推进，写完本章全部要点，结尾必须是一个完整的收束句。"]

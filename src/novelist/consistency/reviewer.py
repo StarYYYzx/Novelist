@@ -42,6 +42,7 @@ REVIEW_PROMPT = """你是审校师。对照设定圣经与前情，审读下面�
 【本章细纲】（要点应当被落实）
 {gist}
 
+{scope}
 【审校维度】
 - 设定矛盾：是否违反世界规则
 - 人设漂移：言行是否偏离人物卡（特别注意性别、性格、说话方式）
@@ -104,13 +105,15 @@ class Reviewer:
 
     def review(self, text: str, vol: int, ch: int, *, gist_text: str = "",
                memories: list[str] | None = None,
-               cast_ids: list[str] | None = None) -> list[ReviewIssue]:
+               cast_ids: list[str] | None = None,
+               scope: str = "") -> list[ReviewIssue]:
         if self.llm is None or not text.strip():
             return []
         prompt = REVIEW_PROMPT.format(
             bible=_bible_brief(self.ws, self.project_id, cast_ids),
             memory="\n".join(memories or []) or "（无前情）",
             gist=gist_text[:800] or "（无细纲）",
+            scope=scope or "【范围说明】本次审读的是完整一章。",
         )
         res = self.llm.complete(
             LLMRequest(messages=[LLMMessage(role="user", content=prompt + text[-3000:])],

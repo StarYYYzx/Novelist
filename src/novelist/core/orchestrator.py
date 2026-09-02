@@ -1370,9 +1370,22 @@ def produce_chapter(
                         reviewer = _make_reviewer(ws, project_id, provider)
                         if reviewer is not None:
                             try:
+                                # qwen3.6 真机教训：每事件后审校的是「单事件片段」，而
+                                # REVIEW_PROMPT 默认按「完整一章」审——模型把单事件当整章，
+                                # 拿整章细纲对照必然报「细纲未覆盖」（ch1/ch2 的 block 全是
+                                # 这类误报），修订 prompt 又诱导模型提前补后续事件内容 →
+                                # 事件边界污染/场景重演。传范围说明纠正审校预期。
+                                _total = len(key_events) if key_events else 0
+                                _scope = (
+                                    f"【范围说明】本次审读的是本章第 {idx}/{_total} 个事件的"
+                                    f"正文片段（{'已到章末' if is_last else '本章尚未写完'}）。"
+                                    f"只审该片段内部的问题（设定矛盾/人设漂移/称谓/时间线/"
+                                    f"战力越界/与前情冲突/片段内的细纲要点遗漏）；"
+                                    f"本章后续事件的内容尚未出现，不构成「细纲未覆盖」。"
+                                    if _total else "【范围说明】本次审读的是完整一章。")
                                 issues = reviewer.review(
                                     piece, vol, ch, gist_text=gist_text_for_events,
-                                    memories=memories_ev)
+                                    memories=memories_ev, scope=_scope)
                                 blocks = [i for i in issues if i.level == "block"]
                             except Exception:  # noqa: BLE001 - 审校失败不阻断
                                 issues, blocks = [], []

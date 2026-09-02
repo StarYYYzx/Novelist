@@ -131,6 +131,28 @@ def test_context_includes_output_discipline(tmp_path):
     assert "完整性" in sp, "必须要求结尾完整收束"
 
 
+def test_context_goal_strips_gist_title_line(tmp_path):
+    """ADR-020 决策一真机回归：细纲首行「# 第 X 章 <标题>」不得进生成 goal。
+
+    qwen3.6 实测：标题留在上下文，模型会概率性在事件边界复述成
+    「## 第X章 <细纲标题>」卡进正文（ch2/ch5 元叙事泄漏）。forge 的
+    render_gist_md 剥过，但 produce_chapter 走 context 读 outline 原文，
+    此路径必须同样剥离。key_events/要点要保留。
+    """
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    gist = "# 第 1 章 觉醒之夜\n\nkey_events: [苏晚踏入山门遇袭]\n\n细纲要点：\n- 苏晚登场。"
+    ctx = build_chapter_context(ws, pid, 1, 1, gist_text=gist)
+    assert "第 1 章 觉醒之夜" not in ctx.user_goal, "细纲标题泄漏进生成 goal"
+    assert "觉醒之夜" not in ctx.user_goal
+    assert "key_events" in ctx.user_goal and "苏晚踏入山门遇袭" in ctx.user_goal, "事件清单必须保留"
+    assert "苏晚登场" in ctx.user_goal, "细纲要点必须保留"
+    # 无标题行的细纲不受影响
+    plain = "key_events: [苏晚踏入山门遇袭]\n\n细纲要点：\n- 苏晚登场。"
+    ctx2 = build_chapter_context(ws, pid, 1, 1, gist_text=plain)
+    assert "key_events" in ctx2.user_goal
+
+
 def test_context_injects_worldview_extra_fields(tmp_path):
     """装配补读：power_system.note / summary / civilizations / systems / realm_fluctuates
     不能因 build_system_prompt 没读就静默丢失（proj-yelan 实测：境界波动角色设定 0 条进上下文）。"""
@@ -384,6 +406,26 @@ def test_reviewer_returns_empty_when_ok(tmp_path):
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     assert Reviewer(ws, pid, _StubLLM("ok")).review("正文", 1, 1) == []
+
+
+def test_reviewer_scope_hint_enters_prompt(tmp_path):
+    """qwen3.6 真机回归：事件级审校必须带「片段范围」说明，否则模型把单事件当
+    整章、拿整章细纲对照报「细纲未覆盖」误 block → 修订污染事件边界。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    seen = {}
+
+    class CaptureLLM(_StubLLM):
+        def complete(self, req):
+            seen["prompt"] = req.messages[-1].content
+            return super().complete(req)
+
+    llm = CaptureLLM("ok")
+    scope = ("【范围说明】本次审读的是本章第 2/3 个事件的正文片段（本章尚未写完）。"
+             "本章后续事件的内容尚未出现，不构成「细纲未覆盖」。")
+    Reviewer(ws, pid, llm).review("正文", 1, 1, scope=scope)
+    assert "第 2/3 个事件" in seen["prompt"]
+    assert "后续事件的内容尚未出现" in seen["prompt"], "片段语义必须写进 prompt"
 
 
 def test_run_consistency_without_llm_is_rule_layer_only(tmp_path):
