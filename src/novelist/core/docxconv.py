@@ -708,10 +708,40 @@ def _looks_block_start(line: str) -> bool:
 
 # ---- XML 生成
 
+# ---- OOXML 元素顺序（严格）
+
+# Word 对 pPr/rPr/tblPr 的子元素**顺序**敏感：乱序会直接报"文件损坏"，
+# 而 XML 解析器不会报错——所以这类 bug 单元测试抓不到，必须靠顺序表兜住。
+# 下表是 CT_PPr / CT_RPr / CT_TblPr 的 sequence 定义（ECMA-376 Part 1）。
+_PPR_ORDER = (
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr",
+    "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs",
+    "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct",
+    "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+    "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents",
+    "suppressOverlap", "jc", "textDirection", "textAlignment",
+    "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr",
+    "pPrChange",
+)
+_RPR_ORDER = (
+    "rStyle", "rFonts", "b", "bCs", "i", "iCs", "caps", "smallCaps", "strike",
+    "dstrike", "outline", "shadow", "emboss", "imprint", "noProof",
+    "snapToGrid", "vanish", "webHidden", "color", "spacing", "w", "kern",
+    "position", "sz", "szCs", "highlight", "u", "effect", "bdr", "shd",
+    "fitText", "vertAlign", "rtl", "cs", "em", "lang", "eastAsianLayout",
+    "specVanish", "oMath",
+)
+_TBLPR_ORDER = (
+    "tblStyle", "tblpPr", "tblOverlap", "bidiVisual", "tblStyleRowBandSize",
+    "tblStyleColBandSize", "tblW", "jc", "tblCellSpacing", "tblInd",
+    "tblBorders", "shd", "tblLayout", "tblCellMar", "tblLook",
+)
+
+
 def _rpr_xml(*, font: str, ascii_font: str, size: int, bold: bool = False,
              italic: bool = False, strike: bool = False, mono: bool = False,
              color: str = "", href: str = "", rstyle: str = "") -> str:
-    """生成 w:rPr（元素顺序敏感：rStyle→rFonts→b→i→strike→color→sz）。
+    """生成 w:rPr（元素顺序敏感，见 `_RPR_ORDER`：rStyle→rFonts→b→i→strike→color→sz→u）。
 
     **格式下沉原则**：标题加粗、引用斜体这类"整段一致"的格式走 `w:pStyle`
     （见 `_styles_xml`），不在 run 上写 `w:b`/`w:i`。否则 docx→md 读回时
@@ -730,13 +760,14 @@ def _rpr_xml(*, font: str, ascii_font: str, size: int, bold: bool = False,
         parts.append("<w:i/><w:iCs/>")
     if strike:
         parts.append("<w:strike/>")
+    if href:
+        color = "0563C1"          # 链接色覆盖传入色（color 须在 u 之前）
     if color:
         parts.append(f'<w:color w:val="{_esc(color)}"/>')
     parts.append(f'<w:sz w:val="{size}"/><w:szCs w:val="{size}"/>')
     if href:
-        # 超链接样式：下划线 + 蓝字（不引外部样式表，直接内联属性）
+        # 超链接样式：下划线 + 蓝字。u 必须在 sz/szCs 之后（见 _RPR_ORDER）
         parts.append('<w:u w:val="single"/>')
-        parts.append('<w:color w:val="0563C1"/>')
     return "<w:rPr>" + "".join(parts) + "</w:rPr>"
 
 
@@ -820,8 +851,8 @@ def _block_xml(b: _Block, *, cfg: "_WriteCfg", page_break: bool = False) -> str:
         out = []
         for line in b.text.split("\n"):
             out.append(
-                '<w:p><w:pPr><w:spacing w:line="240" w:lineRule="auto"/>'
-                '<w:shd w:val="clear" w:fill="F2F2F2"/>'
+                '<w:p><w:pPr><w:shd w:val="clear" w:fill="F2F2F2"/>'
+                '<w:spacing w:line="240" w:lineRule="auto"/>'
                 '<w:ind w:left="360" w:right="360"/></w:pPr>'
                 + _runs_xml([_Span(line)], font=font, ascii_font=afont,
                             size=20, mono=True, links=cfg.links)
@@ -830,16 +861,16 @@ def _block_xml(b: _Block, *, cfg: "_WriteCfg", page_break: bool = False) -> str:
 
     if b.kind == "quote":
         ppr = ('<w:pPr><w:pStyle w:val="Quote"/>'
-               '<w:ind w:left="720" w:right="360"/>'
-               '<w:spacing w:before="120" w:after="120"/></w:pPr>')
+               '<w:spacing w:before="120" w:after="120"/>'
+               '<w:ind w:left="720" w:right="360"/></w:pPr>')
         return f"<w:p>{ppr}{_runs_xml(b.spans, font=cfg.font_quote, ascii_font=afont, size=22, links=cfg.links)}</w:p>"
 
     if b.kind in ("ul", "ol"):
         out = []
         for idx, item in enumerate(b.items, 1):
             marker = f"{idx}. " if b.kind == "ol" else "• "
-            ppr = ('<w:pPr><w:ind w:left="720" w:hanging="360"/>'
-                   '<w:spacing w:line="300" w:lineRule="auto"/></w:pPr>')
+            ppr = ('<w:pPr><w:spacing w:line="300" w:lineRule="auto"/>'
+                   '<w:ind w:left="720" w:hanging="360"/></w:pPr>')
             spans = [_Span(marker)] + item
             out.append(f"<w:p>{ppr}{_runs_xml(spans, font=font, ascii_font=afont, size=22, links=cfg.links)}</w:p>")
         return "".join(out)
@@ -853,7 +884,7 @@ def _block_xml(b: _Block, *, cfg: "_WriteCfg", page_break: bool = False) -> str:
         col_w = max(int(8390 / width), 720)
         grid = "".join(f'<w:gridCol w:w="{col_w}"/>' for _ in range(width))
         tblpr = (f"<w:tblPr><w:tblW w:w=\"{col_w * width}\" w:type=\"dxa\"/>"
-                 f'<w:tblLayout w:type="fixed"/>{_TBL_BORDERS}</w:tblPr>')
+                 f'{_TBL_BORDERS}<w:tblLayout w:type="fixed"/></w:tblPr>')
         body = []
         for ri, row in enumerate(rows):
             cells = []
@@ -902,12 +933,12 @@ def _styles_xml(cfg: _WriteCfg) -> str:
         rpr = _rpr_xml(font=font, ascii_font=afont, size=size, bold=bold,
                        italic=italic, color=color)
         ppr_bits = []
-        if outline is not None:
-            ppr_bits.append(f'<w:outlineLvl w:val="{outline}"/>')
-        if jc:
-            ppr_bits.append(f'<w:jc w:val="{jc}"/>')
         if spacing:
             ppr_bits.append(spacing)
+        if jc:
+            ppr_bits.append(f'<w:jc w:val="{jc}"/>')
+        if outline is not None:
+            ppr_bits.append(f'<w:outlineLvl w:val="{outline}"/>')
         ppr = f"<w:pPr>{''.join(ppr_bits)}</w:pPr>" if ppr_bits else ""
         dflt = '<w:default w:val="1"/>' if default else ""
         return (f'<w:style w:type="paragraph" w:styleId="{sid}">'
