@@ -42,6 +42,11 @@
               "ch": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "t": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "故事内相对天数（ADR-019 时间轴，chronicler 章末/视角条目携带）"
               }
             },
             "additionalProperties": false
@@ -79,6 +84,29 @@
           },
           "hash": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "ADR-020 N4 视角记忆条目标记（perspective）；普通经历条目缺省"
+          },
+          "stance": {
+            "type": "string",
+            "description": "N4 该角色对本事件的立场/情绪"
+          },
+          "perspective": {
+            "type": "string",
+            "description": "N4 该角色视角的事件概述（160 字内）"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "N4 事件中涉及的关系变化"
+          },
+          "event_ref": {
+            "type": "string",
+            "description": "N4 回指 plot_events 的事件 id（支撑按需重读章节）"
           }
         },
         "additionalProperties": false
