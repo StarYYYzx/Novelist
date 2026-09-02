@@ -167,7 +167,9 @@ def test_parse_cast_decl():
 
 
 def test_jit_characters_fills_missing(tmp_path):
-    """递归分层 A：细纲声明出场但缺卡 → LLM 补全并写入 characters.json。"""
+    """递归分层 A（ADR-022 后 JIT 降级为告警器）：细纲声明出场但缺卡 →
+    不再 LLM 补卡写卡（追认通道关死，与 P0-B 合围），缺名转角色工厂需求队列。"""
+    from novelist.core.character_factory import load_queue
     from novelist.core.orchestrator import _jit_characters
 
     ws, pid = _project(tmp_path)
@@ -180,14 +182,16 @@ def test_jit_characters_fills_missing(tmp_path):
     n = _jit_characters(ws, pid, 1, 2,
                         "出场人物: [赵铁山]\nkey_events: [室友帮叶岚带早饭]",
                         llm)
-    assert n == 1
+    assert n == 1  # 入队数 = 缺卡数
     chars = json.loads(ws._abs(f"{pid}/bible/characters.json").read_text(encoding="utf-8"))
     names = {c["name"] for c in chars}
-    assert "赵铁山" in names
-    zhao = next(c for c in chars if c["name"] == "赵铁山")
-    assert zhao["id"].startswith("char:jit") and zhao["first_appear"]["ch"] == 2
-    # 再次调用（卡已存在）→ 不重复补
+    assert "赵铁山" not in names  # 卡未被追认写档（留给工厂正面登记）
+    needs = load_queue(ws, pid)
+    assert len(needs) == 1 and needs[0].source == "jit_alarm"
+    assert "赵铁山" in needs[0].description and needs[0].vol == 1 and needs[0].ch == 2
+    # 再次调用（缺卡需求已在队）→ 幂等，不重复入队
     assert _jit_characters(ws, pid, 1, 3, "出场人物: [赵铁山]", llm) == 0
+    assert len(load_queue(ws, pid)) == 1
 
 
 # ---------------------------------------------------------------- 递归分层 B：世界观补充

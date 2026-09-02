@@ -33,3 +33,6 @@ novel_workspace/_harness/run_t5_log.jsonl
 
 # docx 互转样例产物（演示用，非源码）
 novel_workspace/_harness/docx_sample/
+
+# 用户手稿测试目录（test_noval 为用户亲手写的测试稿，只读不提交）
+tests/test_noval/

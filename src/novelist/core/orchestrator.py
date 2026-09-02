@@ -32,7 +32,7 @@ class ProductionResult:
                  mode: str = "tool", *, bible_injected: bool = False, attempts: int = 1,
                  completeness: dict | None = None, polish=None, chronicle=None,
                  review_blocks: int = 0, events_revised: int = 0, lessons_added: int = 0,
-                 jit_added: int = 0, settings_pending: int = 0,
+                 jit_added: int = 0, settings_pending: int = 0, factory_added: int = 0,
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
                  phase: str = "writing", phase_reason: str = "",
                  length_truncated: bool = False, events_capped: int = 0,
@@ -54,6 +54,7 @@ class ProductionResult:
         self.lessons_added = lessons_added      # 本轮沉淀的历史教训数
         self.jit_added = jit_added              # 本轮 JIT 补卡数（递归分层 A）
         self.settings_pending = settings_pending  # 本轮设定待确认数（P0-B 闸门，settings_pending.json）
+        self.factory_added = factory_added  # 本轮角色工厂注册数（ADR-022，含队列消化）
         self.entity_new = entity_new            # 本轮新增实体数（统一实体追踪）
         self.entity_alerts = entity_alerts or []  # 本轮实体预算告警
         self.phase = phase                      # 本卷阶段：opening | writing | tail（第九批）
@@ -655,22 +656,21 @@ def parse_cast_decl(gist_text: str) -> list[str]:
 
 
 def _jit_characters(ws, project_id: str, vol: int, ch: int, gist_text: str, provider):
-    """人物 JIT 补卡（递归分层 A）：细纲声明出场但 bible 缺卡 → LLM 补全并写入。
+    """人物缺卡告警（ADR-022 拍板后 JIT 补卡**降级为告警器**）。
 
-    - 补卡吸收前文实际发展（arc 基于已有事件滚动，而非 setup 时预测）；
-    - 补卡走 schema（id/name/status/gender/power/arc/first_appear…）；
-    - 失败静默返回 0（不阻断生成）。
+    细纲声明出场但 bible 缺卡 → 不再 LLM 补卡入库（字面追认通道关死，与 P0-B 合围），
+    改为：告警 + 缺名转角色工厂需求队列（source=jit_alarm），由工厂 `drain_queue`
+    按配额生产注册。provider 参数保留兼容旧签名（已不使用）。
+    返回入队需求数（0 = 无缺卡）。
     """
     names = parse_cast_decl(gist_text)
-    if not names or provider is None:
+    if not names:
         return 0
     try:
         import json as _json
 
-        chars_path = ws._abs(f"{project_id}/bible/characters.json")
-        chars = []
-        if chars_path.exists():
-            chars = _json.loads(chars_path.read_text(encoding="utf-8")) or []
+        chars = _json.loads(ws._abs(f"{project_id}/bible/characters.json").read_text(
+            encoding="utf-8")) if ws._abs(f"{project_id}/bible/characters.json").exists() else []
         existing = set()
         for c in chars if isinstance(chars, list) else []:
             if isinstance(c, dict) and c.get("name"):
@@ -680,68 +680,21 @@ def _jit_characters(ws, project_id: str, vol: int, ch: int, gist_text: str, prov
         missing = [n for n in names if n not in existing]
         if not missing:
             return 0
+        from .character_factory import CharacterNeed, load_queue, queue_need
 
-        # 前情摘要：让补卡吸收前文实际发展（滚动设计）
-        recall = _recall_for(ws, project_id, "，".join(missing), None, top_k=3)
-        recall_block = "\n".join(recall) if recall else "（无前情记录，人物首秀）"
-        prompt = (
-            f"你是人物设定师。为下面的角色补全人物卡（他们将在第 {vol} 卷第 {ch} 章首次出场）："
-            f"【{'、'.join(missing)}】\n"
-            f"前情（已发生的事件，人物卡须与之不冲突）：\n{recall_block}\n\n"
-            f"输出 JSON 数组，每个元素一张人物卡，字段：\n"
-            f'{{"name": "角色名", "gender": "male|female|unknown", "age": 数字或null, '
-            f'"species": "种族（如人族/妖族）", "core_traits": ["性格1","性格2"], '
-            f'"power": {{"level": "境界或实力", "faction": "阵营"}}, '
-            f'"arc": "一句话人物弧线（基于前情，可滚动）", '
-            f'"first_appear": {{"vol": {vol}, "ch": {ch}}}, '
-            f'"status": "active", "aliases": []}}\n'
-            f"只输出 JSON 数组，不要解释。"
-        )
-        res = provider.complete(LLMRequest(
-            messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=800, temperature=0.5, response_format="json_object"))
-        if res.blocked or not (res.content or "").strip():
+        # 幂等：同名缺卡需求已在队列（上章未消化）→ 不重复入队
+        tag = "细纲声明出场但 bible 缺卡："
+        queued_names = {q.description[len(tag):] for q in load_queue(ws, project_id)
+                        if q.source == "jit_alarm" and q.description.startswith(tag)}
+        missing = [n for n in missing if n not in queued_names]
+        if not missing:
             return 0
-        data = _json.loads(res.content.strip())
-        if not isinstance(data, list):
-            data = [data]
-        n = 0
-        for card in data:
-            if not isinstance(card, dict) or not card.get("name"):
-                continue
-            if str(card["name"]) in existing:
-                continue
-            cid = f"char:jit{len(chars) + n + 1}"
-            new_card = {
-                "id": cid,
-                "name": str(card["name"]),
-                "aliases": [str(a) for a in (card.get("aliases") or [])],
-                "gender": card.get("gender") if card.get("gender") in ("male", "female") else "unknown",
-                "species": str(card.get("species") or "人族"),
-                "age": card.get("age"),
-                "core_traits": [str(x) for x in (card.get("core_traits") or [])][:5],
-                "power": {"level": str(card.get("power", {}).get("level") or ""),
-                          "faction": str(card.get("power", {}).get("faction") or "")},
-                "arc": str(card.get("arc") or ""),
-                "first_appear": {"vol": vol, "ch": ch},
-                "status": "active",
-                "relationships": [],
-            }
-            chars.append(new_card)
-            existing.add(str(card["name"]))
-            n += 1
-        if n:
-            chars_path.write_text(_json.dumps(chars, ensure_ascii=False, indent=2),
-                                  encoding="utf-8")
-            # 新人物进 worldstate（init_from_bible 不覆盖已有状态）
-            try:
-                from .worldstate import init_from_bible
-
-                init_from_bible(ws, project_id)
-            except Exception:  # noqa: BLE001
-                pass
-        return n
-    except Exception:  # noqa: BLE001 - 补卡失败不阻断生成
+        for n in missing:
+            queue_need(ws, project_id, CharacterNeed(
+                role="细纲声明出场（职能未指明）", description=f"{tag}{n}",
+                source="jit_alarm", vol=vol, ch=ch))
+        return len(missing)
+    except Exception:  # noqa: BLE001 - 告警失败不阻断生成
         return 0
 
 
@@ -1108,12 +1061,23 @@ def produce_chapter(
     except Exception:  # noqa: BLE001
         gist_text_for_events = ""
 
-    # 递归分层 A（第七批第 5 条·用户拍板）：人物 JIT 补卡——细纲声明出场但 bible 缺卡，
-    # 生成前先补全（出场即建档，防造人红线）。补卡吸收前文实际发展（滚动设计）。
+    # 递归分层 A（第七批第 5 条·用户拍板；ADR-022 后降级为告警器）：细纲声明出场但 bible
+    # 缺卡 → 不再补卡，告警 + 缺名转角色工厂需求队列（追认通道关死，与 P0-B 合围）。
     jit_added = 0
     settings_pending = 0  # P0-B：未命中名册、进 settings_pending.json 待人工确认数
     if jit_characters:
         jit_added = _jit_characters(ws, project_id, vol, ch, gist_text_for_events, provider)
+    # 角色工厂（ADR-022，M3q）：章前消化需求队列（JIT 告警/广播/CLI 转介），
+    # 按每章配额生产注册；失败静默不阻断生成。
+    factory_added = 0
+    if provider is not None:
+        try:
+            from .character_factory import drain_queue as _factory_drain
+
+            factory_added = sum(1 for r in _factory_drain(ws, project_id, provider,
+                                                          vol=vol, ch=ch) if r.ok)
+        except Exception:  # noqa: BLE001
+            factory_added = 0
     if system_prompt is None and final_goal is None and inject_bible:
         try:
             # 历史教训不进 system prompt（第 8 轮 RAG 化后死参数已删，审计 §2.1）——
@@ -1674,6 +1638,7 @@ def produce_chapter(
                             review_blocks=review_blocks, events_revised=events_revised,
                             lessons_added=lessons_added, jit_added=jit_added,
                             settings_pending=settings_pending,
+                            factory_added=factory_added,
                             entity_new=entity_new, entity_alerts=entity_alerts,
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
                             length_truncated=length_truncated, events_capped=events_capped,
