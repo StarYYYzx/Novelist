@@ -738,6 +738,26 @@ zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `co
 `novelist forge ingest <目录>`（`_gather_files` 收 .md/.txt，天然兼容）；
 成稿 `novelist export --output book.md` 后再 `docx to-docx`。
 
+### M3p — P0 闸门落地（2026-09-02 用户拍板开工；P0-A 之外 ✅ 已完成）
+
+依据 `prompt作用审计.md` 优先级表：修复重心不是改 prompt 文案，而是
+**补数据（P0-A）+ 加确定性闸门（P0-B/C）+ 删死代码（P1-F）**。
+本轮先落代码侧（可测试闭环），数据侧 P0-A 随后单独做。
+
+| 项 | 实现 | 提交 |
+| --- | --- | --- |
+| **P1-F** lessons 死参数 | `build_system_prompt`/`build_chapter_context` 删 lessons 形参（第 8 轮 RAG 化后函数体零引用）；review_lessons.json 仍走 knowledge.py 检索 | 0d382f0 |
+| **P0-B** 设定追认闸门 | `_supplement_settings` 改纯提案器：新词一律进 `bible/settings_pending.json` 待人工确认，绝不自动入档；items/skills 名册纳入已知词（强化符钻的洞）；CLI `settings-pending --allow/--deny` 人工转正；指标 `settings_added`→`settings_pending`（含审计双落） | 0d382f0 |
+| **P0-C** 编纂员入库闸门 | chronicler `commit` 三道确定性闸门：① 强成段地名未登记 → 事件拒收；② realm 值须过 `parse_realm`（worldview 境界表），体系外丢弃+warning；③ 近似去重（二元组 Jaccard ≥0.45 + 共同参与者）；报告新增 `rejected` 全程披露 | 4dbc703 |
+
+**验收**：新测试 9 条（`tests/test_p0_gates.py`）+ 2 条旧测试语义更新
+（m9 supplement 转待确认语义、m4 重复回退双路径）；全量 **482 passed, 0 failed**。
+
+**关联决策**：世界广播/角色工厂联动用户拍板——广播=需求匹配器（池内找人优先），
+工厂=缺货补货通道（生产→闸门→自动注册 active→本事件可入场），见 ADR-021/022
+修订（2c5b74c）。**待做**：P0-A bible 数据补喂（yelan3：set:wuwu 协议条款/
+26 卡 relationships/worldview 境界压制）；角色工厂实施（ADR-022，依赖 P0-A）。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
