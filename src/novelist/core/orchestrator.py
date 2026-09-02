@@ -1643,4 +1643,6 @@ def produce_chapter(
                             entity_new=entity_new, entity_alerts=entity_alerts,
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
                             length_truncated=length_truncated, events_capped=events_capped,
-                            pending_tick=pending_tick)
+                            pending_tick=pending_tick,
+                            chapter_title=chapter_title, directions_built=directions_built,
+                            perspectives_written=perspectives_written)

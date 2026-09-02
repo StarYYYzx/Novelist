@@ -343,3 +343,81 @@ def test_completeness_detects_duplicate_paragraphs():
     comp = completeness(body)
     assert comp["dup_paragraphs"] >= 2
     assert comp["dup_sentences"] >= 2
+
+
+# ---------------------------------------------------------------- 回归：ADR-020 计数器回传
+
+def _seq_llm(replies):
+    """队列式 LLM 替身：逐次弹出固定回复，并记录每次调用的最后一条 user 内容。"""
+    from novelist.core.llm import LLMResult
+
+    class _Seq:
+        def __init__(self):
+            self.replies = list(replies)
+            self.calls: list[str] = []
+
+        def complete(self, req):
+            self.calls.append(req.messages[-1].content if req.messages else "")
+            if not self.replies:
+                return LLMResult(ok=True, content="", finish_reason="stop", blocked=False)
+            return LLMResult(ok=True, content=self.replies.pop(0),
+                             finish_reason="stop", blocked=False)
+
+    return _Seq()
+
+
+def test_event_loop_adr020_counters_reach_result(ws_factory, write_json):
+    """端到端回归（2026-09-02 真机发现）：produce_chapter 出口的 ProductionResult
+    构造漏传 chapter_title / directions_built / perspectives_written → 恒为 0。
+    必须整链路断言计数器回传，不能只测单函数。"""
+    from novelist.core.orchestrator import produce_chapter
+    from novelist.core.session import SessionInfo
+
+    ws, pid = ws_factory()
+    _seed_chars(ws, pid, write_json)
+    gist = ws.outline_chapter_path(pid, 1, 1)
+    gist.parent.mkdir(parents=True, exist_ok=True)
+    # key_events 文本含圣经人物名（叶岚/苏晚）→ cast_from_text 兜底命中
+    gist.write_text(
+        "---\nvol: 1\nch: 1\ntitle: 弃徒\n"
+        "key_events: [叶岚下山拾玉, 叶岚与苏晚月下夜谈]\n---\n\n正文要点",
+        encoding="utf-8")
+
+    # 每事件 5 次：调度(direction) → 正文(gen) → 审校(ok) → 编纂(chronicler) → 视角(perspectives)
+    # 2 事件 = 10 次 + 章末拟题 1 次
+    llm = _seq_llm([
+        # ---- event 1 ----
+        "叶岚 | 冷静、心机深 | 话少先观察 | 不得自曝穿越\n"
+        "苏晚 | 刚烈、护短 | 暗中跟随 | 不得示弱",                       # 调度单
+        "叶岚下了山，在山道旁拾起半枚焦黑玉佩，掌心发烫，他垂眼收进怀里。",  # 正文
+        "ok",                                                            # 审校（无 block）
+        "拾玉 | discovery | 叶岚",                                      # 编纂
+        "叶岚 | 警觉 | 这玉佩来得蹊跷 | 苏晚：无\n"                       # 视角
+        "苏晚 | 好奇 | 想追问却忍住了 | 叶岚：更神秘了",
+        # ---- event 2 ----
+        "叶岚 | 冷静、心机深 | 试探苏晚来历 | 不得说出前世记忆\n"
+        "苏晚 | 刚烈、护短 | 咬唇不语 | 不得泄露宗门密辛",                # 调度单
+        "入夜，两人在月下相对。叶岚试探着问起玉佩，苏晚别开脸，只说不知。",  # 正文
+        "ok",                                                            # 审校
+        "夜谈 | plot | 叶岚、苏晚",                                     # 编纂
+        "叶岚 | 审慎 | 苏晚有所隐瞒 | 苏晚：防备\n"                       # 视角
+        "苏晚 | 挣扎 | 玉佩涉及宗门旧案，不能说 | 叶岚：愧疚",
+        # ---- 章末拟题 ----
+        "月下试探",                                                      # _title_chapter
+    ])
+    res = produce_chapter(
+        ws, pid, 1, 1, llm, prefer_direct=True,
+        inject_bible=False, event_loop=True, commit_chapter_event=False,
+        knowledge_llm=False, event_polish=False, supplement_settings=False,
+        session=SessionInfo(project_id=pid, agent="t"),
+        # ADR-020 四件套全开（default 即开，显式写出强调本测试意图）
+        defer_title=True, cast_injection=True,
+        character_direction=True, perspective_memory=True)
+    assert res.ok, res.result
+    assert res.directions_built == 2, f"调度单计数必须回传，实际 {res.directions_built}"
+    assert res.perspectives_written >= 2, \
+        f"视角条数必须回传，实际 {res.perspectives_written}"
+    assert res.chapter_title == "月下试探", f"拟题必须回传，实际 {res.chapter_title!r}"
+    # 标题应写回草稿首行（_apply_chapter_title 副作用不受出口漏传影响）
+    draft = ws.draft_path(pid, 1, 1)
+    assert draft.exists() and "月下试探" in draft.read_text(encoding="utf-8")
