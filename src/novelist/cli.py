@@ -1009,6 +1009,66 @@ def server(ctx: click.Context, host: str, port: int) -> None:
     uvicorn.run("novelist.server:app", host=host, port=port, reload=False)
 
 
+@cli.group()
+def docx() -> None:
+    """Markdown ⇄ Word(.docx) 互转（M3o，零第三方依赖）。
+
+    转出的 md 可直接喂 `novelist forge ingest <目录>` 进系统接着写；
+    成稿可用 `novelist export --output book.md` 导出后转 docx 交付。
+    """
+
+
+@docx.command("to-md")
+@click.argument("src", type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "out", default=None, help="输出 .md 路径（缺省与源文件同目录同名）")
+@click.option("--media-dir", default=None, help="图片导出目录（缺省 <源文件名>_media/）")
+@click.option("--no-media", is_flag=True, default=False, help="不导出图片")
+def docx_to_md(src: str, out: str | None, media_dir: str | None, no_media: bool) -> None:
+    """Word(.docx) → Markdown：标题级别/粗斜体/表格/列表/链接均保留。"""
+    import pathlib
+
+    from novelist.core.docxconv import DocxConvError, docx_to_markdown
+
+    p = pathlib.Path(src)
+    dst = pathlib.Path(out) if out else p.with_suffix(".md")
+    try:
+        text = docx_to_markdown(p, media_dir=media_dir, extract_media=not no_media)
+    except DocxConvError as e:
+        raise click.ClickException(str(e)) from e
+    if dst.parent and str(dst.parent) not in ("", "."):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(text, encoding="utf-8")
+    click.echo(f"{p.name} → {dst}（{len(text)} 字符）")
+    click.echo(f"接着写：`novelist forge ingest {dst.parent}` 或把该 md 拷入稿子目录")
+
+
+@docx.command("to-docx")
+@click.argument("src", type=click.Path(exists=True, dir_okay=False))
+@click.option("--output", "out", default=None, help="输出 .docx 路径（缺省与源文件同目录同名）")
+@click.option("--title", default=None, help="书名（缺省取首个 H1 作书名页）")
+@click.option("--font-body", default="宋体", help="正文中文字体")
+@click.option("--font-heading", default="黑体", help="标题中文字体")
+@click.option("--no-indent", is_flag=True, default=False, help="关闭正文首行缩进两字符")
+@click.option("--no-page-break", is_flag=True, default=False, help="章首不另起一页")
+def docx_from_md(src: str, out: str | None, title: str | None, font_body: str,
+                 font_heading: str, no_indent: bool, no_page_break: bool) -> None:
+    """Markdown → Word(.docx)：宋体小四 / 1.5 倍行距 / 首行缩进 / 章首分页。"""
+    import pathlib
+
+    from novelist.core.docxconv import DocxConvError, markdown_to_docx
+
+    p = pathlib.Path(src)
+    dst = pathlib.Path(out) if out else p.with_suffix(".docx")
+    try:
+        markdown_to_docx(p.read_text(encoding="utf-8"), dst, title=title,
+                         font_body=font_body, font_heading=font_heading,
+                         indent=not no_indent,
+                         chapter_page_break=not no_page_break)
+    except DocxConvError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"{p.name} → {dst}（{dst.stat().st_size} 字节）")
+
+
 def _locate_project(root) -> str:
     """在当前根下定位唯一项目 id（首层子目录中含 project.json 的）。"""
     import pathlib

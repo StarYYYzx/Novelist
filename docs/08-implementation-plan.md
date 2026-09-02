@@ -690,6 +690,40 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
 与 front-matter；M19 24 例 + 存量全量 **438 passed（2 deselected）**；5 个旧脚本化测试显式关
 开关不回归。
 
+### M3o — Markdown ⇄ Word(.docx) 互转（2026-09-02 用户新增需求）✅ 已完成
+
+**需求**：系统两端都要能接 Word——① 已有 Word 稿转 md 喂进系统接着写；② 成稿输出 Word 交付。
+用户明确范围：**只做互转本身**（不改造 ingest 切片逻辑与 export 发布包结构）。
+
+**选型：零第三方依赖**。项目依赖刻意精简（pyproject 只有 click/pydantic/fastapi/
+jsonschema/structlog），python-docx 未安装且会引入 lxml 传递依赖。docx 本质是
+zip + OOXML，用 stdlib `zipfile` + `xml.etree` 直读直写即可，产出 `core/docxconv.py`。
+
+| 能力 | 实现 | 关键点 |
+| --- | --- | --- |
+| docx → md | `docx_to_markdown()` | 标题靠 `w:outlineLvl` / 样式名（Heading N / 标题 N）三级判定；粗斜体/链接/表格/列表（按 numbering.xml 判 bullet vs decimal）还原；图片抽到 `<stem>_media/` 并写相对引用 |
+| md → docx | `markdown_to_docx()` | 首个 H1 升格书名页 + 每个 H1 段前分页；正文宋体小四 / 1.5 倍行距 / 两端对齐 / **首行缩进两字符**；表格用原生 `w:tbl`；链接生成真 `w:hyperlink` + 外部关系 |
+| CLI | `novelist docx to-md` / `to-docx` | 输出路径缺省同目录同名换后缀；字体/缩进/分页可配 |
+
+**四个必须记住的坑**（都写了回归测试）：
+
+1. **格式下沉到样式，run 级不放**。标题加粗、引用斜体若写在 `w:rPr/w:b` 上，
+   docx→md 读回会被还原成 `**标题**`，往返不干净——且转出的 md 要喂回 ingest，
+   `**` 会污染语料。正解是写进 `styles.xml` 的 Heading/Quote 样式，run 只留文本。
+2. **行内代码靠字符样式往返**。`CodeChar` 字符样式打标记，读侧识别后重加反引号；
+   否则 mono 字体在 docx 里无从还原。
+3. **XML 非法控制字符必须剔除**（`_xml_safe`）。模型偶发的 0x0B/0x0C 会让 Word
+   直接报"文件损坏"，这是转换类代码最常见的翻车点。
+4. **相邻 `w:tbl` 之间要插空段落**，否则 Word 判定包损坏。
+
+**验收**：22 条新测试（`tests/test_m20_docxconv.py`，含手工构造极简 docx 精确测读侧）；
+真机跑 yelan3 五章 16695 字往返——去空白后 15681 字符**零丢失**，5 个章标题 +
+书名页结构保真、关键实体无缺失。全量 **468 passed, 0 failed**。
+
+**与既有流程的接缝**（未改动，仅路径指引）：转出的 md 直接喂
+`novelist forge ingest <目录>`（`_gather_files` 收 .md/.txt，天然兼容）；
+成稿 `novelist export --output book.md` 后再 `docx to-docx`。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
