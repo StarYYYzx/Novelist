@@ -118,6 +118,8 @@ class ChroniclerReport:
     written: int = 0
     conflicts: list[str] = field(default_factory=list)
     events: list[ExtractedEvent] = field(default_factory=list)
+    # P0-C 入库闸门：被拦下未写入的事件（理由随行披露）
+    rejected: list[str] = field(default_factory=list)
     # 世界状态变更（B-STATE）：char_id -> 本轮合并进 worldstate 的字段
     state_updates: dict[str, dict] = field(default_factory=dict)
     # 伏笔流转（暗线）：本轮 planted→active 的伏笔数
@@ -323,6 +325,21 @@ class Chronicler:
         deltas_by_char: dict[str, dict] = {}
         for cid, delta in (state_changes or []):
             deltas_by_char.setdefault(cid, {}).update(delta)
+        deltas_by_char = dict(self._gate_state(list(deltas_by_char.items()), report))
+
+        # P0-C 闸门 1+3：地点名册核对 + 近似事件去重（确定性，宁缺勿错记）
+        registered = self._register_terms()
+        gated: list[ExtractedEvent] = []
+        for ev in events:
+            reason = self._gate_location(ev.summary, registered)
+            if reason:
+                report.rejected.append(f"[{vol}:{ch}] {ev.summary[:30]} :: {reason}")
+                continue
+            gated.append(ev)
+        gated, dup_warns = self._gate_near_dup(gated)
+        for w in dup_warns:
+            report.rejected.append(f"[{vol}:{ch}] {w}")
+        events = gated
 
         # 暗线：先做伏笔↔事件关联与状态流转，再写入（affected_threads 非空才有闭环）
         report.threads_activated = self._link_threads(events, vol, ch, payoff=payoff)
@@ -369,6 +386,120 @@ class Chronicler:
                 if applied:
                     report.state_updates[cid] = applied
         return report
+
+    # ---- P0-C 入库闸门（确定性，零调用）----
+
+    # 强"成段地名"后缀：正常叙事散文里几乎只在**命名一个地点**时出现；
+    # 未登记却命中 → 大概率是模型张冠李戴/凭空造地（v7 实测："外山打斗"被抽成
+    # "鬼面跌出秘境"）。泛用方位词（大殿/山下/城中）不在此列，防误伤。
+    _LOCATION_STRONG = ("秘境", "洞府", "坊市", "禁地", "遗址", "遗迹", "幻境",
+                        "地宫", "皇陵", "墓穴", "秘府", "福地", "洞天")
+
+    def _register_terms(self) -> set[str]:
+        """全名册词集（characters/locations/items/skills/settings + 别名），地点闸门白名单。"""
+        import json as _json
+
+        terms: set[str] = set()
+        for rel in ("characters.json", "locations.json", "items.json",
+                    "skills.json", "settings.json"):
+            p = self.ws._abs(f"{self.project_id}/bible/{rel}")
+            try:
+                data = _json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+            except (ValueError, OSError):
+                data = None
+            for e in data if isinstance(data, list) else []:
+                if isinstance(e, dict):
+                    for k in ("name", "term"):
+                        if e.get(k):
+                            terms.add(str(e[k]))
+                    for a in (e.get("aliases") or []) + (e.get("keywords") or []):
+                        if a:
+                            terms.add(str(a))
+        return terms
+
+    def _gate_location(self, summary: str, registered: set[str]) -> str | None:
+        """地点名册闸门：summary 命中强地名后缀且不在名册 → 拒收理由；否则 None。"""
+        import re as _re
+
+        for m in _re.finditer(r"[\u4e00-\u9fa5]{0,4}(?:" + "|".join(self._LOCATION_STRONG) + r")",
+                              summary):
+            term = m.group(0)
+            # 剥掉前缀粘带（「出秘境」→「秘境」）：从右往左找名册精确命中，找不到再判
+            stripped = term
+            while stripped and stripped not in registered:
+                stripped = stripped[1:]
+            if stripped and stripped in registered:
+                continue  # 前缀剥掉后命中名册 → 是登记地点的变体引用
+            return f"地点未登记：summary 提及「{term}」但 locations 名册无此（宁缺勿错记）"
+        return None
+
+    def _gate_near_dup(self, events: list[ExtractedEvent]) -> tuple[list[ExtractedEvent], list[str]]:
+        """近似事件去重：与既有 plot_event 摘要字符二元组 Jaccard ≥0.45 且有共同参与者 → 丢。
+
+        阈值 0.45：换皮重述（"击败"→"打败了"）二元组重合约 0.45-0.6，而正常不同事件
+        远低于此。确定性近似，不需要 embedding。
+        """
+        import re as _re
+
+        def _bigrams(s: str) -> set[str]:
+            s = _re.sub(r"[\s，。！？；：、“”‘’（）()\-—]", "", s)
+            return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
+
+        path = self.ws._abs(f"{self.project_id}/memory/plot_events.json")
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        except (ValueError, OSError):
+            existing = []
+        existing = existing if isinstance(existing, list) else []
+        kept, warns = [], []
+        for ev in events:
+            bg = _bigrams(ev.summary)
+            dup = None
+            for old in existing:
+                if not isinstance(old, dict):
+                    continue
+                old_bg = _bigrams(str(old.get("summary") or ""))
+                sim = len(bg & old_bg) / max(len(bg | old_bg), 1)
+                overlap = set(ev.participant_ids) & set(old.get("participants") or [])
+                if sim >= 0.45 and overlap:
+                    dup = f"{str(old.get('summary'))[:24]}…(sim={sim:.2f})"
+                    break
+            if dup:
+                warns.append(f"近似事件去重：与既有事件 {dup} 高度相似，未入库")
+            else:
+                kept.append(ev)
+        return kept, warns
+
+    def _gate_state(self, state_changes: list[tuple[str, dict]],
+                    report: "ChroniclerReport") -> list[tuple[str, dict]]:
+        """境界变更与 R-STATE 对齐：realm 值必须能按 worldview 境界表解析，否则丢弃该字段。
+
+        v7 实测"绑定临时修为当真实 realm / 编造境界"直接进 worldstate——这里只拦
+        **体系外**表述（parse_realm 返回 None），体系内的涨跌仍由 R-STATE 单调性校验。
+        """
+        from .worldstate import parse_realm
+
+        try:
+            wv = json.loads(self.ws._abs(f"{self.project_id}/bible/worldview.json")
+                            .read_text(encoding="utf-8"))
+            levels = [str(x) for x in ((wv.get("power_system") or {}).get("levels") or [])]
+        except (ValueError, OSError, AttributeError):
+            levels = []
+        if not levels:
+            return state_changes  # 无境界表 → 无从核对，放行（初始化期允许）
+        out: list[tuple[str, dict]] = []
+        for cid, delta in state_changes or []:
+            d = dict(delta)
+            for key in list(d):
+                if key not in ("修为", "境界", "实力", "战力", "等级", "realm"):
+                    continue
+                if parse_realm(str(d[key]), levels) is None:
+                    report.warnings.append(
+                        f"境界变更不入档：{cid} 的「{d[key]}」不在境界体系内（{ '、'.join(levels) }）")
+                    del d[key]
+            if d:
+                out.append((cid, d))
+        return out
 
     # ---- 时间轴（ADR-019）----
     def _apply_pending(self, pending_lines: list[str] | None, vol: int, ch: int,

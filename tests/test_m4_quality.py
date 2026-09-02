@@ -240,7 +240,10 @@ def test_chronicler_rejects_duplicate_on_second_run(tmp_path):
     c = Chronicler(ws, pid, llm=_StubLLM("苏晚拾得断玉佩 | discovery | 苏晚\n"))
     assert c.run("正文略", 1, 1).written == 1
     second = c.run("正文略", 1, 1)
-    assert second.written == 0 and second.conflicts, "第二次应判重复并回退"
+    # P0-C 后重复由近似去重闸门先行拦截（rejected），完全同 sig 走 writer 冲突——
+    # 两条路径都保证"不静默入库"
+    assert second.written == 0 and (second.conflicts or second.rejected), \
+        "第二次应判重复并回退"
 
 
 def test_chronicler_without_llm_returns_nothing(tmp_path):
