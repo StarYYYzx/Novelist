@@ -445,3 +445,38 @@ def test_cli_ingest_dry_run(ws_factory, tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "dry-run" in result.output
     assert not ws.chapter_path(pid, 1, 1).exists()
+
+
+# ============================================================ 9. docx 源直入（M3o 互转接线）
+
+
+def test_slice_docx_source_converted(tmp_path):
+    """docx 源 → 自动转 md → 正常切章（标题行 `# 第 1 章` 兼容）。"""
+    from novelist.core.docxconv import markdown_to_docx
+
+    docx_path = markdown_to_docx(DRAFT, tmp_path / "draft.docx")
+    out, warns = slice_chapters(str(docx_path), target_words=100)
+    assert [c.title for c in out] == ["第 1 章 初入宗门", "第 2 章 出关"]
+    assert any("docx" in w for w in warns)
+    assert (tmp_path / "draft.md").exists()  # 同名 md 已生成
+
+
+def test_slice_md_with_hash_titles(tmp_path):
+    """md 源带 `#` 标题前缀（含 docx 派生）也能切章，章题剥掉 `#`。"""
+    src = _write_draft(tmp_path, "# 第 1 章 甲\n正文甲\n\n# 第 2 章 乙\n正文乙",
+                       name="h.md")
+    out, _ = slice_chapters(str(src))
+    assert [c.title for c in out] == ["第 1 章 甲", "第 2 章 乙"]
+
+
+def test_ingest_docx_source_end_to_end(ws_factory, tmp_path):
+    """word → md → ingest 全链路：docx 一条命令进系统接着写。"""
+    from novelist.core.docxconv import markdown_to_docx
+
+    docx_path = markdown_to_docx(DRAFT, tmp_path / "draft.docx")
+    ws, pid = ws_factory("proj-f3k")
+    res = run_ingest(ws, pid, str(docx_path), provider=None, genre="修仙",
+                     chapters_per_volume=20, target_words=100,
+                     mode="auto", io=FakeIO(is_tty=False))
+    assert res.ok and res.chapters_ingested == 2
+    assert ws.chapter_path(pid, 1, 1).exists()

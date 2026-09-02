@@ -61,8 +61,9 @@ _ORG_STOP = ("宗门", "宗派", "门派", "门人", "门内", "门外", "弟子
              "师尊", "宗主", "师兄", "师姐", "师弟", "师妹", "道友", "前辈",
              "同门", "众人", "天下", "世间", "王朝", "朝廷", "皇朝")
 
+# 允许 Markdown 标题前缀（docx 转出的 md 是 `# 第 1 章 …`，M3o 互转链路）
 _CHAPTER_RE = re.compile(
-    r"^\s*(?:第\s*[0-9一二三四五六七八九十百千零〇]+\s*[章回节卷]\s*\S{0,24}|"
+    r"^\s*(?:#{1,6}\s+)?(?:第\s*[0-9一二三四五六七八九十百千零〇]+\s*[章回节卷]\s*\S{0,24}|"
     r"Chapter\s+\d+[\s:：]?\S{0,24})\s*$"
 )
 # 状态词后接时长（闭关三月后出关）或时长后接状态词（三日后闭关）两种语序；
@@ -113,7 +114,7 @@ def _split_by_headers(text: str) -> list[tuple[str, str]]:
         if _CHAPTER_RE.match(line):
             if cur_title and cur:
                 chapters.append((cur_title, "\n".join(cur).strip()))
-            cur_title = line.strip()
+            cur_title = line.lstrip().lstrip("#").strip()
             cur = []
         else:
             cur.append(line)
@@ -142,25 +143,65 @@ def _split_by_words(text: str, target_words: int) -> list[tuple[str, str]]:
     return chunks
 
 
+DOCX_SUFFIXES = (".docx",)
+TEXT_SUFFIXES = (".md", ".txt")
+
+
 def _gather_files(source: str, *, recursive: bool) -> list[Path]:
-    """源：单个文件 / 目录（.md/.txt，--recursive 递归）。"""
+    """源：单个文件 / 目录（.md/.txt/.docx，--recursive 递归）。
+
+    .docx 不直接进切片：由 slice_chapters 前置转换为同名 .md（M3o 互转）。
+    """
     src = Path(source)
     if src.is_file():
-        return [src] if src.suffix.lower() in (".md", ".txt") else []
+        return [src] if src.suffix.lower() in TEXT_SUFFIXES + DOCX_SUFFIXES else []
     if src.is_dir():
         pattern = "**/*" if recursive else "*"
         return sorted(p for p in src.glob(pattern)
-                      if p.is_file() and p.suffix.lower() in (".md", ".txt"))
+                      if p.is_file() and p.suffix.lower() in TEXT_SUFFIXES + DOCX_SUFFIXES)
     return []
+
+
+def _convert_docx_files(files: list[Path]) -> tuple[list[Path], list[str]]:
+    """把列表中的 .docx 预转换为同名 .md（写源文件同目录，图片不导出）。
+
+    返回 (纯文本文件列表, 警告)。同名 .md 已存在时**覆盖**——docx 是源头，
+    md 视为派生物；这样重跑 ingest 总是与 docx 一致。
+    """
+    warns: list[str] = []
+    out: list[Path] = []
+    converted = False
+    for f in files:
+        if f.suffix.lower() != ".docx":
+            out.append(f)
+            continue
+        from novelist.core.docxconv import DocxConvError, docx_to_markdown
+
+        md_path = f.with_suffix(".md")
+        try:
+            text = docx_to_markdown(f, extract_media=False)
+        except DocxConvError as e:
+            warns.append(f"docx 转换失败，跳过 {f.name}: {e}")
+            continue
+        if md_path.exists():
+            warns.append(f"{md_path.name} 已存在，已被 docx 重新生成覆盖")
+        md_path.write_text(text, encoding="utf-8")
+        converted = True
+        out.append(md_path)
+    if converted:
+        warns.append("docx 已转 md 并入切片（图片未导出；如需调整可删生成的 .md 后改用手稿）")
+    return out, warns
 
 
 def slice_chapters(source: str, *, target_words: int = DEFAULT_WORDS_PER_CHAPTER,
                    recursive: bool = False) -> tuple[list[ChapterSlice], list[str]]:
-    """读文件 → 切章。返回 (切片列表, 文件警告)。"""
+    """读文件 → 切章。返回 (切片列表, 文件警告)。支持 .docx 源（先转 md）。"""
     files = _gather_files(source, recursive=recursive)
     if not files:
-        raise FileNotFoundError(f"ingest source 无 .md/.txt 文件: {source}")
-    warnings: list[str] = []
+        raise FileNotFoundError(
+            f"ingest source 无 .md/.txt/.docx 文件: {source}")
+    files, docx_warns = _convert_docx_files(files)
+    warnings: list[str] = list(docx_warns)
     out: list[ChapterSlice] = []
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")

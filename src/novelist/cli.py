@@ -502,12 +502,13 @@ def grant(ctx: click.Context, directory: str | None, approve_id: str | None, den
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
-@click.option("--format", "fmt", default="markdown", help="发布包格式：markdown")
-@click.option("--output", "out", default=None, help="输出文件路径；缺省打印到 stdout")
+@click.option("--format", "fmt", type=click.Choice(["markdown", "docx"]), default="markdown",
+              help="发布包格式：markdown | docx（Word 成稿，需 --output）")
+@click.option("--output", "out", default=None, help="输出文件路径；markdown 缺省打印到 stdout，docx 必填")
 @click.option("--include-drafts", is_flag=True, default=False, help="把草稿并入发布包")
 @click.pass_context
 def export(ctx: click.Context, directory: str | None, fmt: str, out: str | None, include_drafts: bool) -> None:
-    """导出发布包（docs/07 §6.1，F8.1）。"""
+    """导出发布包（docs/07 §6.1，F8.1）。fmt=docx 直接产出 Word 成稿（M3o）。"""
     from novelist.core.export import export_project
 
     ws: Workspace = ctx.obj["workspace"]
@@ -515,9 +516,21 @@ def export(ctx: click.Context, directory: str | None, fmt: str, out: str | None,
         ws = Workspace(root=directory)
     root = ws._abs("")
     project_id = _locate_project(root)
-    if fmt != "markdown":
-        raise click.ClickException(f"unsupported format: {fmt}（当前仅 markdown）")
     text = export_project(ws, project_id, include_drafts=include_drafts)
+    if fmt == "docx":
+        import os
+
+        from novelist.core.docxconv import DocxConvError, markdown_to_docx
+
+        if not out:
+            raise click.ClickException("fmt=docx 需用 --output 指定 .docx 输出路径")
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True) if os.path.dirname(out) else None
+        try:
+            path = markdown_to_docx(text, out, title=project_id)
+        except DocxConvError as e:
+            raise click.ClickException(str(e)) from e
+        click.echo(f"exported to {path}（Word 成稿，{len(text)} 字符源文本）")
+        return
     if out:
         import os
 
@@ -847,13 +860,13 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
 @click.option("--mode", type=click.Choice(["auto", "interactive"]), default="auto",
               help="interactive 且 TTY：缺口回落商讨；非 TTY 自动降级")
 @click.option("--dry-run", is_flag=True, default=False, help="只切章预览，不写库")
-@click.option("--recursive", is_flag=True, default=False, help="递归扫描子目录 .md/.txt")
+@click.option("--recursive", is_flag=True, default=False, help="递归扫描子目录 .md/.txt/.docx")
 @click.pass_context
 def forge_ingest(ctx: click.Context, source: str, directory: str | None, provider: str,
                  genre_pack: str | None, chapters_per_volume: int | None,
                  target_words: int | None, ingest_max_calls: int,
                  mode: str, dry_run: bool, recursive: bool) -> None:
-    """模式二：已有稿子 → 蓝图 + 正式章节 + 记忆初始化（F3）。
+    """模式二：已有稿子 → 蓝图 + 正式章节 + 记忆初始化（F3）。支持 .docx 源（自动转 md）。
 
     切章预览确认后：抽取（确定性优先 + LLM 补语义，独立配额降级）→ 归并消歧 →
     文风画像 → 卷章编码（chapters/<vol>-<ch>.md 已是正式章节 + 细纲 done=true）→
@@ -1013,8 +1026,10 @@ def server(ctx: click.Context, host: str, port: int) -> None:
 def docx() -> None:
     """Markdown ⇄ Word(.docx) 互转（M3o，零第三方依赖）。
 
-    转出的 md 可直接喂 `novelist forge ingest <目录>` 进系统接着写；
-    成稿可用 `novelist export --output book.md` 导出后转 docx 交付。
+    常用链路（无需单独转档）：
+    - 输入系统：`novelist forge ingest book.docx`（自动转 md → 切章 → 建档接写）
+    - 成稿交付：`novelist export --format docx --output book.docx`
+    也可单独互转：`novelist docx to-md / to-docx`。
     """
 
 
