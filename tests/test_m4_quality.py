@@ -363,6 +363,32 @@ def test_rule_lexicon_catches_western_allusion(tmp_path):
     assert any("达摩克利斯" in a.detail for a in run_lexicon_checks(ws, pid))
 
 
+def test_rule_lexicon_simile_not_disabled_by_empty_modern_words(tmp_path):
+    """v7 真机回归（ch4「指甲刮过黑板」）：穿越文 worldview.modern_words=[] 会
+    覆盖掉默认现代词表（叶岚前世的手机/电脑合理），但「黑板」这类叙事喻体
+    （修辞性现代物）必须仍被 R-LEX 拦截——喻体表独立常开。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    _write(ws, pid, "bible/worldview.json", {"modern_words": []})
+    d = ws._abs(f"{pid}/chapters")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "1-1.md").write_text("面具下传出阴冷的笑声，像指甲刮过黑板。", encoding="utf-8")
+    hits = [a for a in run_lexicon_checks(ws, pid) if "黑板" in a.detail]
+    assert hits and hits[0].level == "block", "喻体词不被 modern_words=[] 豁免"
+
+
+def test_rule_lexicon_simile_respects_exempt(tmp_path):
+    """喻体词豁免走 modern_words_exempt（与指称型同表）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    _write(ws, pid, "bible/worldview.json",
+           {"modern_words": [], "modern_words_exempt": ["黑板"]})
+    d = ws._abs(f"{pid}/chapters")
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "1-1.md").write_text("笑声像指甲刮过黑板。", encoding="utf-8")
+    assert not any("黑板" in a.detail for a in run_lexicon_checks(ws, pid))
+
+
 def test_rule_lexicon_catches_style_banned_word(tmp_path):
     ws, pid = _project(tmp_path)
     _seed(ws, pid)

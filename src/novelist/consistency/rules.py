@@ -26,8 +26,17 @@ from ..storage.workspace import Workspace
 # 现代词汇：出现在古风/修仙语境里即出戏（端到端实测「厚眼镜」）
 MODERN_WORDS = (
     "眼镜", "手机", "电脑", "电话", "汽车", "飞机", "高铁", "咖啡", "超市", "公司",
-    "经理", "化学", "物理", "电池", "网络", "视频", "打卡", "狙击", "雷达", "电梯",
-    "医院", "警察", "总统", "沙发", "巧克力", "麦克风", "发动机", "充电",
+    "经理", "化学", "物理", "电池", "网络", "视频", "打卡", "电梯",
+    "医院", "警察", "总统", "沙发", "巧克力", "麦克风", "发动机",
+)
+
+# 现代喻体词（v7 真机实测 ch4「像指甲刮过黑板」）：穿越/现代背景文里
+# 「手机/电脑」可作前世指称合理（worldview.modern_words 常显式设空放弃默认表），
+# 但**作叙事明喻/修辞出现必出戏**——本表独立常开，不受 modern_words 覆盖影响；
+# 需要豁免写 worldview.modern_words_exempt（同现代词）。
+MODERN_SIMILES = (
+    "黑板", "键盘", "鼠标", "摄像头", "幻灯片", "投影仪", "投影",
+    "狙击", "雷达", "像素", "充电", "电路",
 )
 
 # 西方典故：与中文修仙语境冲突（端到端实测「达摩克利斯之剑」）
@@ -95,13 +104,26 @@ def _modern_words_exempt(ws: Workspace, project_id: str) -> tuple[str, ...]:
     return ()
 
 
+def _modern_similes(ws: Workspace, project_id: str) -> tuple[str, ...]:
+    """现代喻体词表：worldview.modern_similes 可覆盖，缺省用 MODERN_SIMILES。
+
+    与 `modern_words`（指称型，穿越文可显式设空）不同——喻体表是修辞防线，
+    worldview.modern_words 为空不关闭本表（v7 实测 ch4「指甲刮过黑板」）。
+    """
+    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    if isinstance(wv, dict) and isinstance(wv.get("modern_similes"), list):
+        return tuple(str(x) for x in wv["modern_similes"])
+    return MODERN_SIMILES
+
+
 def _lexicon_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
-    """R-LEX：正文用词纪律（现代词 / 西方典故 / style.json 禁用词）。"""
+    """R-LEX：正文用词纪律（现代词 / 现代喻体 / 西方典故 / style.json 禁用词）。"""
     alerts: list[RuleAlert] = []
     banned = _banned_words(ws, project_id)
     modern = _modern_words(ws, project_id)
     exempt = _modern_words_exempt(ws, project_id)
     modern_active = [w for w in modern if w not in exempt]
+    similes = [w for w in _modern_similes(ws, project_id) if w not in exempt]
     for name, text in _iter_chapters(ws, project_id):
         for w in modern_active:
             if w in text:
@@ -109,6 +131,13 @@ def _lexicon_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
                 alerts.append(RuleAlert(
                     level="block", rule_id="R-LEX", object_ref=name,
                     detail=f"现代词汇「{w}」出戏：…{text[max(0, i - 10):i + len(w) + 8]}…"))
+        for w in similes:
+            if w in text:
+                i = text.index(w)
+                alerts.append(RuleAlert(
+                    level="block", rule_id="R-LEX", object_ref=name,
+                    detail=f"现代喻体「{w}」出戏（叙事修辞用了现代物）："
+                           f"…{text[max(0, i - 10):i + len(w) + 8]}…"))
         for w in WESTERN_ALLUSIONS:
             if w in text:
                 i = text.index(w)

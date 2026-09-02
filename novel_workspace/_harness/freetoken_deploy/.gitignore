@@ -9,6 +9,7 @@ poll_ft_install.py
 poll_serve_ready.py
 start_serve.py
 start_serve2.py
+start_serve_fp8*.py
 dl_fp8.py
 
 # 废弃的远程脚本旧尝试（成功路径已提交：remote_start_fp8 / remote_dl_fp8 /
