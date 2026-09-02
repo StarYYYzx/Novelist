@@ -723,7 +723,10 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
         json.dumps(fm, ensure_ascii=False),
         "---",
         "",
-        f"# 第 {ch} 章 {fm['title']}",
+        # ADR-020 决策一（延迟拟题）：行内不写标题文字——本 md 全篇会作为
+        # gist_text_for_events 注入正文 prompt，标题留在 front-matter（给人看 +
+        # parse_gist 结构化读取），正文生成期一律看不见，避免模型在事件开头复写标题。
+        f"# 第 {ch} 章",
         "",
         f"key_events: {json.dumps(fm['key_events'], ensure_ascii=False)}",
         "",

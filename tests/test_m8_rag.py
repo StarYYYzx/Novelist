@@ -170,7 +170,9 @@ def test_event_goal_related_injection(tmp_path):
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True, inject_bible=False,
         event_loop=True, commit_chapter_event=False, direct_words_floor=5,
-        knowledge_llm=True, session=SessionInfo(project_id=pid, agent="t"))
+        knowledge_llm=True, session=SessionInfo(project_id=pid, agent="t"),
+        # ADR-020 默认开：本测试脚本队列不含其额外调用，显式关闭
+        character_direction=False, perspective_memory=False, defer_title=False)
     assert res.ok, res.result
 
 

@@ -261,7 +261,9 @@ def test_event_loop_generates_per_event_and_writes_back(tmp_path):
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
-        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"))
+        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"),
+        # ADR-020 四件套默认开：本测试脚本队列不含其额外调用（调度/视角/拟题），显式关闭
+        character_direction=False, perspective_memory=False, defer_title=False)
     assert res.ok, res.result
     final = ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")
     assert "逐出内门" in final and "焦黑玉佩" in final
@@ -277,7 +279,9 @@ def test_event_loop_without_key_events_falls_back_to_single_shot(tmp_path):
     res = produce_chapter(ws, pid, 1, 1, llm, prefer_direct=True,
                           inject_bible=False, event_loop=True,
                           commit_chapter_event=False,
-                          session=SessionInfo(project_id=pid, agent="t"))
+                          session=SessionInfo(project_id=pid, agent="t"),
+                          character_direction=False, perspective_memory=False,
+                          defer_title=False)
     assert res.ok and "整章直出" in ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")
 
 

@@ -623,6 +623,60 @@ docs/10 §6 流程落地——已有稿子 → 蓝图 + 正式章节 + 接着写
 验收：闭关事件登记 pending 且三个档位（30%/10%/到期）依次触发对应提示；闭关人物在不可出场期
 出现在正文被 R-STATE 告警；`timeline.json` 非空且 R-TL 按 t 单调；全量测试不回归（262 passed）。
 
+### M3n — 生成期人物一致性四件套（ADR-020，2026-09-01 拍板 / 2026-09-02 落地）
+
+> 设计：`docs/03` ADR-020。用户四项拍板：①延迟拟标题；②人物卡**无条件全字段**注入；
+> ③人物调度层（character direction sheet）；④角色视角记忆（perspective memory）——
+> B 方案改为**事件末调用**，一次总结输出全部出场角色的**多视角差异**；
+> 回读采用**双阈值**（事件 gap ≥ 3 **或** 天数 gap ≥ 30，OR）。用户另提「世界广播选角」
+> （事件选人阶段 +1 次调用广播事件信息、由 AI 决定人选）列为后续 ADR，本批不实现。
+
+**为什么单列**：前几批把 bible/记忆/检索做扎实，但正文生成仍是"裸写"——人物卡不进上下文
+（P0-1）、草稿无人物调度、视角记忆空白，成稿实测出现性别漂移/凭空造人/卷名漂移。本批四件事
+一次接通，每事件 +2 次 LLM 调用（调度 + 视角总结）、每章 +1 次（拟题）换取人物一致性
+（用户明示可接受更多调用换质量）。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| N1 | **延迟拟标题**（defer_title）：`render_gist_md` 行内不再写标题（仅 `# 第 {ch} 章`，title 留 front-matter）+ 事件 prompt 禁标题 + 章末一次 `_title_chapter`（temp 0.3 / ≤64 tokens）→ `_apply_chapter_title` 写回正文首行与 outline front-matter | ✅ |
+| N2 | **无条件人物卡注入**（cast_injection）：`director.match_cast`（姓名/别名/子串三回退）+ `cast_from_text` 扫文本兜底；注入字段 6→9（补 arc/aliases/relationships） | ✅ |
+| N3 | **人物调度层**（character_direction）：事件生成前 +1 次 LLM 调用产出各角色「性格要点/本场体现/禁忌」direction sheet，随事件注入 | ✅ |
+| N4 | **角色视角记忆**（perspective_memory）：**事件末** +1 次调用一次输出全部出场角色的视角条目（stance/perspective/relations + event_ref），`chronicler.record_perspectives` 落 character_histories，事件去重幂等 | ✅ |
+| N5 | **双阈值回读**（needs_readback）：角色距上次出场 **≥3 事件 或 ≥30 天**（OR）即注入近况行 + `readback_excerpt` 回读上次出场正文片段（1200 字 × 2 段） | ✅ |
+| N6 | 兼容与回归：5 个存量脚本化 `_SeqLLM` 测试显式关闭四开关；`tests/test_m19_adr020.py` 24 例全假 provider 覆盖四件套 + P0 回归 | ✅ |
+
+**N1–N5 落地记录（2026-09-02）**：
+
+- `forge/nodes.py render_gist_md`：行内标题文字去掉，title 保留 front-matter——正文生成器不再
+  预先见到标题，杜绝卷名漂移/标题剧透；`parse_gist` 仍可读 front-matter title。
+- `core/director.py`（新模块）：调度层与视角装配/回读全量落此。`build_direction`/`_parse_directions`
+  产出调度表；`match_cast`（姓名/别名/子串回退）+ `cast_from_text` 兜底；`render_card_line` 渲染
+  9 字段卡片；`render_history_lines`/`recent_perspectives` 供近况注入；`needs_readback` 双阈值；
+  `readback_excerpt` 回读上次出场正文；`save_direction` 存 `memory/directions/v{n}-c{n}-e{n}.json`。
+- `core/orchestrator.py`：事件循环接线（cast → 近况 → 回读 → direction_lines → 生成 → 视角回写）；
+  四开关默认 True；章末 `_title_chapter` + `_apply_chapter_title` 拟题写回。
+- `core/chronicler.py`：`record_perspectives`（自 455 行，事件末多角色一次调用，kind=perspective，
+  event_ref=`ev:{pid}:{vol}:{ch}:e{index}`），MemoryConflictError 去重返回 0（幂等）。
+
+**本批修复的真实 bug**：
+
+- **`cast_from_text` 短名子串误命中**：短名命中已命中长名的子串时重复添加（「清瑶」⊂「云清瑶」
+  被当两人）→ `hit_names` 拦截 `any(nm in hit)`。
+- **`_TITLE_INLINE_RE` 贪婪吞正文**：`[^\n]{0,40}` 把标题后同行正文吞成标题 → 收紧为「非标点/空白
+  紧密字符」`[^，。！？；：、\s\u3000]{0,30}`。
+- **chronicler.py:515 缩进损坏**（前次会话 429 中断的半成品）→ `for item in re.split(...)` 循环体
+  修复，py_compile 通过。
+- **续写拼接无痕化**：`_generate_with_continuation` 内续写可能断在**句中**，插 `\n\n` 产生割裂 →
+  恢复 `text.rstrip() + strip_seam_overlap(text, piece).lstrip()` 无缝拼接；事件**间**段落分隔
+  仍由 `"\n\n".join(pieces)` 负责（两处职责不同）。
+- **polish 透传**：`polish_chapter` 未把 system_prompt 传到底层（P0 修复）；
+  `completeness()` 跳过起始标题行 + 新增 dup_paragraphs/dup_sentences 重复检测。
+
+验收：produce_chapter 每事件产出 direction sheet 与全部出场角色视角条目（含 stance/relations，
+冲突去重幂等）；角色距上次出场 ≥3 事件或 ≥30 天时正文前注入近况与回读片段；章末拟题写回文件头
+与 front-matter；M19 24 例 + 存量全量 **438 passed（2 deselected）**；5 个旧脚本化测试显式关
+开关不回归。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

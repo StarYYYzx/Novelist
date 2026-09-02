@@ -36,7 +36,9 @@ class ProductionResult:
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
                  phase: str = "writing", phase_reason: str = "",
                  length_truncated: bool = False, events_capped: int = 0,
-                 pending_tick: dict | None = None):
+                 pending_tick: dict | None = None,
+                 chapter_title: str = "", directions_built: int = 0,
+                 perspectives_written: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -59,6 +61,9 @@ class ProductionResult:
         self.length_truncated = length_truncated  # 篇幅硬上限截断（第七批）
         self.events_capped = events_capped        # 每章事件数超限截掉的事件数（第二批）
         self.pending_tick = pending_tick or {}    # 定时事项记账（ADR-019，M3m T2）
+        self.chapter_title = chapter_title        # 延迟拟定的章节标题（ADR-020 决策一）
+        self.directions_built = directions_built  # 本轮生成的人物调度单数（ADR-020 决策三）
+        self.perspectives_written = perspectives_written  # 本轮写入的角色视角条数（决策四）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -91,6 +96,12 @@ def _completeness_problems(comp: dict) -> list[str]:
         problems.append(f"结尾被截断（末字「{comp.get('last_char', '')}」不是句末标点）")
     if comp.get("meta_narration"):
         problems.append("正文出现元叙事表述：" + "、".join(comp["meta_narration"]))
+    # 重复（前两章归因 P0）：此前只查截断与元叙事，整段重复 4 次也 0 告警。
+    # 阈值：整段重复 ≥1 或整句重复 ≥3 才算问题——单句重复 1-2 次可能是有意的复沓。
+    if comp.get("dup_paragraphs", 0) >= 1:
+        problems.append(f"正文有 {comp['dup_paragraphs']} 处整段重复，必须删除多余份")
+    elif comp.get("dup_sentences", 0) >= 3:
+        problems.append(f"正文有 {comp['dup_sentences']} 处整句重复，必须删除多余份")
     return problems
 
 
@@ -127,9 +138,14 @@ def _ngram_sim(a: str, b: str, n: int = 3) -> float:
     return len(A & B) / len(A)
 
 
+def _strip_punct(s: str) -> str:
+    """去掉所有标点与空白（用于"去标点包含"判定）。"""
+    return re.sub(r"[\s\W_]+", "", s or "")
+
+
 def strip_seam_overlap(prev: str, piece: str, window: int = 900,
-                       sim: float = 0.70, scan_sents: int = 12,
-                       min_sent: int = 12) -> str:
+                       sim: float = 0.70, scan_sents: int = 40,
+                       min_sent: int = 12, sim_first: float = 0.58) -> str:
     """去掉 `piece` 开头与 `prev` 尾部重复的片段（确定性去重）。
 
     **根因**：小模型拿到接缝上下文后，习惯性先把接缝**复述一遍**再续写
@@ -137,16 +153,24 @@ def strip_seam_overlap(prev: str, piece: str, window: int = 900,
     跨 v2→v5 一直存在（此前误记为"剧本草稿重复"）。prompt 里写了"不要重复"
     对 9B 无效，只能做确定性去重。
 
-    策略：只扫描开头的 `scan_sents` 句，删掉与上文尾部重复（精确包含或
-    n-gram 相似 ≥ sim）的句子；**不要求连续**——实测重复常与新增信息交错
-    （第 1 句纯复述、第 2 句含新信息、第 3 句又复述）。
+    策略：扫描开头的 `scan_sents` 句（默认 40 = 覆盖整个片段，见下），删掉与上文尾部
+    重复（精确包含 / 去标点包含 / n-gram 相似 ≥ sim）的句子；**不要求连续**——实测重复
+    常与新增信息交错（第 1 句纯复述、第 2 句含新信息、第 3 句又复述）。
     兜底：去重后过短（<30 字）保留原文。
+
+    **前两章归因 P0 修订（2026-09-02）**：
+    1. `scan_sents` 12 → 40。原值只扫开头 12 句，实测 ch1 的重复出现在第 13 句之后，
+       函数直接放行；现在默认覆盖整个片段（事件片段通常 <25 句）。
+    2. 新增 `sim_first=0.58`：开头 3 句是复述高发区（模型先"接住"上文），用更低的阈值。
+       实测真实复述的 n-gram 相似度只有 ~0.29–0.6，统一 0.70 几乎全部漏判。
+    3. 新增"去标点包含"判定：复述常改一两个标点/加个"道"，纯字符串包含会漏。
     """
     prev = (prev or "").strip()
     piece = (piece or "").strip()
     if not prev or not piece:
         return piece
     tail = prev[-window:]
+    tail_raw = _strip_punct(tail)
     sents = [m.group(0) for m in _SENT_RE.finditer(piece) if m.group(0).strip()]
     rest_start = sum(len(s) for s in sents)
     tail_part = piece[rest_start:]
@@ -157,9 +181,12 @@ def strip_seam_overlap(prev: str, piece: str, window: int = 900,
     kept, dropped = [], 0
     for i, s in enumerate(sents):
         s_strip = s.strip()
-        # 只扫描开头若干句，其后内容一律保留（防误删正文）
+        # 扫描范围内（默认全片段），其后内容一律保留（防误删正文）
         if i < scan_sents and dropped < scan_sents and len(s_strip) >= min_sent:
-            dup = (s_strip in tail) or (_ngram_sim(s_strip, tail) >= sim)
+            threshold = sim_first if i < 3 else sim
+            dup = (s_strip in tail) or (_ngram_sim(s_strip, tail) >= threshold)
+            if not dup and len(s_strip) >= min_sent:
+                dup = _strip_punct(s_strip) in tail_raw  # 只差标点/引号的复述
             if not dup and i == 0 and len(s_strip) >= 12:
                 dup = s_strip[:12] in tail  # 首句可能是半句（无句末标点）
             if dup:
@@ -205,8 +232,10 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
         piece = (res.content or "").strip()
         if not piece:
             break
-        # 续写同样会把已写部分复述一遍（同根因）——确定性去重后再拼接
-        text = text.rstrip() + strip_seam_overlap(text, piece)
+        # 续写同样会把已写部分复述一遍（同根因）——确定性去重后再拼接。
+        # 注意：续写可能断在**句中**（"他走到山门前，正要/踏入那扇朱红大门。"），
+        # 必须无缝拼接，不能加段落分隔——那是事件间 join（"\n\n".join(pieces)）的职责。
+        text = text.rstrip() + strip_seam_overlap(text, piece).lstrip()
     return text
 
 
@@ -433,7 +462,7 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
             if pieces:
                 piece = strip_seam_overlap(pieces[-1], piece)
             pieces.append(piece)
-        return "\n".join(pieces), len(beats)
+        return "\n\n".join(pieces), len(beats)  # 拍间空行（同 P0 段落边界修复）
     except Exception:  # noqa: BLE001
         return None
 
@@ -466,17 +495,36 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 seam_chars: int, memories: list[str], is_last: bool,
                 setting_lines: list[str] | None = None,
                 related: dict | None = None,
-                readback_text: str = "") -> str:
-    """装配单个事件的生成目标（细纲要点 + 接缝上下文 + 事件级先忆 + 待交代设定 + RAG 知识）。
+                readback_text: str = "",
+                cast_lines: list[str] | None = None,
+                hist_lines: list[str] | None = None,
+                direction_lines: list[str] | None = None,
+                extra_readback: list[str] | None = None) -> str:
+    """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
-    `related`：知识层检索结果注入行（讨论第 8 轮 RAG）——
-    {"character": [...], "setting": [...], "thread": [...], "lesson": [...], "faction": [...]}
+    `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
     `readback_text`：前章正文原文（回读机制），只在第一个事件注入。
+    `cast_lines` / `hist_lines` / `direction_lines` / `extra_readback`（ADR-020）：
+    出场人物卡（无条件注入）、角色视角近况、人物调度单、久未出场角色的原文回读。
     """
     parts = [f"{chapter_goal}", "",
              f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
+    # 延迟拟题（ADR-020 决策一）：事件级一律不输出标题，标题在整章拼完后统一拟
+    parts += ["", "【输出纪律】直接写正文，**不要写章节标题**、不要写「第X章」字样；"
+                  "不要重复上文已经写过的内容。"]
+    if direction_lines:
+        parts += ["", "【本场人物表演指令】（逐人遵守，违反即人物崩坏；"
+                      "各人的语气与取舍必须彼此不同）：", *direction_lines]
+    if cast_lines:
+        parts += ["", "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
+                      "修为、与其他人的关系都要对得上）：", *cast_lines]
+    if hist_lines:
+        parts += ["", "【人物近况】（他们带着这些经历进入本场，言行要与之一致）：",
+                  *hist_lines]
     if readback_text and idx == 1:
         parts += ["", readback_text]
+    if extra_readback:
+        parts += ["", *extra_readback]
     if prev_piece:
         parts += ["", f"【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
                   "…" + prev_piece[-seam_chars:]]
@@ -832,23 +880,132 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
 
 
 _TITLE_RE = re.compile(r"^#{1,6}\s*第\s*[一二三四五六七八九十\d]+\s*章")
+# 行内/缩进变体：模型常把标题写在段落中间、或前面带引号/空格（实测 ch1 三个标题
+# 均为「## 第 1 章 …」夹在正文里，行首 match 全部漏判）。search 版本用于全文扫描。
+# 标题文字限定为不含标点/空白的紧凑串：`## 第 1 章 脚步声　叶岚推开门` 只抠
+# 「## 第 1 章 脚步声」，同行正文「叶岚推开门」保留（否则 40 字符贪婪会吃掉正文）。
+_TITLE_INLINE_RE = re.compile(
+    r"#{1,6}\s*第\s*[一二三四五六七八九十百\d]+\s*章[^，。！？；：、\s\u3000]{0,30}")
 
 
 def _dedupe_chapter_titles(text: str) -> str:
-    """事件循环拼接后处理：模型常在每个事件开头重写章节标题，删除非首行重复标题。
+    """事件循环拼接后处理：模型常在每个事件开头重写章节标题，删除非首个标题。
 
     实测（诡夜大学 ch1）：3 事件拼出 4065 字，第 2 个事件开头又写了一遍
     「## 第 1 章 脚步声在午夜响起」——读者视角是标题重复。
+
+    **前两章归因 P0 修订（2026-09-02）**：原实现用 `match`（只认行首）+ 整行丢弃，
+    实测 3 个标题一个都没删掉：
+    1. 改 `search`：行内标题（前面有空格/引号/正文）也能命中；
+    2. 不再整行丢弃——标题后面常跟正文首句（"## 第 1 章 X　叶岚睁开眼"），
+       只**抠掉标题片段**，保留同行的其余文字，避免吃掉正文；
+    3. 抠掉后若该行只剩空白则整行删除。
     """
     kept: list[str] = []
     title_seen = False
     for ln in text.splitlines():
-        if _TITLE_RE.match(ln.strip()):
+        m = _TITLE_INLINE_RE.search(ln)
+        if m:
             if title_seen:
+                rest = (ln[: m.start()] + ln[m.end():]).strip()
+                if not rest:
+                    continue
+                kept.append(rest)
                 continue
             title_seen = True
         kept.append(ln)
     return "\n".join(kept).strip("\n")
+
+
+TITLE_PROMPT = """你是网文编辑。下面是刚写完的一章正文，请为它拟一个章节标题。
+
+【要求】
+1. 8–20 字，中文，不要写成一句完整的话
+2. 点出这一章**最有戏的那一个点**（冲突、反转或揭示），不要概括全章流水账
+3. 不要剧透后续章节的内容，不要写"终将""注定"这类升华腔
+4. 不出现书名号、引号、括号、序号
+
+只输出标题本身，不要任何说明、不要加「第X章」前缀。
+
+正文开头：
+"""
+
+
+def _title_chapter(provider, text: str, vol: int, ch: int,
+                   system_prompt: str | None = None) -> str:
+    """延迟拟题（ADR-020 决策一）：整章成稿后按**成稿正文**拟标题。
+
+    依据正文（而非细纲）拟题，标题才是结果而不是约束；失败返回空串（不阻断）。
+    """
+    if provider is None or not (text or "").strip():
+        return ""
+    head = text.strip()[:1200]
+    tail = text.strip()[-600:] if len(text.strip()) > 1800 else ""
+    sample = head + ("\n\n……\n\n" + tail if tail else "")
+    try:
+        res = provider.complete(
+            LLMRequest(
+                messages=[LLMMessage(role="system",
+                                     content=system_prompt or "你是网文编辑。"),
+                          LLMMessage(role="user", content=TITLE_PROMPT + sample)],
+                max_tokens_out=64,
+                temperature=0.3,
+            )
+        )
+    except Exception:  # noqa: BLE001 - 拟题失败不阻断成稿
+        return ""
+    if res.blocked or not (res.content or "").strip():
+        return ""
+    raw = res.content.strip().splitlines()[0].strip()
+    # 清洗：模型常自带 # 号、「第X章」前缀、引号或"标题："前缀
+    raw = raw.lstrip("#").strip()
+    raw = re.sub(r"^第\s*[一二三四五六七八九十百\d]+\s*章[^\w]*", "", raw).strip()
+    raw = re.sub(r"^(标题|章节标题)\s*[:：]\s*", "", raw).strip()
+    raw = raw.strip("《》「」『』\"'“”‘’ 。，、；：")
+    raw = re.sub(r"\s+", "", raw)
+    if not (4 <= len(raw) <= 30):
+        return ""
+    return raw
+
+
+def _apply_chapter_title(ws, project_id: str, provider, final: str, vol: int, ch: int,
+                         system_prompt: str | None = None) -> tuple[str, str]:
+    """把拟得的标题写进正文首行，并回填细纲 front-matter `title`。
+
+    返回 (正文, 标题)；拟题失败则原样返回。正文中若已有标题行（模型违规写的）
+    先抠掉再统一加，避免两个标题。
+    """
+    title = _title_chapter(provider, final, vol, ch, system_prompt)
+    if not title:
+        return final, ""
+    body = _dedupe_chapter_titles(final)
+    lines = body.splitlines()
+    if lines and _TITLE_INLINE_RE.search(lines[0]):
+        body = "\n".join(lines[1:]).strip("\n")
+    text = f"# 第 {ch} 章 {title}\n\n{body}"
+    # 回填 outline front-matter（ADR-016 文件为主：细纲是给人看的，标题应在那里可见）
+    try:
+        p = ws.outline_chapter_path(project_id, vol, ch)
+        if p.exists():
+            md = p.read_text(encoding="utf-8")
+            if md.startswith("---"):
+                end = md.find("\n---", 3)
+                if end > 0:
+                    import json as _json
+
+                    fm = md[3:end].strip()
+                    try:
+                        data = _json.loads(fm)
+                    except ValueError:
+                        data = None
+                    if isinstance(data, dict) and data.get("title") != title:
+                        data["title"] = title
+                        new_md = ("---\n" + _json.dumps(data, ensure_ascii=False)
+                                  + "\n" + md[end:])
+                        ws.write_text(p, new_md)
+    except Exception:  # noqa: BLE001 - 回填失败不影响成稿
+        pass
+    return text, title
 
 
 def produce_chapter(
@@ -894,6 +1051,11 @@ def produce_chapter(
     readback: bool = False,      # 回读机制（第七批第 4 条·用户拍板）：前 1 章正文原文注入
     jit_characters: bool = True,     # 递归分层 A：人物 JIT 补卡（第七批·用户拍板）
     supplement_settings: bool = False,  # 递归分层 B：世界观滚动补充（第七批·用户拍板）
+    # ---- ADR-020 生成期人物一致性四件套 ----
+    defer_title: bool = True,        # 决策一：延迟拟题（整章成稿后才按正文拟标题）
+    cast_injection: bool = True,     # 决策二：出场人物卡无条件注入
+    character_direction: bool = True,  # 决策三：人物调度层（细纲与正文之间的第 3 次细化）
+    perspective_memory: bool = True,   # 决策四：角色视角记忆（事件末调用 + 无条件注入 + 双阈值回读）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -993,6 +1155,10 @@ def produce_chapter(
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
+    # ADR-020 计数器：拟题 / 调度单 / 角色视角（事件循环内累加，出口进 ProductionResult）
+    chapter_title = ""
+    directions_built = 0
+    perspectives_written = 0
 
     # ---- 2.1) 定时事项软 block（ADR-019 §3.3.3，M3m T2）----
     # 已到期且连续 block 的 pending：本章细纲/key_events 未体现 → 拦截。
@@ -1058,6 +1224,12 @@ def produce_chapter(
                 knowledge = _make_knowledge(ws, project_id, embedding)
                 readback_text = (_prior_chapter_text(ws, project_id, vol, ch)
                                  if readback else "")
+                # ADR-020：人物层三件套的一次性准备（圣经人物卡每章读一次；
+                # 细纲出场声明每章解析一次，事件循环内只做匹配）
+                from . import director as _director
+                bible_chars = _director.load_characters(ws, project_id) if any(
+                    (cast_injection, character_direction, perspective_memory)) else []
+                declared_cast = parse_cast_decl(gist_text_for_events)
                 # 统一实体追踪（第八批：四阶段 + 别名消歧 + 松预算）
                 entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
@@ -1110,10 +1282,54 @@ def produce_chapter(
                         related = {k: knowledge.lines(items, k, vol=vol, ch=ch)
                                    for k in ("setting", "character", "thread", "lesson", "faction")
                                    if knowledge.lines(items, k, vol=vol, ch=ch)}
+                    # ---- ADR-020：本场人物层（cast → 近况 → 回读 → 调度单）----
+                    cast_cards: list[dict] = []
+                    cast_names: list[str] = []
+                    cast_lines: list[str] = []
+                    hist_lines: list[str] = []
+                    direction_lines: list[str] = []
+                    extra_rb: list[str] = []
+                    if bible_chars:
+                        cast_cards = _director.match_cast(bible_chars, declared_cast) \
+                            if declared_cast else []
+                        # 细纲声明为准，再补事件文本里出现但声明漏掉的（≤2 人，防噪声）
+                        extra = [c for c in _director.cast_from_text(bible_chars, ev_text)
+                                 if c["id"] not in {x["id"] for x in cast_cards}]
+                        cast_cards = (cast_cards + extra[:2]) if cast_cards \
+                            else _director.cast_from_text(bible_chars, ev_text)
+                        cast_names = [str(c.get("name") or "") for c in cast_cards]
+                        if cast_injection:
+                            cast_lines = _director.render_cards(cast_cards)
+                            hist_lines = _director.render_history_lines(
+                                ws, project_id, cast_cards)
+                        # 回读（双阈值：事件计数 ≥3 或故事内 ≥30 天未见）
+                        for c in cast_cards:
+                            try:
+                                need, _why = _director.needs_readback(
+                                    ws, project_id, str(c.get("id") or ""))
+                            except Exception:  # noqa: BLE001
+                                need = False
+                            if need:
+                                ex = _director.readback_excerpt(ws, project_id, c)
+                                if ex:
+                                    extra_rb.append(ex)
+                        # 人物调度层（细纲与正文之间的第 3 次细化）
+                        if character_direction:
+                            sheet = _director.build_direction(
+                                ws, project_id, provider, vol=vol, ch=ch,
+                                event_index=idx, ev_text=ev_text, cards=cast_cards,
+                                history_lines=hist_lines, system_prompt=system_prompt)
+                            if sheet is not None:
+                                direction_lines = sheet.lines()
+                                _director.save_direction(ws, project_id, sheet)
+                                directions_built += 1
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
                                          memories_ev, is_last, setting_lines, related,
-                                         readback_text)
+                                         readback_text, cast_lines=cast_lines,
+                                         hist_lines=hist_lines,
+                                         direction_lines=direction_lines,
+                                         extra_readback=extra_rb)
 
                     # 递归分层 B（第七批第 5 条·用户拍板）：世界观滚动补充——
                     # 事件文本出现新专有名词 → LLM 补 settings 条目（后续事件可命中）。
@@ -1185,7 +1401,8 @@ def produce_chapter(
                                 piece, provider,
                                 tone=_style_tone(ws, project_id),
                                 max_tokens=min(1500, max(generation_tokens * 2, 800)),
-                                is_chapter=False)
+                                is_chapter=False,
+                                system_prompt=system_prompt)
                             if pr.changed:
                                 piece = pr.text
                         except Exception:  # noqa: BLE001 - 润色失败保留原文
@@ -1208,7 +1425,14 @@ def produce_chapter(
                                                payoff=(phase is Phase.TAIL)))
                         except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             pass
-                final = _dedupe_chapter_titles("\n".join(pieces))
+                        # 角色视角记忆（ADR-020 决策四）：事件落定即记，一人一条视角
+                        if perspective_memory and cast_names:
+                            try:
+                                perspectives_written += chronicler.record_perspectives(
+                                    piece, cast_names, vol, ch, event_index=idx)
+                            except Exception:  # noqa: BLE001 - 视角失败不阻断
+                                pass
+                final = _dedupe_chapter_titles("\n\n".join(pieces))
             else:
                 last_problems: list[str] = []
                 for attempt in range(max_retries + 1):
@@ -1280,7 +1504,8 @@ def produce_chapter(
         try:
             polish_res = polish_chapter(final, provider, vol=vol, ch=ch,
                                         tone=_style_tone(ws, project_id),
-                                        is_chapter=True)
+                                        is_chapter=True,
+                                        system_prompt=system_prompt)
             if polish_res.changed:
                 final = polish_res.text
                 try:
@@ -1340,6 +1565,18 @@ def produce_chapter(
             tracker.save()
     except Exception:  # noqa: BLE001 - 实体进度失败不影响成稿
         entity_alerts = []
+
+    # ---- 4.7) 延迟拟题（ADR-020 决策一）----
+    # 放在去重/润色/篇幅截断**全部之后**：此时的 final 才是最终正文，标题应描述它。
+    # 放在设定交代验证与实体扫描之后，避免标题里的词被误判成新实体/新设定。
+    if defer_title and mode == "direct" and final and not chapter_title:
+        final, chapter_title = _apply_chapter_title(
+            ws, project_id, provider, final, vol, ch, system_prompt)
+        if chapter_title:
+            try:
+                ws.write_text(draft, final + "\n")
+            except Exception:  # noqa: BLE001 - 落盘失败不影响返回成稿
+                pass
 
     # ---- 5) 事件回写（真实事件走编纂员，B-03）----
     events = 0

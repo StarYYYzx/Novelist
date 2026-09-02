@@ -281,6 +281,7 @@ def test_produce_chapter_with_recursion_switches(tmp_path):
         commit_chapter_event=False, direct_words_floor=5, knowledge_llm=False,
         jit_characters=True, supplement_settings=False,
         event_review=True, event_polish=False, readback=False,
+        character_direction=False, perspective_memory=False, defer_title=False,
         session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
     final = ws.draft_path(pid, 1, 2).read_text(encoding="utf-8")

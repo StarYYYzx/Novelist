@@ -69,6 +69,27 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 """
 
 
+PERSPECTIVE_PROMPT = """你是记忆编纂员。下面是刚写完的一段正文，以及本段的出场人物。
+请**分别站在每个人物的立场**，用一句话记下"对他而言，刚才发生了什么"。
+
+同一件事，不同人物的感受与判断是不同的：赢家觉得畅快，输家觉得折辱，旁观者只看到
+表象——**这些差异必须写出来**，不要写成同一句客观描述。
+
+出场人物：{names}
+
+【输出格式】每人一行，竖线分隔，共 3 段（第 4 段可省略）：
+人物名 | 立场情绪（≤8 字） | 视角概述（一句话，站在他的处境与判断来写） | 对某人：关系变化（可选）
+
+【纪律】
+- 只写上面列出的人物；正文里没真正出场的不要写
+- 视角概述要带**他的立场**：他觉得自己赢了还是亏了、他怎么看待别人、他接下来想什么
+- 不要写"某某做了某事"这种旁观者口吻的复述
+- 不要输出标题、序号、解释或空行
+
+正文：
+"""
+
+
 @dataclass
 class ExtractedEvent:
     summary: str
@@ -430,6 +451,93 @@ class Chronicler:
             advance(self.ws, self.project_id, dt, vol=vol, ch=ch,
                     event=note or f"时间推进 {dt} 日")
             report.time_advanced += dt
+
+    # ---- 角色视角记忆（ADR-020 决策四）----
+    def record_perspectives(self, text: str, cast_names: list[str], vol: int, ch: int,
+                            *, event_index: int = 0, max_tokens: int = 600,
+                            project_id: str = "") -> int:
+        """为每个出场人物补一条**角色视角**经历（每事件 +1 次 LLM 调用）。
+
+        既有 `commit()` 把同一条事件摘要复制给所有参与者——李慕白和陈松拿到的是
+        同一句"客观"描述，等于没有视角。本方法一次调用产出**全部角色的视角条目**，
+        天然形成差异（同一件事，各人看法不同）。
+
+        写入 `memory/character_histories/<id>.json`（ADR-011：经历属"实然"，
+        **不写回 `bible/characters.json`**）。失败返回 0，不抛异常。
+        """
+        if self.llm is None or not (text or "").strip() or not cast_names:
+            return 0
+        names = [str(n).strip() for n in cast_names if str(n).strip()][:6]
+        if not names:
+            return 0
+        try:
+            res = self.llm.complete(
+                LLMRequest(
+                    messages=[LLMMessage(role="user",
+                                         content=PERSPECTIVE_PROMPT.format(
+                                             names="、".join(names))
+                                         + text[-2500:])],
+                    max_tokens_out=max_tokens,
+                    temperature=0.4,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 视角抽取失败不阻断生成
+            return 0
+        if res.blocked or not (res.content or "").strip():
+            return 0
+
+        try:
+            from . import worldstate as wsmod
+            from .timeline import now_of
+
+            now_t = now_of(wsmod.load(self.ws, self.project_id))
+        except Exception:  # noqa: BLE001
+            now_t = 0
+
+        pid = project_id or self.project_id
+        written = 0
+        for ln in (res.content or "").splitlines():
+            s = ln.strip().lstrip("-•*").strip()
+            s = re.sub(r"^\d+[.、)．]\s*", "", s)
+            if "|" not in s:
+                continue
+            parts = [p.strip() for p in s.split("|")]
+            name = parts[0]
+            cid = self._name_map.get(name)
+            if not cid:
+                continue
+            stance = parts[1][:20] if len(parts) > 1 else ""
+            perspective = parts[2] if len(parts) > 2 else ""
+            if len(perspective) < 4:
+                continue
+            relations: list[dict] = []
+            if len(parts) > 3 and parts[3]:
+                for item in re.split(r"[；;]", parts[3]):
+                    m = re.match(r"^(.*?)[：:](.*)$", item)
+                    if not m:
+                        continue
+                    other = self._name_map.get(m.group(1).strip())
+                    if other:
+                        relations.append({"who": other, "delta": m.group(2).strip()[:30]})
+            entry = {
+                "at": {"vol": vol, "ch": ch, "t": now_t},
+                "kind": "perspective",
+                "stance": stance,
+                "perspective": perspective[:160],
+                "relations": relations,
+                "event_ref": f"ev:{pid}:{vol}:{ch}:e{event_index}",
+                # summary 是既有字段（append_experience 必填 & 索引文本）：
+                # 加 [视角] 前缀，与事件摘要区分，也避免与 commit 写入的条目撞 sig。
+                "summary": f"[视角] {perspective[:160]}",
+            }
+            try:
+                self._writer.append_experience(cid, entry)
+                written += 1
+            except MemoryConflictError:
+                continue  # 同事件同人已入库
+            except Exception:  # noqa: BLE001
+                continue
+        return written
 
     def run(self, chapter_text: str, vol: int, ch: int, *, max_events: int = 3,
             tag: str = "c", payoff: bool = False) -> ChroniclerReport:

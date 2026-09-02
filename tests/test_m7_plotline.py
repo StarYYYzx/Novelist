@@ -164,7 +164,9 @@ def test_event_review_revises_block_and_sinks_lessons(tmp_path):
     res = produce_chapter(
         ws, pid, 1, 1, llm, prefer_direct=True, inject_bible=False,
         event_loop=True, commit_chapter_event=False, direct_words_floor=5,
-        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"))
+        knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"),
+        # ADR-020 默认开：本测试脚本队列只编排了审校/修订路径，关闭其额外调用
+        character_direction=False, perspective_memory=False, defer_title=False)
     assert res.ok, res.result
     assert res.events_revised == 1, "block 应触发 1 次事件重写"
     assert res.review_blocks == 1

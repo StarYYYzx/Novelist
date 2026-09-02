@@ -105,8 +105,32 @@ def measure(text: str) -> StyleMetrics:
     return m
 
 
+def _dup_stats(lines: list[str]) -> tuple[int, int]:
+    """重复检测（前两章归因 P0）：返回 (重复段落数, 重复句数)。
+
+    只做**确定性**判定：段落去空白后完全相同 → 重复段；
+    句子（≥12 字）在全文出现 2 次以上 → 重复句（按多余次数累计）。
+    不做相似度——相似度会把"他点点头"这类正常复现也算成重复。
+    """
+    seen_para: dict[str, int] = {}
+    for ln in lines:
+        key = re.sub(r"\s+", "", ln)
+        if len(key) >= 8:
+            seen_para[key] = seen_para.get(key, 0) + 1
+    dup_paras = sum(n - 1 for n in seen_para.values() if n > 1)
+
+    sents: dict[str, int] = {}
+    for ln in lines:
+        for s in re.findall(r"[^。！？；\n]+[。！？；]?", ln):
+            key = re.sub(r"\s+", "", s)
+            if len(key) >= 12:
+                sents[key] = sents.get(key, 0) + 1
+    dup_sents = sum(n - 1 for n in sents.values() if n > 1)
+    return dup_paras, dup_sents
+
+
 def completeness(text: str) -> dict:
-    """生成完整性检查（B-04）：截断 / 元叙事泄漏 / 篇幅。"""
+    """生成完整性检查（B-04）：截断 / 元叙事泄漏 / 篇幅 / **重复**。"""
     stripped = text.strip()
     lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
     last = lines[-1] if lines else ""
@@ -115,12 +139,17 @@ def completeness(text: str) -> dict:
     body = "\n".join(lines[1:]) if len(lines) > 1 else ""
     meta = re.findall(r"第\s*[一二三四五六七八九十\d]+\s*章|本章|上一章|下一章|细纲|大纲|前文提要",
                       body)
+    # 重复检测（前两章归因 P0）：此前 completeness 只查截断/元叙事，
+    # 实测 ch1 有整段重复 4 次却 0 告警——"系统自带 0 告警 ≠ 没问题，只是没检查"。
+    dup_paras, dup_sents = _dup_stats(lines)
     return {
         "chars": len(stripped),
         "ends_properly": bool(last) and last[-1] in _END,
         "last_char": last[-1] if last else "",
         "meta_narration": sorted(set(meta)),
         "paragraphs": len(lines),
+        "dup_paragraphs": dup_paras,
+        "dup_sentences": dup_sents,
     }
 
 
@@ -219,6 +248,15 @@ def build_polish_prompt(text: str, metrics: StyleMetrics | None = None,
     tone_block = ""
     if tone and tone in TONE_TEMPLATES:
         tone_block = "\n" + TONE_TEMPLATES[tone] + "\n"
+    # 重复残留（前两章归因 P0）：实测 ch1 有整段重复 4 次，此前润色完全不看重复，
+    # 只改文风——重复照原样留在改后文本里。把重复计数直接喂给模型，令其删除多余份。
+    dup = completeness(text)
+    if dup["dup_paragraphs"] or dup["dup_sentences"] >= 2:
+        tone_block += (
+            f"\n【必须删除的重复】原文有 {dup['dup_paragraphs']} 处整段重复、"
+            f"{dup['dup_sentences']} 处整句重复。这是生成期拼接时的复述残留，不是有意的反复：\n"
+            "- 每一处只保留**一次**，其余整段/整句删除；\n"
+            "- 删除后不要补写新内容顶替，也不要改写保留的那一份的措辞。\n")
     heading_tail = "，第一行是章节标题" if is_chapter else "（不要加标题，直接给正文片段）"
     rules = POLISH_RULES.format(
         stdev=m.para_len_stdev,
@@ -238,6 +276,7 @@ def polish_chapter(
     max_tokens: int = 4000,   # 云篇章 3800 字 2200 token 会截断（M5i 实测）
     tone: str | None = None,
     is_chapter: bool = False,
+    system_prompt: str | None = None,
 ) -> PolishResult:
     """在成章之后**额外追加一次** LLM 调用专门优化文风。
 
@@ -246,15 +285,22 @@ def polish_chapter(
 
     `tone`：语言风格（style.json.tone）；`is_chapter=True` 用于整章润色（要求保留
     章节标题），False 用于事件级片段润色（不要标题）。
+    `system_prompt`（前两章归因 P0）：此前润色调用**不带 system message**，模型只看到
+    user 里的改写规则，没有"你是谁、这是什么书"的锚定——实测会丢失人设与文风锚点。
+    传入即作为 system message 透传；None 时退回一个通用润色角色设定。
     """
     before = measure(text)
     if llm is None:
         return PolishResult(text=text, before=before, after=before, changed=False,
                             note="no llm provider bound; skipped")
 
+    sys_msg = system_prompt or (
+        "你是中文网文的文字匠，只做文字层面的改写，不改变情节、不增删人物、"
+        "不改变人物性格与称谓。忠实于原文发生的每一件事。")
     res = llm.complete(
         LLMRequest(
-            messages=[LLMMessage(role="user",
+            messages=[LLMMessage(role="system", content=sys_msg),
+                      LLMMessage(role="user",
                                  content=build_polish_prompt(text, before, tone=tone,
                                                              is_chapter=is_chapter))],
             max_tokens_out=max_tokens,
