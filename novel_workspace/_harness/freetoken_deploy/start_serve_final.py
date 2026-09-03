@@ -3,7 +3,7 @@ import os
 import paramiko, sys, time
 
 HOST, PORT, USER = "connect.bjb2.seetacloud.com", 22214, "root"
-PW = os.environ.get("SEETACLOUD_SSH_PW", "")
+PW = os.environ.get("SEETACLOUD_SSH_PW", "")  # 明文凭据不入库，见 _harness/autodl_ssh.txt
 LOCAL_SH = r"E:/360MoveData/Users/Administrator/Desktop/novelist/novel_workspace/_harness/freetoken_deploy/remote_start_fp8.sh"
 REMOTE_SH = "/root/autodl-tmp/start_serve.sh"
 LOG = "/root/autodl-tmp/serve_ft.log"

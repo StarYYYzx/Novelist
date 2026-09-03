@@ -3,7 +3,7 @@ import os
 import paramiko, json, sys
 
 HOST, PORT, USER = "connect.bjb2.seetacloud.com", 22214, "root"
-PW = os.environ.get("SEETACLOUD_SSH_PW", "")
+PW = os.environ.get("SEETACLOUD_SSH_PW", "")  # 明文凭据不入库，见 _harness/autodl_ssh.txt
 DIR = "/root/autodl-tmp/models/Qwen3.6-35B-A3B-FP8"
 
 def main():

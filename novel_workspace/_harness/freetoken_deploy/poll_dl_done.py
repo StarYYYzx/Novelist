@@ -3,7 +3,7 @@ import os
 import paramiko, time, sys
 
 HOST, PORT, USER = "connect.bjb2.seetacloud.com", 22214, "root"
-PW = os.environ.get("SEETACLOUD_SSH_PW", "")
+PW = os.environ.get("SEETACLOUD_SSH_PW", "")  # 明文凭据不入库，见 _harness/autodl_ssh.txt
 DIR = "/root/autodl-tmp/models/Qwen3.6-35B-A3B-FP8"
 LOG = "/root/autodl-tmp/installers/dl_fp8.log"
 TIMEOUT = int(sys.argv[1]) if len(sys.argv) > 1 else 5400  # 默认 90 分钟

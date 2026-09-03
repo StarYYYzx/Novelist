@@ -39,3 +39,10 @@ tests/test_noval/
 
 # 探针运行产物（可重跑再生，只提交探针脚本与报告）
 novel_workspace/_harness/.probe_castings/
+
+# 早期 desktop 原型试水产物（暂缓，待基本功能设计完成后重启；本地保留不入库）
+screen1.png
+*.png
+
+# 缓存
+.pytest_cache/

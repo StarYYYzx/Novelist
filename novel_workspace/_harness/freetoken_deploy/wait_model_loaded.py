@@ -3,7 +3,7 @@ import os
 import paramiko, json, sys, time
 
 HOST, PORT, USER = "connect.bjb2.seetacloud.com", 22214, "root"
-PW = os.environ.get("SEETACLOUD_SSH_PW", "")
+PW = os.environ.get("SEETACLOUD_SSH_PW", "")  # 明文凭据不入库，见 _harness/autodl_ssh.txt
 LOG = "/root/autodl-tmp/serve_ft.log"
 TIMEOUT = int(sys.argv[1]) if len(sys.argv) > 1 else 900
 

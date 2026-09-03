@@ -3,7 +3,7 @@ import os
 import paramiko, json, time, sys
 
 HOST, PORT, USER = "connect.bjb2.seetacloud.com", 22214, "root"
-PW = os.environ.get("SEETACLOUD_SSH_PW", "")
+PW = os.environ.get("SEETACLOUD_SSH_PW", "")  # 明文凭据不入库，见 _harness/autodl_ssh.txt
 
 PROMPT = (
     "你是一名男频修仙小说作者。请写一段约 300 字的情节正文（不要输出标题、不要思考过程）：\n"
