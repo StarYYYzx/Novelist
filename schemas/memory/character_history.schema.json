@@ -99,10 +99,33 @@
           },
           "relations": {
             "type": "array",
+            "description": "N4 事件中涉及的关系变化。字符串 = 旧格式；对象 {who, delta} = ADR-020 N4 结构化格式（chronicler 视角条目实然，schema 此前漏更致 V1 误报）。",
             "items": {
-              "type": "string"
-            },
-            "description": "N4 事件中涉及的关系变化"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "who",
+                    "delta"
+                  ],
+                  "properties": {
+                    "who": {
+                      "type": "string",
+                      "pattern": "^(char:|char_)[A-Za-z0-9_-]+$",
+                      "description": "关系对象的人物稳定 ID"
+                    },
+                    "delta": {
+                      "type": "string",
+                      "description": "一句话关系变化（如 升温·隐约察觉他的在意）"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
           },
           "event_ref": {
             "type": "string",

@@ -46,3 +46,9 @@ screen1.png
 
 # 缓存
 .pytest_cache/
+
+# DeepSeek API key（明文，绝不入库）
+novel_workspace/_harness/.deepseek_key
+
+# 新书 5 章测试运行日志
+novel_workspace/_harness/firstbook5_log.jsonl
