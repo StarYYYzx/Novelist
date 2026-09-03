@@ -78,8 +78,19 @@ class NodeResult:
     tokens_out: int = 0
 
 
+# 旁支协议（_protocol_block）的元键：裸产物场景下从顶层剔除，其余键整体当 artifact
+_PROTOCOL_META_KEYS = ("decide", "reason", "children", "open_questions")
+
+
 def _parse_node_reply(raw: str) -> dict:
-    """宽松解析节点协议 JSON；结构不对抛 ValueError（引擎重试/回退）。"""
+    """宽松解析节点协议 JSON；结构不对抛 ValueError（引擎重试/回退）。
+
+    兼容两种输出形状（D3 修复，forge/nodes.py）：
+    - 带壳：顶层含 artifact（旁支节点 _protocol_block、测试 helper）→ 取 data["artifact"]，
+      并期望 decide/reason 齐备（缺 reason 时 run_node 告警）。
+    - 裸产物：主干 book/volume/chapter 的 prompt 直接要求顶层业务键 → 剔除协议元键后
+      整体当 artifact，无 decide/reason 要求（不告警）。
+    """
     text = raw.strip()
     m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
     if m:
@@ -90,7 +101,12 @@ def _parse_node_reply(raw: str) -> dict:
     data = json.loads(text[start : end + 1])
     if not isinstance(data, dict):
         raise ValueError("node reply not an object")
-    art = data.get("artifact")
+    has_shell = "artifact" in data
+    if has_shell:
+        art = data.get("artifact")
+    else:
+        payload = {k: v for k, v in data.items() if k not in _PROTOCOL_META_KEYS}
+        art = payload or None
     if art is not None and not isinstance(art, dict):
         raise ValueError("artifact not an object")
     decide = str(data.get("decide") or "done")
@@ -102,6 +118,7 @@ def _parse_node_reply(raw: str) -> dict:
         "reason": str(data.get("reason") or ""),
         "children": data.get("children") or [],
         "open_questions": data.get("open_questions") or [],
+        "has_shell": has_shell,
     }
 
 
@@ -769,7 +786,11 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
                if str(t).startswith(("pt:", "thread:"))]
     key_events = _str_list(art.get("key_events"))[:6]
     if not key_events:
-        warns.append(f"chapter {vol}-{ch}: key_events 为空，用占位事件兜底")
+        if not art:
+            warns.append(f"chapter {vol}-{ch}: 模型产物为空（裸 JSON 未含业务键或空回复），"
+                         f"落盘占位细纲——请检查上游 prompt/解析")
+        else:
+            warns.append(f"chapter {vol}-{ch}: key_events 为空，用占位事件兜底")
         key_events = [f"第 {ch} 章主线推进"]
     gist = {
         "vol": vol,
@@ -977,7 +998,7 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
     warns = ctx.extra_warnings + _APPLY[kind](ctx, node)
     if node["decide"] == "expand" and not node["children"]:
         warns.append(f"{node_id}: decide=expand 但未给 children，按 done 处理")
-    if not node["reason"]:
+    if node["has_shell"] and not node["reason"]:
         warns.append(f"{node_id}: 模型未给 reason（协议要求必填）")
     usage = getattr(res, "usage", None)
     return NodeResult(kind=kind, node_id=node_id, ok=True, artifact=node["artifact"],
