@@ -136,7 +136,11 @@ def run_chapter(ch: int, provider, embedding) -> dict:
 def main() -> None:
     provider = DeepSeekProvider(timeout_s=180)
     embedding = _make_embedding()
-    rec = run_chapter(6, provider, embedding)
+    try:
+        rec = run_chapter(6, provider, embedding)
+    except Exception as e:  # noqa: BLE001 - 异常也必须落日志（ch6 首跑日志丢失的教训）
+        rec = {"ch": 6, "ok": False, "error": f"{type(e).__name__}: {e}"[:300],
+               "secs": None}
     with open(LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     if not rec.get("ok"):
