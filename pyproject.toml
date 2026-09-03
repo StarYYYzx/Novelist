@@ -29,6 +29,9 @@ providers = [
     "anthropic>=0.28",
     "httpx>=0.27",
 ]
+embedding = [
+    "fastembed>=0.3",
+]
 
 [project.scripts]
 novelist = "novelist.cli:cli"

@@ -8,6 +8,8 @@
   对中文子串/近义片段有合理的模糊匹配能力，优于朴素子串包含判断。
 - `OpenAIEmbedding`：真实向量（OpenAI 兼容 /embeddings）。可选依赖 httpx，无 key 时抛 ProviderError
   由上层降级到 KeywordEmbedding。
+- `LocalEmbedding`：项目内置真实向量（fastembed/ONNX，nomic-embed-text-v1.5，CPU 纯离线）。
+  可选依赖 fastembed，缺依赖/模型失败由 make_embedding 降级 KeywordEmbedding。
 """
 
 from __future__ import annotations
@@ -159,11 +161,67 @@ class OpenAIEmbedding:
         return ordered
 
 
+class LocalEmbedding:
+    """项目内置向量后端（fastembed/ONNX，CPU，零 torch 零网络）。
+
+    可选依赖 fastembed（pip install novelist[embedding]）：首次调用自动下载
+    nomic-embed-text-v1.5 ONNX 权重到本地缓存（可再生，ADR-016 语义）。
+    未安装 fastembed 或模型加载失败时由 make_embedding 降级 KeywordEmbedding。
+
+    注意：不加 nomic 官方 "search_document:"/"search_query:" 前缀——与
+    LM-Studio /v1/embeddings 行为保持一致（对话历史同款向量语义）。
+    """
+
+    kind = "local"
+
+    DEFAULT_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+    _KNOWN_DIM = {"nomic-ai/nomic-embed-text-v1.5": 768}
+
+    def __init__(self, *, model: str = DEFAULT_MODEL, cache_dir: str | None = None) -> None:
+        self.model = model
+        self._cache_dir = cache_dir
+        self._dim = self._KNOWN_DIM.get(model, 768)
+        self._backend = None  # 惰性加载：首次 embed 才初始化（导入快，测试零依赖）
+
+    def _ensure_backend(self):
+        if self._backend is not None:
+            return self._backend
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as e:  # pragma: no cover - 可选依赖
+            raise ProviderError(
+                "fastembed not installed (pip install novelist[embedding])") from e
+        kw = {}
+        if self._cache_dir:
+            kw["cache_dir"] = self._cache_dir
+        try:
+            self._backend = TextEmbedding(model_name=self.model, **kw)
+        except Exception as e:  # noqa: BLE001 - 模型下载失败/损坏等一律走降级
+            raise ProviderError(f"fastembed load failed: {e}") from e
+        return self._backend
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        be = self._ensure_backend()
+        out = [[float(x) for x in vec] for vec in be.embed(texts)]
+        if out and out[0]:
+            self._dim = len(out[0])
+        return out
+
+
 def make_embedding(spec: str | None = None, **kw):
     """按配置名构造 Embedding Provider（docs/08 配置层 provider.embedding）。
 
-    - None / "" / "keyword" / "keyword-fallback" / "auto"（无 key 时）→ KeywordEmbedding
+    - None / "" / "keyword" / "keyword-fallback" / "none" / "off" → KeywordEmbedding
     - "openai" → OpenAIEmbedding；构造失败（缺 key/缺 httpx）自动降级为 KeywordEmbedding
+    - "local" / "fastembed" → LocalEmbedding（项目内置 ONNX，CPU）；
+      缺 fastembed 或模型加载失败降级 KeywordEmbedding
+    - "auto" → 依次尝试 openai（有 key 时）→ local → keyword
     """
     name = (spec or "keyword-fallback").lower()
     if name in ("keyword", "keyword-fallback", "none", "off"):
@@ -177,4 +235,29 @@ def make_embedding(spec: str | None = None, **kw):
             return OpenAIEmbedding(**kw)
         except ProviderError:
             return KeywordEmbedding()  # 缺 httpx 等 → 同样降级
+    if name in ("local", "fastembed"):
+        try:
+            import fastembed  # noqa: F401  # 构造期探针：LocalEmbedding 本体惰性加载，
+        except ImportError:     # 缺依赖必须在这里拦下，否则降级链失效
+            return KeywordEmbedding()
+        try:
+            return LocalEmbedding(**kw)
+        except Exception:  # noqa: BLE001 - 模型失败等 → 降级（F9.4）
+            return KeywordEmbedding()
+    if name == "auto":
+        import os
+
+        if kw.get("api_key") or os.getenv("OPENAI_API_KEY"):
+            try:
+                return OpenAIEmbedding(**kw)
+            except ProviderError:
+                pass
+        try:
+            import fastembed  # noqa: F401
+        except ImportError:
+            return KeywordEmbedding()
+        try:
+            return LocalEmbedding()
+        except Exception:  # noqa: BLE001
+            return KeywordEmbedding()
     return KeywordEmbedding()

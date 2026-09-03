@@ -32,6 +32,7 @@ TUNNELS_B = [
 # 本地 18006 → 远端 6006；chat 请求必须传 reasoning_effort:"none"（见 freetoken_deploy/DEPLOY.md）
 TUNNELS_C = [
     (18006, ("127.0.0.1", 6006)),  # LLM (ft serve)
+    (18010, ("127.0.0.1", 6010)),  # embedding（llama-server --embeddings，nomic Q4_K_M，CPU）
 ]
 
 

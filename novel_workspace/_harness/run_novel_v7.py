@@ -39,15 +39,23 @@ from novelist.storage.workspace import Workspace  # noqa: E402
 def _make_embedding():
     import urllib.request
 
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:1234/v1/models", timeout=3) as r:
-            if r.status == 200:
-                return OpenAIEmbedding(
-                    model="text-embedding-nomic-embed-text-v1.5",
-                    base_url="http://127.0.0.1:1234/v1", api_key="lmstudio")
-    except Exception:  # noqa: BLE001
-        pass
-    print("本地 embedding 不可达 → 关键词检索模式", flush=True)
+    # 优先云端 embedding（服务器 C llama-server --embeddings，隧道 18010；
+    # 2026-09-03 起 LLM+embedding 全部上云，本地 LM-Studio 仅作后备）
+    for url, model in (("http://127.0.0.1:18010/v1", "nomic-embed-text-v1.5"),
+                       ("http://127.0.0.1:1234/v1", "text-embedding-nomic-embed-text-v1.5")):
+        try:
+            req = urllib.request.Request(
+                f"{url}/embeddings",
+                data=json.dumps({"model": model, "input": "探测"}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                if r.status == 200:
+                    which = "云端" if "18010" in url else "本地"
+                    print(f"embedding: {which} nomic（{url}）", flush=True)
+                    return OpenAIEmbedding(model=model, base_url=url, api_key="probe")
+        except Exception:  # noqa: BLE001
+            continue
+    print("embedding 不可达 → 关键词检索模式", flush=True)
     return make_embedding("keyword-fallback")
 
 PID = "proj-yelan3"
@@ -125,7 +133,7 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         "events_revised": res.events_revised,
         "lessons_added": res.lessons_added,
         "jit_added": res.jit_added,
-        "settings_added": res.settings_added,
+        "settings_added": getattr(res, "settings_pending", 0),
         "usage": getattr(res, "usage", None),
     }
 
