@@ -263,6 +263,9 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
         # 均匀分配：第 ch 章属于 arcs[(ch-1)*len(arcs)//K]
         cur_arc = ctx.arcs[(ch - 1) * len(ctx.arcs) // K] if ch <= K else ctx.arcs[-1]
         arc_line = json.dumps(cur_arc, ensure_ascii=False)
+    threads_bp = [t for t in bp.section("threads") if t.get("id")]
+    threads_block = "；".join(
+        f"{t['id']}（{str(t.get('desc') or '')[:24]}）" for t in threads_bp[:12]) or "（本书暂无伏笔）"
     user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。
 
 【本卷主线】{vol_block}
@@ -281,7 +284,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 1. key_events 恰好 2–3 个（每章事件数上限），每个一句话、可执行、含动作与结果。
 2. after_days：相对上一事件的天数（连续推进填 0；有明确间隔填天数，如 3）。
 3. characters 用角色 id（char:xxx），只列本章实际出场者。
-4. threads_involved 用伏笔 id（pt:xxx）；本章没碰伏笔就空数组。
+4. threads_involved 只能从本书伏笔清单选 id：{threads_block}；本章没碰就空数组，禁止自造 id。
 5. turns 1–3 条：本章转折/推进点。
 
 【输出 JSON】
@@ -291,7 +294,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
   "key_events": ["事件1", "事件2"],
   "turns": ["转折/推进1"],
   "characters": ["char:xxx"],
-  "threads_involved": ["pt:xxx"],
+  "threads_involved": ["伏笔清单中的 pt:xxx"],
   "after_days": 0
 }}
 只输出 JSON。"""
@@ -837,8 +840,18 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
             continue
         cids.append(key)
         names.append(card.get("name") or key)
-    threads = [str(t) for t in (art.get("threads_involved") or [])
-               if str(t).startswith(("pt:", "thread:"))]
+    # D4：threads_involved 对齐 blueprint 实际伏笔——悬空 id 丢弃（模型自造语义名
+    # 如 pt:jade_talisman 与 thread_set 产出的 pt:N 体系不一致，V2 会 block）
+    valid_tids = {t.get("id") for t in bp.section("threads") if t.get("id")}
+    threads = []
+    for t in (art.get("threads_involved") or []):
+        ts = str(t)
+        if not ts.startswith(("pt:", "thread:")):
+            continue
+        if ts not in valid_tids:
+            warns.append(f"chapter {vol}-{ch}: 悬空伏笔引用丢弃 {ts!r}")
+            continue
+        threads.append(ts)
     key_events = _str_list(art.get("key_events"))[:6]
     if not key_events:
         if not art:
@@ -1145,7 +1158,81 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                 for src, row in zip((x for x in data if isinstance(x, dict)), rows):
                     row["type"] = _normalize_item_type(src)
             write(rel, rows)
+    # D2：seed 模式 build 无 settings 节点 → V3（settings ≥5）必挡、检索空转。
+    # 零 LLM 从蓝图实体合成种子卡；仅蓝图与磁盘双空时兜底（enrich 增量不被覆盖）。
+    if not bp.section("settings") and not ws._abs(f"{project_id}/bible/settings.json").exists():
+        write("bible/settings.json", synthesize_seed_settings(bp))
     return written
+
+
+def _setting_slug(name: str, fallback: str) -> str:
+    """实体名 → set id 后缀：ASCII 转小写下划线，中文等不可转字符走 md5 短哈希（确定性）。"""
+    import hashlib
+    import re as _re
+
+    slug = _re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+    if not slug:
+        slug = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+    return f"{fallback}_{slug}" or fallback
+
+
+def synthesize_seed_settings(bp: Blueprint) -> list[dict]:
+    """蓝图实体 → 种子设定卡（零 LLM，D2）。
+
+    卡形与 bible/settings.schema 对齐：{id: set:<kind>:<slug>, keywords, text,
+    revealed=false, first_ch}。文本只拼接卡上已有字段，**不发明新设定**——
+    应然事实仍以 bible 为准；检索库非空后 supplement_settings 才能滚动归类。
+    """
+    cards: list[dict] = []
+
+    def _card(kind: str, name: str, keywords: list[str], text: str, first_ch: int = 1) -> None:
+        text = text.strip("：;；,， ")
+        if not name or not text:
+            return
+        cards.append({"id": f"set:{kind}:{_setting_slug(name, kind)}",
+                      "keywords": [k for k in dict.fromkeys([name, *keywords]) if k],
+                      "text": text, "revealed": False, "first_ch": first_ch})
+
+    wv = bp.get("worldview") or {}
+    ps = _dict_of(wv.get("power_system"))
+    parts = []
+    if ps.get("mechanic"):
+        parts.append(f"力量机制：{ps['mechanic']}")
+    if ps.get("levels"):
+        parts.append(f"境界体系：{'、'.join(map(str, ps['levels']))}")
+    for r in (wv.get("rules") or [])[:3]:
+        parts.append(f"铁律：{r}")
+    if parts:
+        _card("world", str(wv.get("name") or "世界观"), ["境界", "修炼"],
+              "；".join(parts))
+
+    for c in bp.section("characters"):
+        pw = _dict_of(c.get("power"))
+        seg = [str(c.get("background") or "")]
+        if pw.get("level"):
+            seg.append(f"修为 {pw['level']}" + (f"（{pw['faction']}）" if pw.get("faction") else ""))
+        if pw.get("hidden_level"):
+            seg.append(f"隐藏实力 {pw['hidden_level']}")
+        _card("char", str(c.get("name") or ""),
+              [str(a) for a in (c.get("aliases") or [])],
+              f"{c.get('name')}：{'；'.join(x for x in seg if x)}",
+              int(((c.get("first_appear") or {}).get("ch")) or 1))
+
+    for kind, section in (("loc", "locations"), ("item", "items"), ("skill", "skills")):
+        for x in bp.section(section):
+            _card(kind, str(x.get("name") or ""),
+                  [str(a) for a in (x.get("aliases") or [])],
+                  f"{x.get('name')}：{x.get('desc') or x.get('note') or ''}")
+
+    # id 去重（同名跨段极端情况）
+    seen: set[str] = set()
+    uniq = []
+    for card in cards:
+        if card["id"] in seen:
+            continue
+        seen.add(card["id"])
+        uniq.append(card)
+    return uniq
 
 
 def synthesize_worldstate(bp: Blueprint) -> dict:

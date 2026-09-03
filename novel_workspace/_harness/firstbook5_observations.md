@@ -170,3 +170,17 @@ _resolve_forge_target。
   均在既定范围外，待拍板。
 - 全量回归 557 passed / 2 skipped（--ignore=tests/test_http.py；ana 环境无 fastapi，
   test_http 不可收集——环境漂移，与本次改动无关）。
+
+## 第二批修复落地（2026-09-03 深夜续，validate 全绿收口）
+
+| 项 | 修法 | 落点 | 测试 |
+|---|---|---|---|
+| D4 线程 id 断裂 | ①chapter prompt 注入本书伏笔清单（id+desc 摘要）并"禁止自造"；②apply 层对齐 characters 悬空引用处理——丢弃+warning | forge/nodes.py | test_d4_thread_refs.py（3） |
+| D2 settings 空库 | sync_bible 在蓝图 settings 段与磁盘文件双空时，零 LLM 从蓝图实体合成种子卡（worldview/characters/locations/items/skills 各一张，不发明新设定）；enrich 增量不被覆盖。同时缓解 D11（0 补） | forge/nodes.py | test_d2_seed_settings.py（4） |
+
+- 存量数据修复：blueprint.json + 细纲 1-4 的 `pt:jade_talisman` → `pt:2`（暗影组织
+  找前世物品，语义对应玉符线）；sync_bible 产 9 张种子卡；Checkpoint checksum 重录
+  （外部重写文件属合法修复路径，verify 一致）。
+- **validate 全绿**：block 0 / warn 3（V5 伏笔未回收 / V6 堆积与开篇实体超额，均
+  非阻断，5 章测试书本身已完结），pipeline 推进「细纲」。
+- 全量回归 564 passed / 2 skipped（+7 新测试）。
