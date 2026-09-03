@@ -150,6 +150,14 @@ _BOOK_OUTPUT_PROTOCOL = """{
 }"""
 
 
+# ---- D13：brief 硬约束锚点（不得改动项，全 forge prompt 注入） ----
+def _anchors_block(ctx: NodeContext) -> str:
+    anchors = ctx.bp.get("meta.anchors") or []
+    if not anchors:
+        return ""
+    return "\n".join(f"- {a}" for a in anchors[:12])
+
+
 def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
     bp, pack = ctx.bp, ctx.pack
     meta = bp.get("meta") or {}
@@ -171,6 +179,7 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
     )
     wv = bp.get("worldview") or {}
     ps = _dict_of(wv.get("power_system"))
+    anchors = _anchors_block(ctx)
     fixed = {
         "title": meta.get("title"),
         "genre": meta.get("genre"),
@@ -182,6 +191,8 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
         "style.pov": bp.get("style.pov"),
         "protagonist": proto_block,
     }
+    if anchors:
+        fixed["硬性锚点（用户原话，一字不得改写，时间跨度/数值/年龄均以此为准）"] = anchors
     user = f"""你是网文立项设定师。为一部新书产出完整设定骨架。只输出 JSON，不要任何解释。
 
 【创意提炼 / 已确定项（不得改动，须原样保留）】
@@ -211,11 +222,14 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     plan = next((v for v in bp.section("volumes") if v.get("vol") == vol), None)
     plan_block = json.dumps(plan, ensure_ascii=False, indent=2) if plan else "（无 book 规划，自行拟定）"
     arc = (ctx.pack or {}).get("volume_arc_hint") or "（无模板卷弧提示）"
+    anchors_block = _anchors_block(ctx)
+    anchor_section = (f"\n\n【硬性锚点（用户原话，本卷主线不得与之矛盾或偷改数值）】\n{anchors_block}"
+                      if anchors_block else "")
     user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}
+【流派卷弧提示】{arc}{anchor_section}
 
 【输出 JSON】
 {{
@@ -267,6 +281,12 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     threads_bp = [t for t in bp.section("threads") if t.get("id")]
     threads_block = "；".join(
         f"{t['id']}（{str(t.get('desc') or '')[:24]}）" for t in threads_bp[:12]) or "（本书暂无伏笔）"
+    anchors_block = _anchors_block(ctx)
+    anchor_section = (f"\n\n【硬性锚点（用户原话，细纲不得与之矛盾或偷改数值/时间跨度）】\n{anchors_block}"
+                      if anchors_block else "")
+    # D15：开篇 beat——第一章细纲必须包含世界/主角交代点
+    opening_rule = ("6. 全书第一章：key_events 须含一个开场交代事件（借冲突带出世界现状、"
+                    "力量体系与主角身份处境），并让本章出场人物完成亮相。" if (vol, ch) == (1, 1) else "")
     user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。
 
 【本卷主线】{vol_block}
@@ -275,7 +295,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【前一章（因果连续，必须衔接）】
 {prev_block}
-{actual_block}
+{actual_block}{anchor_section}
 【本章可用角色卡】
 {char_block}
 
@@ -287,6 +307,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 3. characters 用角色 id（char:xxx），只列本章实际出场者。
 4. threads_involved 只能从本书伏笔清单选 id：{threads_block}；本章没碰就空数组，禁止自造 id。
 5. turns 1–3 条：本章转折/推进点。
+{opening_rule}
 
 【输出 JSON】
 {{

@@ -523,7 +523,8 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 cast_lines: list[str] | None = None,
                 hist_lines: list[str] | None = None,
                 direction_lines: list[str] | None = None,
-                extra_readback: list[str] | None = None) -> str:
+                extra_readback: list[str] | None = None,
+                appeared_notes: list[str] | None = None) -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
@@ -536,6 +537,11 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
     # 延迟拟题（ADR-020 决策一）：事件级一律不输出标题，标题在整章拼完后统一拟
     parts += ["", "【输出纪律】直接写正文，**不要写章节标题**、不要写「第X章」字样；"
                   "不要重复上文已经写过的内容。"]
+    if appeared_notes:
+        parts += ["", "【本章已出场记录（防重复登场）】下列人物在前面事件已出场过；"
+                      "本场再写他们时，登场方式与互动动作必须与记录不同，"
+                      "严禁重复同样的出场套路（如已'窜出来吓人'就不得再窜出来）：",
+                  *appeared_notes[-12:]]
     if direction_lines:
         parts += ["", "【本场人物表演指令】（逐人遵守，违反即人物崩坏；"
                       "各人的语气与取舍必须彼此不同）：", *direction_lines]
@@ -1162,6 +1168,7 @@ def produce_chapter(
     chapter_title = ""
     directions_built = 0
     perspectives_written = 0
+    appeared_notes: list[str] = []  # D12：本章已出场记录（跨切片位置记忆，防重复登场）
     broadcasts_built = 0  # ADR-021：本章广播成功次数（事件级选角推理）
     rel_pairs = 0         # ADR-023：章末实然关系账本 pair 数
     rel_proposals = 0     # ADR-023：阈值触发的翻转提案数（入 enrich pending）
@@ -1353,23 +1360,32 @@ def produce_chapter(
                                 ex = _director.readback_excerpt(ws, project_id, c)
                                 if ex:
                                     extra_rb.append(ex)
-                        # 人物调度层（细纲与正文之间的第 3 次细化）
-                        if character_direction:
-                            sheet = _director.build_direction(
-                                ws, project_id, provider, vol=vol, ch=ch,
-                                event_index=idx, ev_text=ev_text, cards=cast_cards,
-                                history_lines=hist_lines, system_prompt=system_prompt)
-                            if sheet is not None:
-                                direction_lines = sheet.lines()
-                                _director.save_direction(ws, project_id, sheet)
-                                directions_built += 1
+                    # 人物调度层（细纲与正文之间的第 3 次细化）
+                    sheet = None
+                    if bible_chars and character_direction:
+                        sheet = _director.build_direction(
+                            ws, project_id, provider, vol=vol, ch=ch,
+                            event_index=idx, ev_text=ev_text, cards=cast_cards,
+                            history_lines=hist_lines, system_prompt=system_prompt)
+                        if sheet is not None:
+                            direction_lines = sheet.lines()
+                            _director.save_direction(ws, project_id, sheet)
+                            directions_built += 1
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
                                          memories_ev, is_last, setting_lines, related,
                                          readback_text, cast_lines=cast_lines,
                                          hist_lines=hist_lines,
                                          direction_lines=direction_lines,
-                                         extra_readback=extra_rb)
+                                         extra_readback=extra_rb,
+                                         appeared_notes=appeared_notes)
+                    # D12 跨切片位置记忆：本场出场方式记入防重复记录
+                    # （在 prompt 构建之后追加——本场记录只影响后续事件）
+                    _sheet_map = {d.name: d.how for d in (sheet.characters if sheet else [])}
+                    for _nm in cast_names:
+                        _how = _sheet_map.get(_nm)
+                        appeared_notes.append(
+                            f"- {_nm}（第{idx}场）：{_how or '出场'}")
 
                     # 递归分层 B（第七批第 5 条·用户拍板；P0-B 闸门化）：世界观滚动补充——
                     # 事件文本新专有名词 → LLM 提案 → 全部进 settings_pending.json

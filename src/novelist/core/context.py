@@ -168,6 +168,28 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         L.append("")
         L.append(f"【本卷主线】（每章都要服务于它）：{cur_vol['summary']}")
 
+    # D15：开篇元指令——第一章正文必须承担背景交代与人物亮相（网文开篇契约）
+    if (vol, ch) == (1, 1):
+        open_lines = [
+            "本章是全书第一章：开篇 1/3 篇幅内借场景与动作自然交代世界背景"
+            "（时代/世界现状/核心危机），不要写成设定说明书。",
+        ]
+        if levels:
+            open_lines.append(f"- 力量体系（{'>'.join(map(str, levels[:6]))}）需在场景中"
+                              f"让读者感知到（他人修炼境界对比、社会常识即可）。")
+        if rules:
+            open_lines.append("- 世界铁律中与本章相关的部分，随情节自然带出：" +
+                              "；".join(str(r) for r in rules[:3]))
+        proto = next((c for c in cast if c.get("is_protagonist")), None)
+        if proto:
+            open_lines.append(f"- 主角 {proto.get('name')} 的身份、处境与金手指机制要在此章"
+                              f"立起来（读者读完本章能复述'他是谁、他会什么、他想要什么'）。")
+        open_lines.append("- 本章出场的重要配角各给一次亮相：身份 + 与主角的关系 + 一处"
+                          "记忆点（外貌/口头禅/标志性动作任选其一）。")
+        L.append("")
+        L.append("【开篇任务】（仅第一章，优先级高于单章情节推进）")
+        L.extend(f"- {x}" if not x.startswith("-") else x for x in open_lines)
+
     if wv:
         L.append("")
         L.append("【世界设定】")
@@ -225,7 +247,10 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     # 事件级注入相关人物卡（讨论第 8 轮 RAG——system 不再全量塞人物卡）
     if cast:
         names = "、".join(
-            f"{c.get('name', '?')}（{((c.get('power') or {}).get('level') or '?')}）"
+            f"{c.get('name', '?')}（{((c.get('power') or {}).get('level') or '?')}"
+            + (f"，实际战力 {c['power']['hidden_level']}（刻意隐藏，越级表现是有意设定）"
+               if isinstance(c.get("power"), dict) and c["power"].get("hidden_level") else "")
+            + "）"
             for c in cast)
         L.append("")
         L.append(f"【人物名单】（只能使用下列人物，不得新造名字；本事件相关人物的"

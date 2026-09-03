@@ -43,6 +43,7 @@ class SeedSpec:
     tone_hint: str = ""
     scale_hint: dict = field(default_factory=dict)
     time_origin: str = ""
+    anchors: list[str] = field(default_factory=list)  # D13：brief 硬约束锚点（原话摘抄）
     unknowns: list[str] = field(default_factory=list)
 
 
@@ -81,6 +82,7 @@ def _seed_user_prompt(brief: str, packs: list[str], genre_pack: str | None) -> s
   "tone_hint": "文风基调提示（如：热血激昂/严谨冷肃/诙谐幽默）",
   "scale_hint": {{"volumes": 卷数, "chapters_per_volume": 每卷章数}},
   "time_origin": "故事时间原点（t=0 的语义锚点，如「叶蓝穿越之日」；没有则空串）",
+  "anchors": ["从创意原句中原样摘抄的硬性设定锚点（数字/时间跨度/年龄/事实因果），每条一字不改，如「灵气复苏仅过去了一年」「大学生，23 岁」；原句没有则空数组"],
   "unknowns": ["这句话里你无法确定、需要后续澄清的要素，每条一句"]
 }}"""
 
@@ -120,6 +122,7 @@ def _parse_seed_spec(raw: str) -> SeedSpec:
             "chapters_per_volume": int(sh["chapters_per_volume"]) if sh.get("chapters_per_volume") else 0,
         },
         time_origin=str(data.get("time_origin") or "").strip(),
+        anchors=[str(x).strip() for x in (data.get("anchors") or []) if str(x).strip()],
         unknowns=[str(x).strip() for x in (data.get("unknowns") or []) if str(x).strip()],
     )
 
@@ -177,6 +180,22 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
     bp.set_provenance("meta.scale", src, 1.0 if src == "user" else 0.8)
     if spec.time_origin:
         set_meta("time_origin", spec.time_origin, "llm", 0.8)
+
+    # D13：硬约束锚点——LLM 原话摘抄为候选，正则兜底补漏（数字/中文数字+单位，
+    # 取所在短句原话），并查重。下游所有 forge prompt 以「不得改动」注入，
+    # 防"一年"被改写为"第三年"。
+    anchors = list(dict.fromkeys(spec.anchors))
+    import re as _re
+
+    _num = r"(?:\d+|[一二两三四五六七八九十百千零]+)\s*(?:个\s*)?(?:年|月|天|日|岁|层|阶|倍|米|公里|里|名|位|座|枚|颗)"
+    for m in _re.finditer(_num, brief):
+        # 锚点=含该数量词的完整短句（按标点切），一字不改
+        seg = _re.split(r"[，。！？；;、]", brief)
+        hit = next((s.strip() for s in seg if m.group(0) in s), None)
+        if hit and hit not in anchors:
+            anchors.append(hit)
+    if anchors:
+        set_meta("anchors", anchors[:12], "user", 0.9)
 
     # worldview：包默认（template）+ 提炼的机制（llm）
     wv = bp.data["worldview"]
