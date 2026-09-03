@@ -64,7 +64,8 @@ CLOUD_MODEL = "qwen3.6-35b-a3b-fp8"
 GEN_TOKENS = 1200                              # reasoning_effort=none：预算即正文预算
 LENGTH_CAP_CHARS = 7000                        # Y-2 篇幅硬上限（与 v6 一致便于对比）
 LOG = Path(__file__).resolve().parent / "run_v7_log.jsonl"
-HEAVYWEIGHT_CHAPTERS = {7}                     # 1-5 内无重场戏（保留机制开关）
+HEAVYWEIGHT_CHAPTERS: set[int] = set()        # 2026-09-03：ch7 重场戏(剧本两遍)把 12GB 显存 OOM
+                                              # 打挂 backend（KV 8192 + 长上下文），测试书先全走事件循环
 
 ws = Workspace(root=str(ROOT / "novel_workspace"))
 
