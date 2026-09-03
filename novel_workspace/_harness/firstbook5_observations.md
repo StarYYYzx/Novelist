@@ -184,3 +184,18 @@ _resolve_forge_target。
 - **validate 全绿**：block 0 / warn 3（V5 伏笔未回收 / V6 堆积与开篇实体超额，均
   非阻断，5 章测试书本身已完结），pipeline 推进「细纲」。
 - 全量回归 564 passed / 2 skipped（+7 新测试）。
+
+## 分模块审核闸门 v1（2026-09-03 夜，ADR-024 首个落地件）
+
+用户指令：核心设定分模块，每模块一个审核开关（类似软件权限设置）；开关开 → 生成后
+展示给用户 → 可行 / 可行且该模块后续不再审核 / 给修改建议重生成；新旧矛盾如实告知，
+正文连带修订暂缓（用户明示搁置）。
+
+- 新模块 `forge/review.py`：8 个审核模块（book 段拆 6 + 卷纲/章纲）、review.json
+  状态（switches 默认全开 / pending / history）、评审稿渲染、确定性 diff。
+- build 闸门：节点成功后按开关落 pending → `_GateHalt` 正常收尾（stage=review）；
+  开头遇 pending 零调用直接交还；`gate=False` 供测试/脚本 bypass。
+- CLI 四命令：`switches / review / approve(--remember) / revise`；revise 的 book
+  模块走定向段重生成（单调用，不动其他模块），大纲模块删产物重跑节点（建议经
+  NodeContext.extra_instruction 注入）。
+- 测试 8 例全绿；存量测试补 gate=False（d3_protocol/m13/m14/m17/m18）。

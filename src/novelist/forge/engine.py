@@ -31,6 +31,8 @@ from ..storage.workspace import Workspace
 from . import genres as _genres
 from .nodes import (CHILD_KIND, LEAF_KINDS, NodeContext, chapter_range_of, run_node,
                     sync_bible, synthesize_worldstate, _load_json_list)
+from .review import (REVIEW_MODULES, load_review, mark_pending, pending_modules,
+                     render_review_md, resolve_pending, stage_pending_for_revise)
 from .state import Blueprint, ForgeState, append_transcript
 
 
@@ -47,6 +49,8 @@ class BuildResult:
     warnings: list[str] = field(default_factory=list)
     interrupted: bool = False
     blueprint_path: str = ""
+    gate_halted: bool = False
+    pending_review: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -108,6 +112,14 @@ def _persist_node(ws: Workspace, project_id: str, node_id: str, res: Any) -> Non
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+class _GateHalt(Exception):
+    """审核闸门暂停：携带本轮落 pending 的模块（走 try/finally 正常收尾）。"""
+
+    def __init__(self, modules: list[str]):
+        super().__init__(", ".join(modules))
+        self.modules = modules
+
+
 def _node_done(ws: Workspace, project_id: str, node_id: str) -> bool:
     fname = node_id.replace(":", "-") + ".json"
     return ws._abs(f"{project_id}/workspace/forge/nodes/{fname}").exists()  # noqa: SLF001
@@ -117,11 +129,13 @@ def build(ws: Workspace, project_id: str, *, provider,
           max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
           spec: Any = None, pack: dict | None = None,
           resume: bool = False, deepen: bool = True,
+          gate: bool = True,
           log_fn: Callable[[str], None] | None = None) -> BuildResult:
     """全权构建：book → 旁支 DFS（deepen）→ volume(全卷) → arc?/chapter(仅 vol=1)/beat?，
     末尾 worldstate 确定性合成。
 
     `resume=True`：跳过已落盘节点（幂等续跑）。`deepen=False` 退化为 F1 最小树。
+    `gate=False`：关闭审核闸门（ADR-024；单测/脚本直跑用，CLI 默认开）。
     `log_fn` 缺省打印进度行 `[calls/max] <node> … ok (calls=N)`。
     """
     bp = Blueprint.load(ws, project_id)
@@ -136,6 +150,26 @@ def build(ws: Workspace, project_id: str, *, provider,
     state.stage = "build"
     calls_used = int(state.calls_used or 0)
     log = log_fn or (lambda line: print(line, flush=True))
+
+    # ---- 审核闸门（ADR-024）：有待审模块 → 不消耗任何调用，直接交还用户 ----
+    pending_now = sorted(pending_modules(ws, project_id)) if gate else []
+    if pending_now:
+        for m in pending_now:
+            log(f"[gate] {REVIEW_MODULES[m]['label']}({m}) 待审核："
+                f"forge review {m} → approve / revise")
+        return BuildResult(ok=True, project_id=project_id,
+                           calls_used=calls_used, nodes_done=0,
+                           gate_halted=True, pending_review=pending_now,
+                           warnings=["审核闸门拦截：先处置 pending 模块再 build"])
+    gate_halted = False
+
+    def _gated(kind: str) -> list[str]:
+        """该节点产出中、开关为开的审核模块（gate=False 时恒空）。"""
+        if not gate:
+            return []
+        cfg = load_review(ws, project_id)
+        return [m for m, spec in REVIEW_MODULES.items()
+                if spec["kind"] == kind and cfg["switches"].get(m, True)]
 
     # 构建前置文件快照（docs/10 §7.6 F5）：rollback / --diff 的基线
     from .snapshot import take_snapshot
@@ -229,6 +263,11 @@ def build(ws: Workspace, project_id: str, *, provider,
             _persist_node(ws, project_id, "book", res)
             bp.save(ws, project_id)
             sync_bible(ws, project_id, bp)
+            # 审核闸门：book 产出模块按开关落 pending（ADR-024）
+            gated = _gated("book") if res is not None and res.ok else []
+            if gated:
+                mark_pending(ws, project_id, bp, gated, log_fn=log)
+                raise _GateHalt(gated)
 
         # ---- F4 旁支 DFS（docs/10 §7.1：worldview/character_group/style/thread_set）----
         # 次序（自定决策）：设定 → 人物 → 文风 → 伏笔，伏笔最后可引用前面产出
@@ -281,6 +320,11 @@ def build(ws: Workspace, project_id: str, *, provider,
                 _persist_node(ws, project_id, f"volume:{vol}", res)
                 if res is not None and res.ok:
                     volumes_written += 1
+                    gated_v = _gated("volume")
+                    if gated_v:
+                        mark_pending(ws, project_id, bp, gated_v, log_fn=log,
+                                     vol=vol)
+                        raise _GateHalt(gated_v)
                 bp.save(ws, project_id)
                 # F4b：volume expand → arc 节点（章段小弧，≤max_width）
                 if deepen and res is not None and res.decide == "expand" and res.children:
@@ -321,6 +365,11 @@ def build(ws: Workspace, project_id: str, *, provider,
                 res_ch = _call(ctx_ch, "chapter", 2, vol=1, ch=ch)
                 if res_ch is not None and res_ch.ok:
                     chapters_written += 1
+                    gated_c = _gated("chapter")
+                    if gated_c:
+                        mark_pending(ws, project_id, bp, gated_c, log_fn=log,
+                                     vol=1, ch=ch)
+                        raise _GateHalt(gated_c)
                 bp.save(ws, project_id)
                 # F4b：chapter expand → beat 节点（重场戏拍级提示，每章至多 1 次）
                 if deepen and res_ch is not None and res_ch.ok \
@@ -335,6 +384,9 @@ def build(ws: Workspace, project_id: str, *, provider,
                                   child=ctx_b.child)
                     _persist_node(ws, project_id, f"beat:1:{ch}", res_b)
                     bp.save(ws, project_id)
+    except _GateHalt as g:
+        gate_halted = True
+        warnings.append(f"审核闸门暂停（待处置：{g.modules}）——build/resume 在处置后可续跑")
     except KeyboardInterrupt:
         interrupted = True
         warnings.append("SIGINT：当前节点后落盘退出（被中断节点未落盘、calls_used 不回退）")
@@ -345,20 +397,22 @@ def build(ws: Workspace, project_id: str, *, provider,
         bp.save(ws, project_id)
         sync_bible(ws, project_id, bp)
         state.calls_used = calls_used
-        state.stage = "built" if not interrupted else "build"
+        state.stage = ("review" if gate_halted
+                       else "built" if not interrupted else "build")
         state.save(ws, project_id)
         append_transcript(ws, project_id, "build.end",
                           calls_used=calls_used, nodes_done=nodes_done,
                           chapters_written=chapters_written,
                           budget_exhausted=budget_exhausted,
-                          interrupted=interrupted,
+                          interrupted=interrupted, gate_halted=gate_halted,
                           warnings=warnings[:10])
         # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态
         from .snapshot import take_snapshot
 
         take_snapshot(ws, project_id, label="build-ok")
 
-    ok = not interrupted and not budget_exhausted and chapters_written > 0
+    ok = (not interrupted and not budget_exhausted
+          and (chapters_written > 0 or gate_halted))
     return BuildResult(
         ok=ok,
         project_id=project_id,
@@ -370,8 +424,104 @@ def build(ws: Workspace, project_id: str, *, provider,
         budget_limit=max_calls,
         warnings=warnings,
         interrupted=interrupted,
+        gate_halted=gate_halted,
+        pending_review=sorted(pending_modules(ws, project_id)) if gate_halted else [],
         blueprint_path=str(ws._abs(f"{project_id}/workspace/forge/blueprint.json")),  # noqa: SLF001
     )
+
+
+# ---- 审核 revise（ADR-024）：按用户建议重生成模块内容，重新落 pending ----
+def revise_module(ws: Workspace, project_id: str, module: str, suggestions: str,
+                  provider, *, log_fn: Callable[[str], None] | None = None) -> list[str]:
+    """重生成待审模块内容（book 模块定向段 / 大纲模块节点重跑）。
+
+    返回差异说明行（如实列出新旧矛盾；正文风险由调用方提示）。重生成后仍 pending。
+    """
+    from .nodes import revise_book_section
+
+    spec = REVIEW_MODULES.get(module)
+    if spec is None:
+        raise ValueError(f"unknown review module: {module}")
+    log = log_fn or (lambda line: print(line, flush=True))
+    cfg = load_review(ws, project_id)
+    entry = cfg["pending"].get(module)
+    if entry is None:
+        raise ValueError(f"{module}: 无待审内容（先触发该模块生成）")
+    vol = int(entry.get("vol") or 0)
+    ch = int(entry.get("ch") or 0)
+    stage_pending_for_revise(ws, project_id, module, suggestions)
+    bp = Blueprint.load(ws, project_id)
+    log(f"[gate] revise {module}（{spec['label']}）… 重生成中")
+
+    if spec["kind"] == "book":
+        _, diffs = revise_book_section(provider, bp, module, suggestions)
+        bp.save(ws, project_id)
+        sync_bible(ws, project_id, bp)
+        mark_pending(ws, project_id, bp, [module], log_fn=log)
+        return diffs
+
+    # ---- 大纲模块：删旧产物 → 带 extra_instruction 重跑节点（retry=1 同 build）----
+    def _run(kind: str, ctx: NodeContext):
+        try:
+            return run_node(ctx, kind)
+        except ValueError as e:
+            ctx.extra_instruction = f"{ctx.extra_instruction}\n（上次输出解析失败：{e}，请修正格式）"
+            return run_node(ctx, kind)
+
+    if spec["kind"] == "volume":
+        if not vol:
+            raise ValueError(f"{module}: pending 缺 vol")
+        old_row = next((x for x in bp.data.get("volumes") or []
+                        if int(x.get("vol") or 0) == vol), None)
+        nodes_d = ws._abs(f"{project_id}/workspace/forge/nodes")  # noqa: SLF001
+        (nodes_d / f"volume-{vol}.json").unlink(missing_ok=True)
+        ctx = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
+                          pack=_pack_for_bp(bp), vol=vol,
+                          extra_instruction=suggestions)
+        res = _run("volume", ctx)
+        _persist_node(ws, project_id, f"volume:{vol}", res)
+        bp.save(ws, project_id)
+        sync_bible(ws, project_id, bp)
+        mark_pending(ws, project_id, bp, [module], log_fn=log, vol=vol)
+        new_row = next((x for x in bp.data.get("volumes") or []
+                        if int(x.get("vol") or 0) == vol), None)
+        return diff_rows(old_row, new_row, f"volumes[vol={vol}]")
+
+    # chapter：旧细纲全文 diff（文本 unified diff）
+    if not (vol and ch):
+        raise ValueError(f"{module}: pending 缺 vol/ch")
+    gist_path = ws.outline_chapter_path(project_id, vol, ch)
+    old_text = gist_path.read_text(encoding="utf-8") if gist_path.exists() else ""
+    nodes_d = ws._abs(f"{project_id}/workspace/forge/nodes")  # noqa: SLF001
+    (nodes_d / f"chapter-{vol}-{ch}.json").unlink(missing_ok=True)
+    prev = None
+    if ch > 1:
+        from ..core.bible import parse_gist
+
+        prev = parse_gist(ws, project_id, vol, ch - 1)
+    arcs = [x for x in _load_json_list(ws, project_id, "outline/arcs.json")
+            if int(x.get("vol") or 0) == vol]
+    ctx = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
+                      pack=_pack_for_bp(bp), vol=vol, ch=ch, prev_gist=prev,
+                      arcs=arcs or None, extra_instruction=suggestions)
+    res = _run("chapter", ctx)
+    _persist_node(ws, project_id, f"chapter:{vol}:{ch}", res)
+    bp.save(ws, project_id)
+    sync_bible(ws, project_id, bp)
+    mark_pending(ws, project_id, bp, [module], log_fn=log, vol=vol, ch=ch)
+    new_text = gist_path.read_text(encoding="utf-8") if gist_path.exists() else ""
+    import difflib
+
+    return [ln for ln in difflib.unified_diff(
+        old_text.splitlines(), new_text.splitlines(),
+        fromfile="旧细纲", tofile="新细纲", lineterm="")][:80]
+
+
+def diff_rows(old: Any, new: Any, path: str) -> list[str]:
+    """大纲行旧→新确定性 diff（review.diff_section 的薄包装）。"""
+    from .review import diff_section
+
+    return diff_section(old, new, path)
 
 
 @dataclass

@@ -59,6 +59,7 @@ class NodeContext:
     ch: int = 0
     prev_gist: dict | None = None  # 前一章细纲（chapter 节点，因果连续）
     child: dict | None = None      # 父节点 children 中的当前项 brief（旁支/arc/beat 子节点）
+    extra_instruction: str = ""    # 审核 revise：用户修改建议追加进 user prompt
     arcs: list[dict] | None = None  # 本卷 arc 产物（chapter 节点 prompt 注入，F4b）
     extra: dict = field(default_factory=dict)  # roll 注入的四块上下文（§7.7）等
     extra_warnings: list[str] = field(default_factory=list)
@@ -1067,6 +1068,8 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
         raise ValueError(f"unknown node kind: {kind}")
     node_id = _node_id_of(kind, ctx)
     system, user = _ensure_json_hint(*_PROMPTS[kind](ctx))
+    if ctx.extra_instruction:
+        user += f"\n\n【用户修改建议（本轮重生成须落实）】\n{ctx.extra_instruction}"
     res = ctx.provider.complete(LLMRequest(
         messages=[LLMMessage(role="system", content=system),
                   LLMMessage(role="user", content=user)],
@@ -1089,6 +1092,68 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
                       children=node["children"], warnings=warns,
                       tokens_in=int(getattr(usage, "tokens_in", 0) or 0),
                       tokens_out=int(getattr(usage, "tokens_out", 0) or 0))
+
+
+# ---- 审核 revise：book 模块定向段重生成（ADR-024）----
+def revise_book_section(provider: Any, bp: Blueprint, module: str,
+                        suggestions: str) -> tuple[Any, list[str]]:
+    """按用户建议重生成单个 book 审核模块（一次 LLM 调用，只动该模块段）。
+
+    返回（新段内容, 与旧版的确定性 diff）。不落盘——调用方负责 bp.save/sync_bible。
+    """
+    from .review import REVIEW_MODULES, diff_section
+
+    spec = REVIEW_MODULES.get(module)
+    if not spec or spec["kind"] != "book":
+        raise ValueError(f"not a book-section module: {module}")
+    sections = spec["sections"]
+    old = {sec: bp.data.get(sec) for sec in sections}
+    meta = bp.get("meta") or {}
+    # 兄弟模块要点（保持连贯，不整体重生成）
+    sibling = {
+        "title": meta.get("title"), "genre": meta.get("genre"),
+        "logline": meta.get("logline"), "scale": meta.get("scale"),
+        "characters": [c.get("name") for c in bp.data.get("characters") or []],
+        "threads": [f"{t.get('id')}:{str(t.get('desc'))[:30]}"
+                    for t in bp.data.get("threads") or []],
+    }
+    cur_json = json.dumps(old, ensure_ascii=False, indent=2)
+    user = f"""你是网文设定修订师。只输出 JSON 对象，不要任何解释。
+
+【全书固定项（不得改动）】
+{json.dumps(sibling, ensure_ascii=False, indent=2)}
+
+【当前「{spec['label']}」模块内容】
+{cur_json}
+
+【用户修改建议（必须落实）】
+{suggestions}
+
+请输出该模块的新版 JSON：顶层键固定为 {json.dumps(sections, ensure_ascii=False)}，
+各键的值结构与「当前模块内容」完全一致。未涉及建议的部分尽量原样保留。"""
+    system = "你是网文设定修订师。严格按用户建议修订设定，只输出 JSON。"
+    system, user = _ensure_json_hint(system, user)
+    res = provider.complete(LLMRequest(
+        messages=[LLMMessage(role="system", content=system),
+                  LLMMessage(role="user", content=user)],
+        temperature=0.4, max_tokens_out=2600, response_format="json_object"))
+    if res.blocked:
+        from ..core.llm import ModerationBlockedError
+
+        raise ModerationBlockedError(res.block_reason, res.provider_note)
+    new = json.loads(res.content or "{}")
+    merged = {}
+    for sec in sections:
+        if sec in new:
+            merged[sec] = new[sec]
+            bp.data[sec] = new[sec]
+    if not merged:
+        raise ValueError(f"revise reply missing section keys {sections}")
+    bp.data["rev"] = int(bp.data.get("rev") or 1) + 1
+    diffs: list[str] = []
+    for sec in sections:
+        diffs.extend(diff_section(old.get(sec), merged.get(sec), sec))
+    return merged, diffs
 
 
 # ---- 确定性落盘（零 LLM）----

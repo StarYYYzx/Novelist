@@ -92,7 +92,7 @@ def _build_script():
 
 
 def _build_ok(ws, pid, max_calls=60):
-    r = build(ws, pid, provider=ScriptedProvider(_build_script()), max_calls=max_calls)
+    r = build(ws, pid, provider=ScriptedProvider(_build_script()), max_calls=max_calls, gate=False)
     assert r.ok, r.warnings
     return r
 

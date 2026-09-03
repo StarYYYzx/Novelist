@@ -91,7 +91,7 @@ def _deepen_script(chapters=2):
 def test_deepen_side_branches(ws_factory, capsys):
     ws, pid = ws_factory("proj-f4a")
     _init_bp(ws, pid)
-    r = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60)
+    r = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60, gate=False)
     assert r.ok, r.warnings
     # 旁支调用计数：book1 + worldview1 + system2 + cg1 + style1 + ts1 + vol2 + ch2 = 11
     assert r.calls_used == 11, r.calls_used
@@ -120,7 +120,7 @@ def test_deepen_side_branches(ws_factory, capsys):
 def test_deepen_resume_skips_done_nodes(ws_factory, capsys):
     ws, pid = ws_factory("proj-f4r")
     _init_bp(ws, pid)
-    r1 = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60)
+    r1 = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60, gate=False)
     assert r1.ok
     n1 = r1.calls_used
     # resume：nodes/ + 产物齐备 → 零新调用
@@ -144,7 +144,7 @@ def test_arc_and_beat_layers(ws_factory, capsys):
                        "expand", [{"id": "beat1", "brief": "玉牌认主的节拍"}])
     # beat 回复必须插在 chapter 1-1 之后、1-2 之前（引擎 DFS 顺序）
     script.insert(10, _reply({"beats": ["拍1：拾玉（低）", "拍2：认主（高）"]}))
-    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60)
+    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False)
     assert r.ok, r.warnings
     # arc 落盘（自定决策：outline/arcs.json 独立文件）
     arcs = json.loads(ws._abs(f"{pid}/outline/arcs.json").read_text(encoding="utf-8"))
@@ -172,7 +172,7 @@ def test_max_width_truncation_warning(ws_factory, capsys):
     for i in range(1, 5):
         script[1 + i] = _reply({"title": f"d{i}", "kind": "power",
                                 "settings": [{"id": f"set:d{i}", "keywords": ["k"], "text": "t"}]})
-    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60)
+    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False)
     assert r.ok
     assert any("超出 max_width=4" in w for w in r.warnings)
     capsys.readouterr()

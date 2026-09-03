@@ -454,6 +454,23 @@
 - **影响**：A1 直接修复 = mechanic 从一句话升级为"条款子槽"（T1）；enrich/广播/正文在
   "将造新机制语义而 bible 无条款"处触发 gate 或记 pending；run_consult 触发点扩展。
   待编码项记入 `docs/问题总账`。
+- **落地 v1（2026-09-03，已编码）：分模块审核闸门**。用户指令："核心设定分模块，每模块
+  一个是否审核的开关，像软件的权限设置；开关开则生成后展示给用户，可行/可行且该模块
+  不再审核/给修改建议重生成；新旧矛盾如实告知，正文连带修订暂缓"。
+  - 模块注册表（forge/review.py `REVIEW_MODULES`，依照节点谱系分配）：book 产出按
+    协议段拆 6 模块（worldview/characters/entities/threads/style/volumes），
+    volume/chapter 节点各对应 outline_volume/outline_chapter。
+  - 状态 `{project}/workspace/forge/review.json`：switches（默认全开，安全优先）/
+    pending / history。
+  - build 闸门：book/volume/chapter 节点成功后按开关落 pending + 渲染评审稿
+    `reviews/<module>.md` → `_GateHalt` 走 try/finally 正常收尾（stage=review）；
+    build 开头遇 pending 零调用直接交还。`gate=False` 参数供单测/脚本 bypass。
+  - CLI：`forge switches [MODULE on|off]`、`forge review [MODULE]`、
+    `forge approve <m> [--remember]`（--remember = 可行且后续不再审核）、
+    `forge revise <m> "建议"`（book 模块定向段重生成单调用；大纲模块删产物重跑节点，
+    `extra_instruction` 注入建议；新旧差异确定性 diff 如实列出；已有正文时提示
+    旧文风险，自动修订暂缓——按用户指示搁置）。
+  - 测试 8 例（tests/test_review_gate.py）；存量 build/run_seed 测试补 `gate=False`。
 
 
 ## 6. 与其他备选方案的对比小结

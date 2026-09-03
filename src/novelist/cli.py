@@ -605,6 +605,124 @@ def forge_show(ctx: click.Context, directory: str | None) -> None:
         click.echo(line)
 
 
+# ---- 审核闸门命令（ADR-024：分模块权限开关）----
+
+@forge.command("review")
+@click.argument("module", required=False, default=None)
+@click.option("--dir", "directory", default=None, help="目标项目目录")
+@click.pass_context
+def forge_review(ctx: click.Context, module: str | None, directory: str | None) -> None:
+    """查看待审模块：无参列出 pending；给 MODULE 打印该模块评审稿全文。"""
+    from novelist.forge.review import REVIEW_MODULES, load_review
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    cfg = load_review(ws, project_id)
+    if module is None:
+        if not cfg["pending"]:
+            click.echo("（无待审模块）")
+            return
+        click.echo(f"== {project_id} 待审模块 ==")
+        for m, e in sorted(cfg["pending"].items()):
+            label = REVIEW_MODULES[m]["label"]
+            click.echo(f"  {m}（{label}）→ {e['file']}")
+        click.echo("处置：forge review <module> 看全文；forge approve/revise <module>")
+        return
+    if module not in REVIEW_MODULES:
+        raise click.ClickException(f"未知模块 {module}；可选：{', '.join(REVIEW_MODULES)}")
+    e = cfg["pending"].get(module)
+    if e is None:
+        raise click.ClickException(f"{module}: 无待审内容")
+    path = ws._abs(f"{project_id}/{e['file']}")  # noqa: SLF001
+    click.echo(path.read_text(encoding="utf-8") if path.exists()
+               else f"（评审稿缺失：{e['file']}）")
+
+
+@forge.command("approve")
+@click.argument("module")
+@click.option("--remember", is_flag=True, default=False,
+              help="可行，且该模块后续不再审核（开关永久关闭）")
+@click.option("--dir", "directory", default=None, help="目标项目目录")
+@click.pass_context
+def forge_approve(ctx: click.Context, module: str, remember: bool,
+                  directory: str | None) -> None:
+    """审核通过：清除 pending；--remember 同时永久关闭该模块审核开关。"""
+    from novelist.forge.review import REVIEW_MODULES, resolve_pending
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    if module not in REVIEW_MODULES:
+        raise click.ClickException(f"未知模块 {module}；可选：{', '.join(REVIEW_MODULES)}")
+    resolve_pending(ws, project_id, module, decision="approved",
+                    remember=remember)
+    click.echo(f"approve {module} ✓" + ("（后续不再审核该模块）" if remember else ""))
+
+
+@forge.command("revise")
+@click.argument("module")
+@click.argument("suggestions")
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--dir", "directory", default=None, help="目标项目目录")
+@click.pass_context
+def forge_revise(ctx: click.Context, module: str, suggestions: str,
+                 provider: str, directory: str | None) -> None:
+    """按修改建议重生成模块内容并再次展示（新旧差异如实列出）。"""
+    from novelist.forge.engine import revise_module
+    from novelist.forge.review import REVIEW_MODULES, load_review
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    if module not in REVIEW_MODULES:
+        raise click.ClickException(f"未知模块 {module}；可选：{', '.join(REVIEW_MODULES)}")
+    if module not in load_review(ws, project_id)["pending"]:
+        raise click.ClickException(f"{module}: 无待审内容")
+    diffs = revise_module(ws, project_id, module, suggestions,
+                          _make_cli_provider(provider))
+    click.echo(f"revise {module} 完成，仍待审核。与旧版差异：")
+    if diffs:
+        for ln in diffs[:40]:
+            click.echo(f"  {ln}")
+        if len(diffs) > 40:
+            click.echo(f"  …（共 {len(diffs)} 条，详见评审稿）")
+    else:
+        click.echo("  （无结构差异）")
+    chapters = ws._abs(f"{project_id}/chapters")  # noqa: SLF001
+    if chapters.exists() and any(chapters.iterdir()):
+        click.echo("  [risk] 项目已有正文——基于旧设计生成的章节可能与新设定不一致"
+                   "（正文自动修订暂缓，需人工复核）")
+
+
+@forge.command("switches")
+@click.argument("module", required=False, default=None)
+@click.argument("state", required=False, default=None,
+                type=click.Choice(["on", "off"]))
+@click.option("--dir", "directory", default=None, help="目标项目目录")
+@click.pass_context
+def forge_switches(ctx: click.Context, module: str | None, state: str | None,
+                   directory: str | None) -> None:
+    """查看/设置模块审核开关（on=需审核）：forge switches [MODULE on|off]。"""
+    from novelist.forge.review import REVIEW_MODULES, load_review, set_switch
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    cfg = load_review(ws, project_id)
+    if module is None:
+        click.echo(f"== {project_id} 审核开关 ==")
+        for m, spec in REVIEW_MODULES.items():
+            on = cfg["switches"].get(m, True)
+            pend = "（待审）" if m in cfg["pending"] else ""
+            click.echo(f"  {'开' if on else '关'}  {m}（{spec['label']}）{pend}")
+        return
+    if module not in REVIEW_MODULES:
+        raise click.ClickException(f"未知模块 {module}；可选：{', '.join(REVIEW_MODULES)}")
+    if state is None:
+        on = cfg["switches"].get(module, True)
+        click.echo(f"{module}: {'开（需审核）' if on else '关（LLM 自由发挥）'}")
+        return
+    set_switch(ws, project_id, module, state == "on")
+    click.echo(f"{module} → {'开（需审核）' if state == 'on' else '关（LLM 自由发挥）'}")
+
+
 # forge seed 的 fake 演示回复（SeedSpec JSON；构建节点走宽容降级，链路完整可演示）
 _FAKE_SEED_REPLY = json.dumps({
     "genre": "修仙", "template_suggestion": "修仙男频",
@@ -724,6 +842,11 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
                 max_calls=max_calls, resume=False, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
+    if res.gate_halted:
+        click.echo("审核闸门：以下模块待处置后再续跑 build/resume：")
+        for m in res.pending_review:
+            click.echo(f"  - {m}（forge review {m} → approve / revise）")
+        return
     click.echo(f"build done: calls={res.calls_used} nodes={res.nodes_done} "
                f"卷={res.volumes_written} 章={res.chapters_written}")
     if not res.ok:
@@ -798,6 +921,11 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
                 max_calls=max_calls, resume=True, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
+    if res.gate_halted:
+        click.echo("审核闸门：以下模块待处置后再续跑：")
+        for m in res.pending_review:
+            click.echo(f"  - {m}（forge review {m} → approve / revise）")
+        return
     click.echo(f"resume done: calls={res.calls_used} nodes={res.nodes_done} "
                f"卷={res.volumes_written} 章={res.chapters_written}")
     if not res.ok and not res.interrupted:

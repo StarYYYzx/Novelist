@@ -174,7 +174,7 @@ def test_run_seed_scales_user_cli_overrides(ws_factory):
 
 def test_run_seed_fallback_on_bad_reply(ws_factory, capsys):
     ws, pid = ws_factory("proj-f1f")
-    res = run_seed(ws, pid, "一句话", provider=FakeProvider(reply="not json at all"),
+    res = run_seed(ws, pid, "一句话", provider=FakeProvider(reply="not json at all"), gate=False,
                    volumes=1, chapters_per_volume=1, target_words=500, max_calls=60)
     # 提炼失败 → 兜底 spec（不崩）；构建随 book 节点失败而回退（无细纲）
     assert any("提炼失败" in w for w in res.warnings)
@@ -187,7 +187,7 @@ def test_run_seed_interactive_downgrades_on_no_tty(ws_factory, monkeypatch, caps
     ws, pid = ws_factory("proj-f1i")
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-    res = run_seed(ws, pid, "一句话", provider=FakeProvider(reply=SEED_REPLY),
+    res = run_seed(ws, pid, "一句话", provider=FakeProvider(reply=SEED_REPLY), gate=False,
                    mode="interactive", volumes=1, chapters_per_volume=1, target_words=500)
     assert res.mode_used == "auto"
     assert any("非交互环境" in w for w in res.warnings)
@@ -298,7 +298,7 @@ def test_ag1_seed_to_chapter_production(ws_factory):
     """AG1：一句话 + ScriptedProvider → 项目可直接 chapter 1 1 且 bible_injected=True、cast 非空。"""
     ws, pid = ws_factory("proj-ag1")
     provider = ScriptedProvider(_ag1_script(volumes=2, chapters=2))
-    res = run_seed(ws, pid, "五五开系统修仙文", provider=provider,
+    res = run_seed(ws, pid, "五五开系统修仙文", provider=provider, gate=False,
                    volumes=2, chapters_per_volume=2, target_words=1000, deepen=False)
     assert res.ok, res.warnings
     b = res.build
@@ -351,13 +351,13 @@ def test_engine_resume_is_idempotent(ws_factory, capsys):
     bp = _init_blueprint(ws, pid, "brief", spec, load_pack_for("修仙男频"), "修仙男频",
                          2, 2, 1000)
     bp.save(ws, pid)
-    r1 = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)),
+    r1 = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)), gate=False,
                max_calls=60, deepen=False)
     assert r1.ok and r1.chapters_written == 2
     n1 = r1.calls_used
 
     # resume：全部节点已落盘 → 不再调用 LLM，calls_used 不增长
-    r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True, deepen=False)
+    r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True, deepen=False, gate=False)
     assert r2.calls_used == n1  # 续跑零新调用
     assert r2.chapters_written == 0
     # 落盘内容未被破坏
@@ -374,7 +374,7 @@ def test_engine_budget_exhaustion(ws_factory, capsys):
     bp = _init_blueprint(ws, pid, "brief", spec, load_pack_for("修仙男频"), "修仙男频",
                          2, 2, 1000)
     bp.save(ws, pid)
-    r = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)),
+    r = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)), gate=False,
               max_calls=1, deepen=False)
     assert r.budget_exhausted is True
     assert any("预算耗尽" in w for w in r.warnings)
@@ -393,7 +393,7 @@ def test_engine_parse_failure_falls_back_to_parent(ws_factory, capsys):
                          1, 2, 1000)
     bp.save(ws, pid)
     # book/volume 失败（垃圾回复）→ 用 seed 骨架继续；chapter 失败 → 不落盘
-    r = build(ws, pid, provider=FakeProvider(reply="不是 JSON 的回复文本"),
+    r = build(ws, pid, provider=FakeProvider(reply="不是 JSON 的回复文本"), gate=False,
               max_calls=60, deepen=False)
     assert any("回退父层产物" in w or "重试" in w for w in r.warnings)
     # book 失败但 seed 骨架仍在（worldview/主角不丢）

@@ -287,7 +287,7 @@ def test_seed_consult_quit_early_no_build(ws_factory, monkeypatch):
     monkeypatch.setattr("sys.stdout", FakeTTY([]))
     res = run_seed(ws, pid, "叶蓝绑定五五开系统", provider=FakeProvider(reply='{"genre": "修仙"}'),
                    mode="interactive", volumes=1, chapters_per_volume=1, target_words=100,
-                   max_calls=60)
+                   max_calls=60, gate=False)
     assert res.quit_early is True
     assert res.build.get("ok") is False  # 未构建
     state = ForgeState.load(ws, pid)
@@ -340,7 +340,7 @@ def test_seed_consult_completes_then_builds(ws_factory, monkeypatch):
 
     res = run_seed(ws, pid, "叶蓝绑定五五开系统", provider=ScriptLLM(replies),
                    mode="interactive", volumes=1, chapters_per_volume=1, target_words=100,
-                   max_calls=60)
+                   max_calls=60, gate=False)
     assert res.quit_early is False
     assert res.ok is True
     assert res.build.get("ok") is True
@@ -393,6 +393,12 @@ def test_cli_resume_build_branch(ws_factory, monkeypatch):
                         lambda p: ScriptedProvider([{"final": book}, {"final": vol}, {"final": ch}]))
     runner = CliRunner()
     monkeypatch.chdir(str(ws._abs("")))  # noqa: SLF001
+    # 本测试验证 resume 分支而非审核闸门：全关开关（ADR-024）
+    from novelist.forge.review import REVIEW_MODULES, load_review, save_review
+
+    cfg = load_review(ws, pid)
+    cfg["switches"] = {m: False for m in REVIEW_MODULES}
+    save_review(ws, pid, cfg)
     result = runner.invoke(cli, ["forge", "resume", pid, "--provider", "fake", "--no-deepen"])
     assert result.exit_code == 0, result.output
     assert "resume done" in result.output

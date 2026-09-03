@@ -40,7 +40,7 @@ def _script(*, chapter_reply):
 def _run(ws_factory, pid_suffix: str, script):
     ws, pid = ws_factory(f"proj-d3-{pid_suffix}")
     res = run_seed(ws, pid, "五五开系统修仙文", provider=ScriptedProvider(script),
-                   volumes=2, chapters_per_volume=2, target_words=1000, deepen=False)
+                   volumes=2, chapters_per_volume=2, target_words=1000, deepen=False, gate=False)
     return ws, pid, res
 
 
