@@ -73,13 +73,9 @@ def run(ctx: click.Context, directory: str | None, to_stage: str) -> None:
     from novelist.core.pipeline import PipelineStateMachine, PipelineStateError, PIPELINE_STAGES
     from novelist.consistency import run_consistency
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     ck = Checkpoint(ws)
     try:
-        root = ws._abs("")
-        project_id = _locate_project(root)
         project = ck.restore(project_id)
     except WorkspaceError as e:
         raise click.ClickException(str(e)) from e
@@ -143,12 +139,8 @@ def _advance_to(st, target: str) -> None:
 @click.pass_context
 def status(ctx: click.Context, directory: str | None) -> None:
     """查询进度与统计（docs/07 §6.1）。"""
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     ck = Checkpoint(ws)
-    root = ws._abs("")
-    project_id = _locate_project(root)
     try:
         project = ck.restore(project_id)
     except Exception as e:  # noqa: BLE001
@@ -209,13 +201,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     from novelist.core.tools import PermissionGate
     from novelist.tools import build_registry
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     ck = Checkpoint(ws)
-    root = ws._abs("")
     try:
-        project_id = _locate_project(root)
         ck.restore(project_id)
     except Exception as e:  # noqa: BLE001
         raise click.ClickException(f"chapter: {e}") from e
@@ -400,11 +388,7 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
     from novelist.core.tools import PermissionGate
     from novelist.tools import build_registry
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    project_id = _locate_project(ws._abs(""))
-
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     if not all_chapters and (vol is None or ch is None):
         raise click.ClickException("specify --vol/--ch, or use --all")
 
@@ -445,10 +429,7 @@ def review(ctx: click.Context, directory: str | None, provider: str, max_show: i
     """
     from novelist.consistency import run_consistency
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    project_id = _locate_project(ws._abs(""))
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
 
     llm = None
     if provider and provider != "none":
@@ -476,11 +457,7 @@ def grant(ctx: click.Context, directory: str | None, approve_id: str | None, den
     """处理待决门禁审批（docs/07 §6.1，F6.1）。不传 --approve/--deny 时列出待决列表。"""
     from novelist.core.approval import ApprovalQueue
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    root = ws._abs("")
-    project_id = _locate_project(root)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     queue = ApprovalQueue.load_persisted(persist_dir=ws._abs(f"{project_id}/logs"))
 
     if approve_id or deny_id:
@@ -511,11 +488,7 @@ def export(ctx: click.Context, directory: str | None, fmt: str, out: str | None,
     """导出发布包（docs/07 §6.1，F8.1）。fmt=docx 直接产出 Word 成稿（M3o）。"""
     from novelist.core.export import export_project
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    root = ws._abs("")
-    project_id = _locate_project(root)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     text = export_project(ws, project_id, include_drafts=include_drafts)
     if fmt == "docx":
         import os
@@ -549,11 +522,7 @@ def stats(ctx: click.Context, directory: str | None) -> None:
     """输出项目统计（docs/07 §6.1，F8.2）。"""
     from novelist.core.export import collect_stats
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    root = ws._abs("")
-    project_id = _locate_project(root)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     s = collect_stats(ws, project_id)
     click.echo(f"project: {project_id}")
     click.echo(f"chapters(published): {s.chapters}")
@@ -611,22 +580,8 @@ def forge() -> None:
 
 
 def _resolve_forge_target(ws: Workspace, directory: str | None) -> tuple[Workspace, str]:
-    """解析 forge 目标项目：目录直传项目/根，缺省取 workspace 根下唯一项目。"""
-    import pathlib
-
-    if directory:
-        ws = Workspace(root=directory)
-    root = pathlib.Path(ws._abs(""))
-    if (root / "project.json").exists():
-        return Workspace(root=str(root.parent)), root.name
-    found = sorted(d.name for d in root.iterdir() if d.is_dir() and (d / "project.json").exists())
-    if not found:
-        raise click.ClickException("no project found; run `novelist init` first")
-    if len(found) > 1:
-        raise click.ClickException(
-            f"multiple projects found: {found}; target one explicitly (e.g. forge show novel_workspace/proj-t5)"
-        )
-    return ws, found[0]
+    """解析 forge 目标项目（D7 起委托 _resolve_project，全 CLI 单一定位语义）。"""
+    return _resolve_project(ws, directory)
 
 
 @forge.command("show")
@@ -1036,11 +991,7 @@ def settings_pending(ctx: click.Context, directory: str | None, allow: str | Non
     """
     import json as _json
 
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    root = ws._abs("")
-    project_id = _locate_project(root)
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     pending_path = ws._abs(f"{project_id}/bible/settings_pending.json")
     settings_path = ws._abs(f"{project_id}/bible/settings.json")
     pending = _json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
@@ -1096,10 +1047,7 @@ def characters_enrich(ctx: click.Context, directory: str | None, provider: str,
     人工确认走 `novelist enrich-pending --allow/--deny`（settings-pending 同款）。
     提案输入含该卡 character_histories 与涉卡事件——应然设定不与已发生事实冲突。
     """
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    project_id = _locate_project(ws._abs(""))
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     from novelist.core.character_enrich import propose
 
     cards = {c.get("id"): c for c in _read_chars(ws, project_id)}
@@ -1139,10 +1087,7 @@ def enrich_pending(ctx: click.Context, directory: str | None, allow: str | None,
     --allow 确认合并（relationships/behavior_rules 并入卡，打 provenance=enrich），
     --deny 拒绝丢弃；无参数时列出全部待确认项。
     """
-    ws: Workspace = ctx.obj["workspace"]
-    if directory:
-        ws = Workspace(root=directory)
-    project_id = _locate_project(ws._abs(""))
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
     from novelist.core.character_enrich import apply_pending, list_pending
 
     if not allow and not deny:
@@ -1238,16 +1183,34 @@ def docx_from_md(src: str, out: str | None, title: str | None, font_body: str,
     click.echo(f"{p.name} → {dst}（{dst.stat().st_size} 字节）")
 
 
+def _resolve_project(ws: Workspace, directory: str | None) -> tuple[Workspace, str]:
+    """统一项目定位（D7，与 forge _resolve_forge_target 同语义）。
+
+    directory 可直指项目目录（含 project.json）或工作区根；缺省取根下唯一项目。
+    返回 (可能重绑定到项目父目录的 ws, project_id)——直指项目目录时 ws 必须重绑，
+    否则后续 `ws._abs(f"{project_id}/...")` 会路径翻倍。
+    """
+    import pathlib
+
+    if directory:
+        ws = Workspace(root=directory)
+    root = pathlib.Path(ws._abs(""))
+    if (root / "project.json").exists():
+        return Workspace(root=str(root.parent)), root.name
+    return ws, _locate_project(root)
+
+
 def _locate_project(root) -> str:
-    """在当前根下定位唯一项目 id（首层子目录中含 project.json 的）。"""
+    """在根下定位项目 id（首层子目录中含 project.json 的；多个/零个报错并提示直传目录）。"""
     import pathlib
 
     rp = pathlib.Path(root)
-    found = [d.name for d in rp.iterdir() if d.is_dir() and (d / "project.json").exists()]
+    found = sorted(d.name for d in rp.iterdir() if d.is_dir() and (d / "project.json").exists())
     if not found:
         raise click.ClickException("no project found; run `novelist init` first")
     if len(found) > 1:
-        raise click.ClickException(f"multiple projects found: {found}; target one explicitly")
+        raise click.ClickException(
+            f"multiple projects found: {found}; target one explicitly（目录参数直传项目目录即可）")
     return found[0]
 
 
