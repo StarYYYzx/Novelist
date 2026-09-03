@@ -246,6 +246,12 @@ threads_involved: ["pt:V017"]
   ]
 }
 ```
+> 注（2026-09-03）：本文件是"关系变化事件日志"（`MemoryWriter.record_relationship_change`
+> 写入，目前无管线调用方）。**实然关系账本**另立 `memory/relationship_ledger.json`
+> （ADR-023，core/rel_ledger.py）——从 character_histories 视角 relations delta 确定性聚合的
+> **可再生投影**（ADR-016，可删除重建，非事实源），含 pair state/trend/diverged/by/last_event
+> 与阈值翻转标记；消费方读账本行时先查它，bible 关系行（应然）仅由 enrich pending 人工
+> `--allow` 改写。
 
 #### 记忆碎片索引 `memory/fragment_index.json`
 - 每条记忆碎片登记 `id/kind/source(vol,ch)/refs` + 内容 hash，供编纂去重、冲突定位、索引重建增量更新。

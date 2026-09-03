@@ -112,6 +112,16 @@ def _prior_block(ws, project_id: str, char_id: str) -> str:
         if mine:
             out.append("【涉该角色的事件】")
             out.extend(f"- {str(e.get('summary') or '')[:120]}" for e in mine)
+    # A3 补充：实然关系账本状态行（ADR-023 账本，勿与已观测的关系趋势冲突）
+    from .rel_ledger import ledger_lines_for  # noqa: PLC0415 - 反向引用防环
+
+    try:
+        rel_lines = ledger_lines_for(ws, project_id, char_id, limit=3)
+    except Exception:  # noqa: BLE001 - 账本缺失/异常不影响提案
+        rel_lines = []
+    if rel_lines:
+        out.append("【实然关系账本（该角色最近关系状态/趋势）】")
+        out.extend(rel_lines)
     return "\n".join(out) if out else "（无前情记录，该角色未正式登场）"
 
 

@@ -384,10 +384,15 @@
   4. ✅ 注册方式 = 工厂过闸门后**自动注册 active**（用户口径"生产新人物并进行相关的
      注册"），事后人工可修改/回退；另保留 `status=pending` 人工预审模式作备选。
 
-### ADR-023 人物关系账本与关系视图（A2 落地 · 设计定稿 2026-09-03，待编码）
+### ADR-023 人物关系账本与关系视图（A2 落地 · 设计定稿 2026-09-03，**已编码 v1 2026-09-03**）
 
 > 背景：A2（relationships/behavior_rules 语义与"事件性"溯源）暴露三缺口——N4 视角 delta
 > 是散点无状态聚合、bible 关系行是死文本不随事件刷新、无"关系状态→官方设定"升级通道。
+>
+> 落地实证（v1，2026-09-03）：**前提失守先修**——现网 35/35 条视角记录的 relations 全空
+> （N4 第 4 段"可选"被模型长期忽略），已把 PERSPECTIVE_PROMPT 第 4 段改**必答 +
+> 方向词表**（升温/降温/转向/断裂/复合，格式 `对<名>：<方向>·<变化短语>`），解析器兼容
+> 旧自由文本并容忍"对"前缀、丢弃"无"；账本聚合读取 chronicler 原样存的 delta，纯确定性。
 
 - **决策（D1/D2/D3，2026-09-03 用户逐条拍板）**：
   1. **视角事件不写进 bible 卡**（D1）——卡每事件注入，塞事件流会烧 token 且混淆
@@ -411,6 +416,22 @@
   现阶段几十人规模 dict+邻接表足够；数百实体/跨卷党争再评估真图存储。
 - **影响**：chronicler 事件末多一步账本聚合（确定性）；orchestrator 事件循环 hook 追加；
   注入渲染读账本状态行；`docs/08` 排期时挂 M3t 类里程碑。待编码项记入 `docs/问题总账`。
+- **实现（v1，core/rel_ledger.py，2026-09-03）**：
+  - 账本落 **`memory/relationship_ledger.json`**（命名偏差说明：本 ADR 原文写
+    `memory/relationships.json`，但该名已被 docs/06 §3.5"关系变化事件日志"占用（含测试/RAG
+    碎片语义）；账本是 ADR-016 可再生投影，另立文件、两职责不混写）；
+  - `rebuild_ledger()` 章末 hook（orchestrator 5.6 节）幂等重建：pair 行
+    `{pair,state,trend(升温/降温/转向/断裂/复合/不变),state_from,diverged,by{视角 delta
+    seq},last_event,updated_at,flip}`，同事件多视角方向归并（断裂/复合 优先、升温+降温
+    同场→转向）；`trend` 为最新事件方向；
+  - D3-b 阈值：`flip` = 同向升温/降温 连续 ≥2 事件 或 单次 断裂/复合 级 →
+    `enqueue_flip_proposals()` 生成"关系修订提案"入 enrich pending（人工 `--allow`，
+    provenance 同 M3r）；去重（bible 行已同/pending 已有）；不改 bible；
+  - C2 能力面：`memory.query_recent_actual_events()` 实然事件时间序查询，
+    forge 章细纲 prompt 计划态 prev 之外追加【已落定实情】块（forge/nodes.py
+    `_actual_events_block`，无正文记忆时行为不变）；
+  - A3 部分：enrich 提案前情补 `ledger_lines_for()` 账本状态行（防补喂与观测趋势冲突）。
+  测试 `tests/test_rel_ledger.py` 11 用例 + 受影响回归全绿；账本失败不阻断写章。
 
 ### ADR-024 人类决策介入分层（"通过问答写小说"的定位 · 设计定稿 2026-09-03，待编码）
 

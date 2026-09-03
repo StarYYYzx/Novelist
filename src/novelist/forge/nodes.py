@@ -244,6 +244,10 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     if prev:
         prev_block = json.dumps({k: prev.get(k) for k in ("title", "key_events", "turns", "characters") if prev.get(k)},
                                 ensure_ascii=False, indent=2)
+    actual_block = ""
+    _actual = _actual_events_block(ctx)
+    if _actual:
+        actual_block = "\n\n【已落定实情（memory 实然，非计划态；细纲不得与它冲突）】\n" + _actual
     cards = bp.section("characters")
     char_block = json.dumps([
         {k: c.get(k) for k in ("id", "name", "role", "gender", "core_traits", "power") if c.get(k)}
@@ -266,7 +270,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【前一章（因果连续，必须衔接）】
 {prev_block}
-
+{actual_block}
 【本章可用角色卡】
 {char_block}
 
@@ -294,6 +298,29 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 
 # ---- F4 旁支节点 prompt（docs/10 §7.1 树形 + §7.2 判据引导）----
+def _actual_events_block(ctx: NodeContext) -> str:
+    """C2/ADR-023：前情补"已落定实情"（memory 实然，非计划态 gist）。
+
+    章细纲默认只喂前一章**计划态**（prev_gist）；正文写偏后（如标题/事件没按细纲走），
+    下一章细纲感知不到 → 细纲与落盘正文漂移。这里在计划态之外追加按时间序的
+    `plot_events` 实然查询块（forge 纯细纲期无正文记忆时返回空，不改变原行为）。
+    策划低频决策用确定性查询；正文高频注入仍走紧凑前情（ADR-023 D1 补充）。
+    """
+    try:
+        from novelist.core.memory import query_recent_actual_events
+
+        evs = query_recent_actual_events(ctx.ws, ctx.project_id, limit=6)
+    except Exception:  # noqa: BLE001 - 实然块失败退回计划态前情，不阻断细纲
+        return ""
+    if not evs:
+        return ""
+    lines = []
+    for e in evs:
+        who = f"（{'、'.join(e['participants'][:4])}）" if e.get("participants") else ""
+        lines.append(f"- v{e['vol']}c{e['ch']} {e['summary']}{who}")
+    return "\n".join(lines)
+
+
 def _protocol_block(fields: str) -> str:
     return f"""【输出 JSON】
 {{

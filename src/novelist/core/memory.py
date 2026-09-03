@@ -204,6 +204,55 @@ def harvest_fragments(ws, project_id: str) -> list[MemoryFragment]:
     return frs
 
 
+def query_recent_actual_events(ws, project_id: str, *, limit: int = 8) -> list[dict]:
+    """C2/ADR-023 D1 补充：策划低频决策点的**实然事件**确定性查询接口。
+
+    按时间序（故事时间 t → 卷章 → 落盘序）返回最近 `limit` 条已落定的
+    `memory/plot_events.json` 真实事件，附带参与者名（bible 名册回查）。
+    只读不写；无事件返回 []。
+
+    用途：细纲/事件规划（forge chapter/roll）的前情不再只靠"前一章计划态 gist"，
+    正文写偏后仍能查到实际发生的事件（ADR-016：文件即事实源，此处直接读文件，
+    不经可再生 RAG 索引）。正文高频注入仍走紧凑前情，不做全量查询。
+    """
+    path = ws._abs(f"{project_id}/memory/plot_events.json")  # noqa: SLF001
+    events = _read_json(path)
+    if not isinstance(events, list):
+        return []
+    chars: dict[str, str] = {}
+    cp = ws._abs(f"{project_id}/bible/characters.json")  # noqa: SLF001
+    data = _read_json(cp)
+    if isinstance(data, list):
+        for c in data:
+            if isinstance(c, dict) and c.get("id"):
+                chars[str(c["id"])] = str(c.get("name") or "?")
+    resolved: list[dict] = []
+    for i, e in enumerate(events):
+        if not isinstance(e, dict):
+            continue
+        at = e.get("at") if isinstance(e.get("at"), dict) else {}
+        try:
+            t = int(at.get("t") or 0)
+        except (TypeError, ValueError):
+            t = 0
+        try:
+            vol, ch = int(at.get("vol") or 0), int(at.get("ch") or 0)
+        except (TypeError, ValueError):
+            continue
+        summary = str(e.get("summary") or "").strip()
+        if not summary:
+            continue
+        resolved.append({
+            "vol": vol, "ch": ch, "t": t, "ord": i,
+            "summary": summary,
+            "kind": str(e.get("type") or "event"),
+            "participants": [chars.get(p, p) for p in (e.get("participants") or [])
+                             if isinstance(p, str)],
+        })
+    resolved.sort(key=lambda x: (x["t"], x["vol"], x["ch"], x["ord"]))
+    return resolved[-limit:]
+
+
 # ---------------------------------------------------------------- 索引
 
 

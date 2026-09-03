@@ -79,8 +79,14 @@ PERSPECTIVE_PROMPT = """你是记忆编纂员。下面是刚写完的一段正�
 
 出场人物：{names}
 
-【输出格式】每人一行，竖线分隔，共 3 段（第 4 段可省略）：
-人物名 | 立场情绪（≤8 字） | 视角概述（一句话，站在他的处境与判断来写） | 对某人：关系变化（可选）
+【输出格式】每人一行，竖线分隔，共 4 段：
+人物名 | 立场情绪（≤8 字） | 视角概述（一句话，站在他的处境与判断来写） | 关系变化
+
+【关系变化列：必须填，无变化写"无"】
+- 只写"他对另一名出场人物的关系/态度变化"，格式：对<人名>：<方向>·<变化短语>；多条用"；"分隔，最多 2 条
+- <方向> 只许用：升温 / 降温 / 转向 / 断裂 / 复合（其余词会被丢弃；不确定就写"无"，禁止编造变化）
+- <变化短语> ≤16 字，描述"变成什么样"（如：信任加深、起了提防、当众反目），不要重复方向词
+- 示例（单条即可）：对苏晚：升温·开始信任；对墨无极：降温·起了提防
 
 【纪律】
 - 只写上面列出的人物；正文里没真正出场的不要写
@@ -646,12 +652,16 @@ class Chronicler:
             relations: list[dict] = []
             if len(parts) > 3 and parts[3]:
                 for item in re.split(r"[；;]", parts[3]):
-                    m = re.match(r"^(.*?)[：:](.*)$", item)
+                    # 可带"对"前缀（PERSPECTIVE_PROMPT 示例形态），也兼容裸名
+                    m = re.match(r"^对?\s*(.*?)[：:](.*)$", item)
                     if not m:
                         continue
+                    delta = m.group(2).strip()[:30]
+                    if not delta or delta in ("无", "不变"):
+                        continue  # "无变化"不产生账本增量
                     other = self._name_map.get(m.group(1).strip())
                     if other:
-                        relations.append({"who": other, "delta": m.group(2).strip()[:30]})
+                        relations.append({"who": other, "delta": delta})
             entry = {
                 "at": {"vol": vol, "ch": ch, "t": now_t},
                 "kind": "perspective",

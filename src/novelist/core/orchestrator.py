@@ -38,7 +38,8 @@ class ProductionResult:
                  length_truncated: bool = False, events_capped: int = 0,
                  pending_tick: dict | None = None,
                  chapter_title: str = "", directions_built: int = 0,
-                 perspectives_written: int = 0, broadcasts_built: int = 0):
+                 perspectives_written: int = 0, broadcasts_built: int = 0,
+                 rel_pairs: int = 0, rel_proposals: int = 0):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -66,6 +67,8 @@ class ProductionResult:
         self.directions_built = directions_built  # 本轮生成的人物调度单数（ADR-020 决策三）
         self.perspectives_written = perspectives_written  # 本轮写入的角色视角条数（决策四）
         self.broadcasts_built = broadcasts_built  # 本轮广播成功次数（ADR-021 选角推理）
+        self.rel_pairs = rel_pairs        # 章末实然关系账本 pair 数（ADR-023）
+        self.rel_proposals = rel_proposals  # 阈值触发的翻转提案数（入 enrich pending）
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -813,13 +816,15 @@ class _UsageCounter:
 def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _UsageCounter,
                             *, ok: bool, mode: str = "tool", events: int = 0,
                             phase: str = "", note: str = "", jit: int = 0, settings: int = 0,
-                            settings_pending: int = 0, world_now: int | None = None) -> None:
+                            settings_pending: int = 0, world_now: int | None = None,
+                            rel_pairs: int = 0, rel_proposals: int = 0) -> None:
     """F7.1：正文生成审计双落——`reports/stats/generation-<ts>.md`（人读持久）+ `.index.db`
     `audit_log`（机器查，ADR-016 辅助索引可重建）。先落报告文件、后同步索引（ADR-016
     写操作先文件后索引）；审计失败静默——审计不该阻断写章。
 
     计价与 forge 报告同口径（¥1/1M in + ¥2/1M out，DeepSeek 参考价）。
     `world_now`：本章结算后的故事时间（天数轴，C1/D 收敛落审计用）。
+    `rel_pairs/rel_proposals`：ADR-023 章末实然关系账本（pair 数 / 翻转提案数）。
     """
     import json as _json
     import time as _time
@@ -840,6 +845,8 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
         ]
         if world_now is not None:
             lines.insert(1, f"- 故事时间：第 {world_now} 天（开书日=0）")
+        if rel_pairs:
+            lines.append(f"- 实然关系账本：{rel_pairs} 对；翻转提案 {rel_proposals} 条（enrich pending 待人工 allow）")
         ws.write_text(p, "\n".join(lines) + "\n")
         from ..storage.indexdb import IndexDb
 
@@ -854,6 +861,9 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
         }
         if world_now is not None:
             payload["world_now"] = world_now
+        if rel_pairs:
+            payload["rel_pairs"] = rel_pairs
+            payload["rel_proposals"] = rel_proposals
         db.write_audit("produce_chapter", f"{vol}-{ch}", _json.dumps(payload, ensure_ascii=False))
     except Exception:  # noqa: BLE001 - 审计失败不影响写章
         pass
@@ -1153,6 +1163,8 @@ def produce_chapter(
     directions_built = 0
     perspectives_written = 0
     broadcasts_built = 0  # ADR-021：本章广播成功次数（事件级选角推理）
+    rel_pairs = 0         # ADR-023：章末实然关系账本 pair 数
+    rel_proposals = 0     # ADR-023：阈值触发的翻转提案数（入 enrich pending）
 
     # ---- 2.1) 定时事项软 block（ADR-019 §3.3.3，M3m T2）----
     # 已到期且连续 block 的 pending：本章细纲/key_events 未体现 → 拦截。
@@ -1671,11 +1683,26 @@ def produce_chapter(
     except Exception:  # noqa: BLE001 - 记账失败不影响成稿
         pending_tick = {}
 
+    # ---- 5.6) 实然关系账本（ADR-023 A2 + D3-b）----
+    # 章末确定性重建 pair 账本（可再生投影，零新增 LLM）；阈值触发的翻转
+    # （同向×2 / 断裂级 / 复合级）生成"关系修订提案"入 enrich pending，
+    # 人工 --allow 才改写 bible 应然行（绝不在管线内自动覆盖）。
+    try:
+        from .rel_ledger import enqueue_flip_proposals, rebuild_ledger
+
+        _rel_ledger = rebuild_ledger(ws, project_id)
+        rel_pairs = int((_rel_ledger.get("meta") or {}).get("count") or 0)
+        rel_proposals = len(enqueue_flip_proposals(ws, project_id, _rel_ledger))
+    except Exception:  # noqa: BLE001 - 账本失败不影响成稿
+        rel_pairs = 0
+        rel_proposals = 0
+
     # F7.1：正文生成审计（reports/ + .index.db audit_log）
     _write_generation_audit(ws, project_id, vol, ch, provider, ok=True, mode=mode,
                             events=events, phase=getattr(phase, "value", phase),
                             jit=jit_added, settings_pending=settings_pending,
-                            world_now=pending_tick.get("now"))
+                            world_now=pending_tick.get("now"),
+                            rel_pairs=rel_pairs, rel_proposals=rel_proposals)
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
@@ -1690,4 +1717,5 @@ def produce_chapter(
                             pending_tick=pending_tick,
                             chapter_title=chapter_title, directions_built=directions_built,
                             perspectives_written=perspectives_written,
-                            broadcasts_built=broadcasts_built)
+                            broadcasts_built=broadcasts_built,
+                            rel_pairs=rel_pairs, rel_proposals=rel_proposals)
