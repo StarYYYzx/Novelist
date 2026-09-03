@@ -140,7 +140,7 @@ _BOOK_OUTPUT_PROTOCOL = """{
                   "power": {"level": "境界或实力", "faction": "阵营"},
                   "arc": "人物弧线一句话", "first_appear": {"vol": 1, "ch": 1}}],
   "locations": [{"id": "loc:xxx", "name": "地名", "category": "类别", "desc": "描述"}],
-  "items": [{"id": "item:xxx", "name": "物品名", "category": "类别", "desc": "描述"}],
+  "items": [{"id": "item:xxx", "name": "物品名", "type": "consumable|equipment|artifact|material|currency|other", "desc": "描述"}],
   "style": {"tense": "过去|现在", "narration": "叙事风格说明", "glossary": [{"term": "术语", "note": "解释"}]},
   "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1}],
   "volumes": [{"vol": 1, "title": "卷名", "summary": "本卷主线", "key_beats": ["关键转折"],
@@ -195,6 +195,7 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
 4. 所有 id 用前缀：char:/loc:/item:/pt:。
 5. key_beats 每卷 3–6 条；threads 给 3–8 条主线伏笔。
 6. 世界观 rules（世界铁律）2–5 条，必须与力量机制自洽。
+7. hidden_level 只给"表面修为与实际战力不符"的人物（扮猪吃虎型主角等）；普通人卡省略该键。
 
 按以下 JSON 输出（键名严格一致，缺省用空对象/空数组）：
 {_BOOK_OUTPUT_PROTOCOL}"""
@@ -560,6 +561,33 @@ def _merge_style(bp: Blueprint, style_art: dict) -> None:
         st["glossary"] = existing
         bp.set_provenance("style.glossary", "llm", 0.8)
     bp.data["style"] = st
+
+
+# items.schema `type` 枚举 + 中文类别关键词映射（D3：通用包 LLM/ingest 只给中文
+# category/kind，schema 却必填英文枚举 type 且 additionalProperties=false）。
+_ITEM_TYPE_ENUM = ("consumable", "equipment", "artifact", "material", "currency", "other")
+
+# 顺序即优先级：specific（法宝/丹药/货币）在前，宽泛词表（武器防具材质）殿后。
+_ITEM_TYPE_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("法器", "法宝", "灵器", "宝器", "仙器", "神器", "古宝", "灵宝", "artifact"), "artifact"),
+    (("丹", "药", "剂", "灵液", "灵乳", "圣水", "散", "膏", "consumable"), "consumable"),
+    (("灵石", "金币", "银两", "铜钱", "钱", "币", "钻石", "currency"), "currency"),
+    (("材料", "矿", "草", "木", "皮", "骨", "妖丹", "兽核", "精血", "material"), "material"),
+    (("剑", "刀", "枪", "棍", "弓", "杖", "扇", "鼎", "镜", "甲", "盔", "靴", "袍",
+      "戒指", "手环", "项链", "equipment"), "equipment"),
+]
+
+
+def _normalize_item_type(entry: dict) -> str:
+    """条目 → items.schema 合法 type：显式英文枚举直取，中文类别按词表映射，兜底 other。"""
+    for v in (entry.get("type"), entry.get("category"), entry.get("kind")):
+        if isinstance(v, str) and v.strip().lower() in _ITEM_TYPE_ENUM:
+            return v.strip().lower()
+    haystack = " ".join(str(entry.get(k) or "") for k in ("type", "category", "kind", "name"))
+    for keys, t in _ITEM_TYPE_RULES:
+        if any(k in haystack for k in keys):
+            return t
+    return "other"
 
 
 def _apply_items(bp: Blueprint, section: str, items: list, *, default_role: str = "minor") -> None:
@@ -1005,12 +1033,27 @@ def _node_id_of(kind: str, ctx: NodeContext) -> str:
     return f"{kind}:{ctx.vol}"
 
 
+def _ensure_json_hint(system: str, user: str) -> tuple[str, str]:
+    """DeepSeek 兼容：response_format=json_object 要求 prompt 含 "json" 字样（OpenAI 无此约束）。
+
+    run_node 统一对全部节点走 json_object；个别节点 prompt（如 worldview/character_group）
+    未在模板里写 "json" → DeepSeek 400 回退。此处按需给 user prompt 追加 JSON 引导，
+    只影响不含 "json" 字样的调用，既有成功路径行为不变（D1，2026-09-03 新书实测）。
+    """
+    if "json" in (system + user).lower():
+        return system, user
+    hint = ("\n\n请以 JSON 对象返回结果（response_format=json_object）："
+            "整体是一个以 { 开头、} 结尾的 JSON 对象，键与字符串值均用双引号，"
+            "不要输出任何解释、代码块标记或 JSON 之外的文字。")
+    return system, user + hint
+
+
 def run_node(ctx: NodeContext, kind: str) -> NodeResult:
     """执行一个节点：prompt → LLM → 解析（协议）→ apply。抛 ValueError = 解析失败（引擎重试）。"""
     if kind not in _PROMPTS:
         raise ValueError(f"unknown node kind: {kind}")
     node_id = _node_id_of(kind, ctx)
-    system, user = _PROMPTS[kind](ctx)
+    system, user = _ensure_json_hint(*_PROMPTS[kind](ctx))
     res = ctx.provider.complete(LLMRequest(
         messages=[LLMMessage(role="system", content=system),
                   LLMMessage(role="user", content=user)],
@@ -1096,8 +1139,12 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                                 {"id", "keywords", "text", "revealed", "first_ch"})):
         data = bp.section(section)
         if data:
-            write(rel, [{k: v for k, v in x.items() if k in keep}
-                        for x in data if isinstance(x, dict)])
+            rows = [{k: v for k, v in x.items() if k in keep}
+                    for x in data if isinstance(x, dict)]
+            if section == "items":  # D3：category/kind 白名单外会被剥离，type 在此归一化补齐
+                for src, row in zip((x for x in data if isinstance(x, dict)), rows):
+                    row["type"] = _normalize_item_type(src)
+            write(rel, rows)
     return written
 
 
