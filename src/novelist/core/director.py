@@ -199,6 +199,8 @@ def render_card_line(c: dict, _names: dict | None = None) -> str:
     fac = power.get("faction")
     if lvl or fac:
         seg.append("／".join(x for x in (fac, lvl) if x))
+    if power.get("hidden_level"):  # D8：扮猪吃虎——生成侧要知道越级表现是有意设定
+        seg.append(f"实际战力：{power['hidden_level']}（刻意隐藏实力，必要时可越级出手）")
     traits = c.get("core_traits") or []
     if traits:
         seg.append("特质：" + "、".join(str(t) for t in traits[:5]))

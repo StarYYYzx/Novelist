@@ -62,6 +62,10 @@
           },
           "faction": {
             "type": "string"
+          },
+          "hidden_level": {
+            "type": "string",
+            "description": "隐藏的实际战力（扮猪吃虎）：level 是世人所知的表面修为，hidden_level 是真实实力。审校据此豁免「战力越级」误报（D8，2026-09-03）。"
           }
         },
         "additionalProperties": true

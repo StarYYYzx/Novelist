@@ -48,7 +48,7 @@ REVIEW_PROMPT = """你是审校师。对照设定圣经与前情，审读下面�
 - 人设漂移：言行是否偏离人物卡（特别注意性别、性格、说话方式）
 - 称谓失当：人物之间的称呼是否符合身份与修为高低（低修为者称高修为者为「前辈」才合理）
 - 时间线与因果：事件顺序、因果链是否自洽
-- 战力越级：修为描写是否超出人物卡或自相矛盾
+- 战力越级：修为描写是否超出人物卡或自相矛盾（例外：人物卡 power.hidden_level 标注了隐藏实际战力的，越级表现是有意的扮猪吃虎设定，不算问题）
 - 事实前后矛盾：与前情提要是冲突（如已死之人复活、已毁之物再现）
 - 细纲未覆盖：细纲要点是否有遗漏
 
@@ -88,8 +88,10 @@ def _bible_brief(ws: Workspace, project_id: str, cast_ids: list[str] | None = No
         chars = [c for c in chars if c.get("id") in cast_ids] or chars
     for c in chars[:24]:
         pw = c.get("power") or {}
+        hidden = f"；实际战力 {pw['hidden_level']}（刻意隐藏，扮猪吃虎是有意设定）" if pw.get("hidden_level") else ""
         lines.append(f"- {c.get('name')}（性别 {c.get('gender', 'unknown')}"
                      + (f"，{pw.get('level')}" if pw.get("level") else "")
+                     + hidden
                      + (f"，{pw.get('faction')}" if pw.get("faction") else "")
                      + f"）：性格{'、'.join(c.get('core_traits') or []) or '—'}")
     return "\n".join(lines)
