@@ -52,8 +52,10 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 第三部分——时间行与约定行（ADR-019，docs/06 §3.3）：
 
 时间：+90日
-- 表示本章结束后故事时间推进了多少（**相对天数**，不是历法日期）
-- 只写正文明确写到的时间跨度；同章多线并进写「时间：同日」；回忆插叙写「时间：闪回」
+- 表示这段正文结束后故事时间推进了多少（**相对天数**，不是历法日期）
+- **每段正文必须输出 1 条**：正文明确写到时间跨度（"三日后""闭关三月"）→ 写对应
+  +N日；正文没有时间流逝、多线并进 → 写「时间：同日」；回忆插叙 → 写「时间：闪回」
+- **禁止编造**：正文没有时间依据时写「时间：同日」，绝不要自行加天数
 - 可加备注：时间：+90日 | 叶岚闭关结束
 
 约定：叶岚出关｜+90日
@@ -61,7 +63,7 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 - 竖线前写"什么事"，竖线后写"距今多少天"
 - 只登记正文明确约定的，不要臆测；**正文里没有出现的承诺，即使与示例形状相似也不要写**
 
-时间行与约定行都**最多各 1 条**；没有就不写。
+时间行必须输出 1 条；约定行最多 1 条，没有就不写。
 
 不要输出标题、序号、解释或空行。事件最多 {max_events} 条，宁少勿多。
 
@@ -221,7 +223,7 @@ class Chronicler:
         for ln in content.splitlines():
             s = ln.strip()
             if _TIME_LINE_RE.match(s):
-                if len(time_lines) < 1:      # 每章最多 1 条（多次推进按最大跨度算）
+                if len(time_lines) < 1:      # 单次抽取最多 1 条（逐事件结算：推进可跨多次抽取累计）
                     time_lines.append(s)
             elif _PENDING_LINE_RE.match(s):
                 if len(pending_lines) < 1:
@@ -580,7 +582,7 @@ class Chronicler:
             if dt > MAX_DT_WARN:
                 report.warnings.append(f"时间增量 {dt} 天超过上限 {MAX_DT_WARN}，疑似抽取错误")
             advance(self.ws, self.project_id, dt, vol=vol, ch=ch,
-                    event=note or f"时间推进 {dt} 日")
+                    event=note or (f"时间推进 {dt} 日" if dt else "同日内推进"))
             report.time_advanced += dt
 
     # ---- 角色视角记忆（ADR-020 决策四）----

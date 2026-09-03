@@ -158,6 +158,50 @@ def test_chronicler_commit_applies_time_and_pending(ws_factory, write_json, stub
     assert any(e["at"]["t"] == 90 for e in entries)
 
 
+def test_chronicler_same_day_line_keeps_now(ws_factory, write_json, stub_llm):
+    """C1/D：正文没写时间流逝 → 模型按新 prompt 答「时间：同日」→ now 不动。"""
+    ws, pid = ws_factory()
+    _seed_chars(ws, pid, write_json)
+    reply = ("叶蓝在藏经阁翻到一本残卷 | discovery | 叶蓝\n"
+             "时间：同日\n")
+    report = Chronicler(ws, pid, llm=stub_llm(reply)).run("正文略", 1, 3)
+    st = worldstate.load(ws, pid)
+    assert tl.now_of(st) == 0          # 同日不推进（正文无依据，绝不自行加天数）
+    assert report.time_advanced == 0
+    # 同日时点仍登记进 timeline（"同一天发生两件事"本身是事实）
+    assert any(e["event"] == "同日内推进" for e in tl.load_timeline(ws, pid))
+
+
+def test_extract_prompt_demands_time_line():
+    """C1/D 锁在 prompt：时间行从"可选自觉"升级为"必答判断"，且禁止编造。"""
+    from novelist.core.chronicler import EXTRACT_PROMPT
+
+    assert "必须输出 1 条" in EXTRACT_PROMPT
+    assert "时间：同日" in EXTRACT_PROMPT and "禁止编造" in EXTRACT_PROMPT
+    assert "没有就不写" in EXTRACT_PROMPT   # 约定行仍是可选
+
+
+def test_generation_audit_records_world_now(ws_factory):
+    """C1/D：章末审计落 worldstate.now（md 人读 + audit_log 机器查）。"""
+    ws, pid = ws_factory()
+    from novelist.core.orchestrator import _UsageCounter, _write_generation_audit
+
+    _write_generation_audit(ws, pid, 1, 6, _UsageCounter(object()), ok=True,
+                            mode="direct", world_now=5)
+    from novelist.storage.indexdb import IndexDb
+
+    db = IndexDb(str(ws.index_db_path(pid)))
+    db.init()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT payload FROM audit_log WHERE kind='produce_chapter' ORDER BY seq"
+        ).fetchall()
+    payload = json.loads(rows[-1][0])
+    assert payload["world_now"] == 5
+    gens = sorted(ws._abs(f"{pid}/reports/stats").glob("generation-*.md"))
+    assert gens and "故事时间：第 5 天（开书日=0）" in gens[-1].read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------------------- T2 分档与记账
 
 

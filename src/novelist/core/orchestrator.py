@@ -813,12 +813,13 @@ class _UsageCounter:
 def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _UsageCounter,
                             *, ok: bool, mode: str = "tool", events: int = 0,
                             phase: str = "", note: str = "", jit: int = 0, settings: int = 0,
-                            settings_pending: int = 0) -> None:
+                            settings_pending: int = 0, world_now: int | None = None) -> None:
     """F7.1：正文生成审计双落——`reports/stats/generation-<ts>.md`（人读持久）+ `.index.db`
     `audit_log`（机器查，ADR-016 辅助索引可重建）。先落报告文件、后同步索引（ADR-016
     写操作先文件后索引）；审计失败静默——审计不该阻断写章。
 
     计价与 forge 报告同口径（¥1/1M in + ¥2/1M out，DeepSeek 参考价）。
+    `world_now`：本章结算后的故事时间（天数轴，C1/D 收敛落审计用）。
     """
     import json as _json
     import time as _time
@@ -837,19 +838,23 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
             f"- LLM 调用 {counter.calls} 次：in={counter.tokens_in} / out={counter.tokens_out} tokens，"
             f"估算成本 ¥{cost:.4f}",
         ]
+        if world_now is not None:
+            lines.insert(1, f"- 故事时间：第 {world_now} 天（开书日=0）")
         ws.write_text(p, "\n".join(lines) + "\n")
         from ..storage.indexdb import IndexDb
 
         db = IndexDb(str(ws.index_db_path(project_id)))
         db.init()
-        db.write_audit("produce_chapter", f"{vol}-{ch}",
-                       _json.dumps({
-                           "ok": ok, "mode": mode, "events": events, "calls": counter.calls,
-                           "tokens_in": counter.tokens_in, "tokens_out": counter.tokens_out,
-                           "cost": round(cost, 6), "phase": phase, "jit": jit,
-                           "settings": settings, "settings_pending": settings_pending,
-                           "note": note, "ts": ts,
-                       }, ensure_ascii=False))
+        payload = {
+            "ok": ok, "mode": mode, "events": events, "calls": counter.calls,
+            "tokens_in": counter.tokens_in, "tokens_out": counter.tokens_out,
+            "cost": round(cost, 6), "phase": phase, "jit": jit,
+            "settings": settings, "settings_pending": settings_pending,
+            "note": note, "ts": ts,
+        }
+        if world_now is not None:
+            payload["world_now"] = world_now
+        db.write_audit("produce_chapter", f"{vol}-{ch}", _json.dumps(payload, ensure_ascii=False))
     except Exception:  # noqa: BLE001 - 审计失败不影响写章
         pass
 
@@ -1669,7 +1674,8 @@ def produce_chapter(
     # F7.1：正文生成审计（reports/ + .index.db audit_log）
     _write_generation_audit(ws, project_id, vol, ch, provider, ok=True, mode=mode,
                             events=events, phase=getattr(phase, "value", phase),
-                            jit=jit_added, settings_pending=settings_pending)
+                            jit=jit_added, settings_pending=settings_pending,
+                            world_now=pending_tick.get("now"))
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
