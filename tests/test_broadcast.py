@@ -160,6 +160,128 @@ def test_validate_names_caps_at_six():
     assert any("超上限" in a for a in alarms)
 
 
+# ---------------------------------------------------------------- B2：池行关系锚 / B4：封闭场景（ADR-021 v2）
+
+
+def test_pool_line_carries_title_and_relation_anchor():
+    """B2 池行补可溯源字段：aliases（职务/称谓）+ relationships 关系锚（id→名回查）。
+
+    e3 预演报"青云子=掌门"在输入里无据可循——v2 后"掌门"（aliases）与关系
+    （如"对墨无极：师祖与掌门"）都进池行，模型不必推断撞对。
+    """
+    card = {"id": "char:qing", "name": "青云子", "aliases": ["掌门", "青云掌门"],
+            "power": {"level": "元婴后期", "faction": "青云宗"},
+            "core_traits": ["威严", "务实"],
+            "relationships": [{"target": "char:mo", "type": "师祖与掌门，重大决策请示老祖"}]}
+    names = {"char:qing": "青云子", "char:mo": "墨无极"}
+    line = bc._one_line(card, names)
+    assert "掌门" in line                    # 职务称谓进池行
+    assert "与墨无极" in line                # 关系锚 target id 回查成人名
+    assert "师祖与掌门" in line[:36] or "师祖与掌门" in line  # type 保留（未超 12 字截断线）
+    # 长 type 截断，池行不无限膨胀
+    card2 = {"id": "char:a", "name": "甲", "aliases": [],
+             "power": {}, "core_traits": [],
+             "relationships": [{"target": "char:b", "type": "这是一条超过十二个字的超长关系描述"}]}
+    line2 = bc._one_line(card2, {"char:b": "乙"})
+    assert "与乙（这是一条超过十二" in line2 and "…" in line2
+
+
+def test_build_pool_block_lines_have_relation_anchors():
+    """B2 build_pool_block：每行带关系锚（池行从 ~20 字涨到 ~40，仍在预算内）。"""
+    pool = [
+        {"id": "char:yelan", "name": "叶岚", "aliases": ["叶哥"],
+         "power": {"level": "炼气三层", "faction": "青云宗"}, "core_traits": ["冷静"],
+         "relationships": [{"target": "char:sw", "type": "青梅竹马"}]},
+        {"id": "char:sw", "name": "苏晚", "aliases": ["苏师姐"],
+         "power": {"level": "炼气四层", "faction": "青云宗"}, "core_traits": ["刚烈"],
+         "relationships": []},
+    ]
+    block = bc.build_pool_block(pool, {"char:yelan": "叶岚", "char:sw": "苏晚"})
+    assert "与苏晚（青梅竹马）" in block
+    assert "苏师姐" in block
+    assert block.count("\n") == 1
+
+
+def test_is_closed_scene_detects_private_events():
+    """B4 确定性判定：私密/单独/密室类事件 → 封闭；公开场合 → 开放。"""
+    assert bc.is_closed_scene("墨无极在密室单独召见叶岚，屏退左右") is True
+    assert bc.is_closed_scene("", "上一事件末，两人在寝殿夜话") is True
+    assert bc.is_closed_scene("宗门广场大比，数千弟子围观") is False
+    assert bc.is_closed_scene("叶岚下山采购药材，途经坊市") is False
+
+
+def test_validate_names_custom_cap():
+    """B4 校验 cap 参数化：封闭场景 cap=3 时超出的加戏者被裁。"""
+    pool = [f"p{i}" for i in range(1, 7)]
+    final, alarms = validate_names(["p1", "p2", "p3", "p4"],
+                                   declared=["p5"], pool=pool, text_hits=["p6"],
+                                   cap=bc.CLOSED_CAP)
+    assert len(final) == bc.CLOSED_CAP == 3
+    assert {"p5", "p6"} <= set(final)       # 声明 + 文本命中仍优先保留
+    assert any("超上限" in a for a in alarms)
+
+
+def test_broadcast_cast_closed_scene_auto(ws_factory, write_json):
+    """B4 集成：事件文本含"密室单独召见" → 自动判封闭。
+
+    模型若按关系牵引加戏（好友/宿敌）→ 确定性拒绝；细纲声明（传召双方）保留。
+    落盘 closed_scene=true 留痕。
+    """
+    ws, pid = ws_factory()
+    write_json(ws, pid, "bible/characters.json", [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male", "status": "active",
+         "power": {"level": "炼气三层", "faction": "青云宗"}},
+        {"id": "char:mo", "name": "墨无极", "gender": "male", "status": "active",
+         "power": {"level": "化神后期", "faction": "青云宗"}},
+        {"id": "char:yun", "name": "云清瑶", "gender": "female", "status": "active",
+         "power": {"level": "筑基中期", "faction": "青云宗"}},
+        {"id": "char:xue", "name": "雪见", "gender": "female", "status": "active",
+         "power": {"level": "金丹后期", "faction": "青云宗"}},
+    ])
+    reply = json.dumps({
+        "present": [
+            {"name": "叶岚", "reason_category": "职能必需", "reason": "被召见者"},
+            {"name": "云清瑶", "reason_category": "关系牵引", "reason": "叶岚的绑定对象，理应陪护"},
+            {"name": "雪见", "reason_category": "动机主动", "reason": "闻讯赶来"},
+        ],
+        "needs": [],
+    }, ensure_ascii=False)
+    dec = broadcast_cast(ws, pid, _stub(reply), vol=1, ch=6, idx=0,
+                         ev_text="墨无极在密室单独召见叶岚，屏退左右，问起残玉来历",
+                         declared=["墨无极", "叶岚"], text_hits=["墨无极", "叶岚"])
+    assert dec is not None
+    assert set(dec.names) == {"墨无极", "叶岚"}    # 关系牵引（云清瑶）/ 动机主动（雪见）被拒
+    assert any("封闭场景拒绝" in a for a in dec.alarms)
+    assert len(dec.names) <= bc.CLOSED_CAP
+    # 落盘留痕
+    data = json.loads(ws._abs(f"{pid}/memory/castings/v1-c6-e0.json")
+                      .read_text(encoding="utf-8"))
+    assert data["closed_scene"] is True
+
+
+def test_broadcast_cast_open_scene_allows_relation_pull(ws_factory, write_json):
+    """开放场景不受影响：关系牵引成员保留（回归——不能把公开场合也收死）。"""
+    ws, pid = ws_factory()
+    write_json(ws, pid, "bible/characters.json", [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male", "status": "active",
+         "power": {"level": "炼气三层", "faction": "青云宗"}},
+        {"id": "char:yun", "name": "云清瑶", "gender": "female", "status": "active",
+         "power": {"level": "筑基中期", "faction": "青云宗"}},
+    ])
+    reply = json.dumps({
+        "present": [
+            {"name": "叶岚", "reason_category": "职能必需", "reason": "事件主角"},
+            {"name": "云清瑶", "reason_category": "关系牵引", "reason": "与叶岚并肩同行"},
+        ],
+        "needs": [],
+    }, ensure_ascii=False)
+    dec = broadcast_cast(ws, pid, _stub(reply), vol=1, ch=7, idx=0,
+                         ev_text="宗门坊市，叶岚与云清瑶并肩挑选法器",
+                         declared=["叶岚"], text_hits=["叶岚", "云清瑶"])
+    assert dec is not None and set(dec.names) == {"叶岚", "云清瑶"}
+    assert not any("封闭场景" in a for a in dec.alarms)
+
+
 # ---------------------------------------------------------------- 落盘与需求入队
 
 

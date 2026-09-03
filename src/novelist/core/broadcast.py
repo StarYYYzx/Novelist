@@ -25,9 +25,18 @@ from dataclasses import dataclass, field
 from .llm import LLMMessage, LLMRequest
 
 CAST_CAP = 6            # 单事件出场上限（ADR-021 校验 5）
+CLOSED_CAP = 3          # 封闭场景出场上限（B4，ADR-021 v2——私密/单独/密室类名单从严）
 POOL_CAP = 40           # 全量进池上限，超出走 RAG 预筛（P1，本书 ~20 角色不触发）
 REASON_CATEGORIES = ("职能必需", "关系牵引", "伏笔相关", "动机主动")
 _BLOCKED_STATUS = ("dead", "unknown")   # bible status 应然侧过滤
+
+# 封闭场景词表（B4 确定性信号）：命中 → 名单收敛 + 禁关系牵引加戏。
+# 保守取"私密会面"类词，宁可少加戏不误放；子串匹配，词不宜过短。
+_CLOSED_WORDS = (
+    "密室", "密谈", "密会", "秘议", "单独", "独处", "私下", "私语", "私会",
+    "召见", "传召", "寝殿", "闺房", "静室", "禁地", "夜探", "夜话",
+    "内堂", "屏退", "无第三人在场",
+)
 
 
 @dataclass
@@ -104,23 +113,57 @@ def available_pool(chars: list[dict], worldstate: dict | None = None) -> list[di
 # ---------------------------------------------------------------- 广播 prompt
 
 
-def _one_line(c: dict) -> str:
-    """池内一行：名字/境界/宗门/近况一句话（bible 有 power.faction + core_traits）。"""
+def _one_line(c: dict, names: dict | None = None) -> str:
+    """池内一行：名字＋称谓/职务＋宗门/境界＋特质＋关系锚（B2，ADR-021 v2）。
+
+    原只给 名字/宗门境界/特质 → 广播 e3 报"青云子=掌门"在输入里**无据可循**
+    （模型推断撞对）。v2 补两类可溯源字段：
+    - aliases（称谓/职务——"掌门/老祖/门主"是职能必需类理由的锚）；
+    - relationships 前 2 条（关系牵引类理由从此有据；target 是 char:xxx id，
+      由 `names`（id→名）回查成人名）。
+    """
     name = str(c.get("name") or c.get("id") or "?")
     power = c.get("power") if isinstance(c.get("power"), dict) else {}
     lvl = power.get("level")
     fac = power.get("faction")
     bits = [name]
+    aliases = [str(a) for a in (c.get("aliases") or []) if str(a) and str(a) != name][:2]
+    if aliases:
+        bits.append("（" + "、".join(aliases) + "）")
     if fac or lvl:
         bits.append("／".join(x for x in (fac, lvl) if x))
     traits = c.get("core_traits") or []
     if traits:
         bits.append("特质：" + "、".join(str(t) for t in traits[:3]))
+    rels = c.get("relationships") or []
+    if isinstance(rels, list):
+        anchors = []
+        for r in rels[:2]:
+            if not isinstance(r, dict) or not r.get("type"):
+                continue
+            tgt = str(r.get("target") or "")
+            if names and tgt in names:
+                tgt = str(names[tgt])
+            rel = str(r["type"])
+            if len(rel) > 12:
+                rel = rel[:12] + "…"
+            anchors.append(f"与{tgt}（{rel}）")
+        if anchors:
+            bits.append("关系：" + "、".join(anchors))
     return "、".join(bits)
 
 
-def build_pool_block(pool: list[dict]) -> str:
-    return "\n".join(f"- {_one_line(c)}" for c in pool[:POOL_CAP])
+def build_pool_block(pool: list[dict], names: dict | None = None) -> str:
+    return "\n".join(f"- {_one_line(c, names)}" for c in pool[:POOL_CAP])
+
+
+def is_closed_scene(*texts: str) -> bool:
+    """B4 确定性判定：任一文本命中封闭词表 → 该事件是封闭/私密场景。
+
+    供广播收敛名单（cap 3 + 禁关系牵引加戏）；开放公开场景不受影响。
+    """
+    pool = "\n".join(t for t in texts if t)
+    return any(w and w in pool for w in _CLOSED_WORDS)
 
 
 BROADCAST_PROMPT = """你是这部小说的选角导演。判断"这一场戏谁该在场"，只做选角，不写情节。
@@ -131,6 +174,9 @@ BROADCAST_PROMPT = """你是这部小说的选角导演。判断"这一场戏谁
 {seam}
 
 【时间地点】故事内第 {time_now} 天（{time_text}），地点以事件内容为准，事件没提就不写。
+
+【场景开放度】（决定名单该松还是该严——封闭场景**禁止**关系牵引/动机主动加人）
+{openness}
 
 【细纲已声明出场】（规划层意图，**必须全部保留**，可补充不可删减）
 {declared}
@@ -219,13 +265,14 @@ def parse_decision(content: str, pool_names: set[str]) -> tuple[list[CastMember]
 
 
 def validate_names(names: list[str], *, declared: list[str], pool: list[str],
-                   text_hits: list[str]) -> tuple[list[str], list[str]]:
+                   text_hits: list[str], cap: int = CAST_CAP) -> tuple[list[str], list[str]]:
     """校验并修正名单。返回 (最终名单, 告警)。
 
     1. 名单 ⊇ 细纲声明（规划层意图不可被广播删）——缺则补 + 告警；
     2. 名单 ⊆ 可及池——广播点名不在池者剔除 + 告警（解析期已拒，此处兜底）；
     3. 事件文本字面命中必须涵盖——缺则补（防广播漏读事件正文）；
-    4. 上限 CAST_CAP——超出按 细纲声明 > 职能必需 > 文本命中 裁（超出部分告警）。
+    4. 上限 cap（开放 CAST_CAP / 封闭 CLOSED_CAP）——超出按 细纲声明 > 职能必需 > 文本命中
+       裁（超出部分告警）。
     """
     alarms: list[str] = []
     pool_set, name_set = set(pool), set(names)
@@ -251,14 +298,14 @@ def validate_names(names: list[str], *, declared: list[str], pool: list[str],
 
     final = list(name_set)
     # 4. 上限裁剪：细纲声明 > 文本命中 优先保留，其余按原顺序截断
-    if len(final) > CAST_CAP:
+    if len(final) > cap:
         keep_pri = list(declared_set | (hit_set & set(final)))
         rest = [n for n in final if n not in keep_pri]
-        kept = keep_pri[:CAST_CAP]
-        if len(kept) < CAST_CAP:
-            kept += rest[:CAST_CAP - len(kept)]
+        kept = keep_pri[:cap]
+        if len(kept) < cap:
+            kept += rest[:cap - len(kept)]
         dropped = [n for n in final if n not in kept]
-        alarms.append(f"名单超上限({len(final)}>{CAST_CAP})，裁掉 {dropped}")
+        alarms.append(f"名单超上限({len(final)}>{cap})，裁掉 {dropped}")
         final = kept
     return final, alarms
 
@@ -271,12 +318,13 @@ def _castings_path(ws, project_id: str, vol: int, ch: int, idx: int):
 
 
 def save_casting(ws, project_id: str, vol: int, ch: int, idx: int,
-                 decision: CastDecision) -> None:
+                 decision: CastDecision, *, closed: bool | None = None) -> None:
     """落盘广播决定与理由（ADR-016：文件即事实源，可审"这场戏他为什么在"）。"""
     p = _castings_path(ws, project_id, vol, ch, idx)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({
         "vol": vol, "ch": ch, "event_index": idx,
+        "closed_scene": closed,                       # B4：名单从严的判定留痕
         "present": [{"name": m.name, "reason_category": m.reason_category,
                      "reason": m.reason} for m in decision.members],
         "needs": [n.__dict__ for n in decision.needs],
@@ -302,10 +350,14 @@ def broadcast_cast(
     text_hits: list[str] | None = None,
     system_prompt: str | None = None,
     max_tokens: int = 700,
+    closed: bool | None = None,
 ) -> CastDecision | None:
     """一次广播：可及池 → prompt → LLM → 解析 → 校验 → 落盘 → needs 入队。
 
     返回 None = 广播不可用/失败（调用方静默走确定性选角，绝不阻断）。
+
+    `closed`（B4）：None → 由事件文本自动判定封闭场景（词表命中）；
+    True → 名单从严（CLOSED_CAP + 只许"职能必需"提名）；False → 开放场景正常选角。
     """
     if provider is None:
         return None
@@ -319,19 +371,32 @@ def broadcast_cast(
     pool_names = {str(c.get("name") or "") for c in pool if c.get("name")}
     if not pool_names:
         return None
+    # id→名（B2：关系锚的 target 是 char:xxx，回查成人名再渲染）
+    names_map = {str(c.get("id") or ""): str(c.get("name") or "") for c in chars if c.get("id")}
 
     wst = worldstate or _read_worldstate(ws, project_id) or {}
     time_now = ((wst.get("time") or {}).get("now")) or 0
     time_text = ((wst.get("time") or {}).get("origin_text")) or ""
+
+    # B4：封闭场景判定（自动 = 事件/接缝文本命中词表；显式传参可覆盖）
+    if closed is None:
+        closed = is_closed_scene(ev_text or "", seam or "")
+    cap = CLOSED_CAP if closed else CAST_CAP
+    openness = (
+        f"**封闭场景**（私密/单独/密室/召见类）：只保留职能上不得不场的人"
+        f"（如传召双方、随行护卫），禁止因关系牵引或动机主动加人，最多 {cap} 人。"
+        if closed else
+        f"开放场景（公开场合）：按职能/关系/伏笔/动机正常判断在场，最多 {cap} 人。")
 
     decl = declared or []
     prev_names = prev or []
     prompt = BROADCAST_PROMPT.format(
         ev_text=(ev_text or "")[:600], seam=(seam or "")[:300],
         time_now=time_now, time_text=time_text,
+        openness=openness,
         declared="、".join(decl) if decl else "（无）",
         prev="、".join(prev_names) if prev_names else "（本章首个事件）",
-        pool_block=build_pool_block(pool), cast_cap=CAST_CAP)
+        pool_block=build_pool_block(pool, names_map), cast_cap=cap)
     try:
         res = provider.complete(LLMRequest(
             messages=[
@@ -348,15 +413,25 @@ def broadcast_cast(
         return None
 
     members, needs, parse_alarms = parse_decision(res.content, pool_names)
+    if closed:
+        # B4：封闭场景只许"职能必需"提名——关系牵引/动机主动/伏笔相关的加戏一律拒绝
+        kept, dropped = [], []
+        for m in members:
+            (kept if m.reason_category == "职能必需" else dropped).append(m)
+        if dropped:
+            parse_alarms.append("封闭场景拒绝非职能必需加戏："
+                                + "、".join(m.name for m in dropped))
+        members = kept
     if not members and not needs:
         return None  # 解析彻底失败 → 降级
 
-    # 校验：名字层面（细纲/文本命中/上限）
+    # 校验：名字层面（细纲/文本命中/上限 cap）
     final_names, val_alarms = validate_names(
         [m.name for m in members],
         declared=[n for n in decl if n in pool_names],
         pool=list(pool_names),
-        text_hits=[h for h in (text_hits or []) if h in pool_names])
+        text_hits=[h for h in (text_hits or []) if h in pool_names],
+        cap=cap)
 
     # 成员按最终名单过滤并保留理由
     by_name = {m.name: m for m in members}
@@ -375,7 +450,7 @@ def broadcast_cast(
     decision = CastDecision(members=kept_members, needs=needs,
                             raw=res.content, alarms=parse_alarms + val_alarms)
     try:
-        save_casting(ws, project_id, vol, ch, idx, decision)
+        save_casting(ws, project_id, vol, ch, idx, decision, closed=closed)
     except OSError:
         pass  # 落盘失败不阻断（可写区异常时静默）
 
