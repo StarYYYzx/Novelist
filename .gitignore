@@ -36,3 +36,6 @@ novel_workspace/_harness/docx_sample/
 
 # 用户手稿测试目录（test_noval 为用户亲手写的测试稿，只读不提交）
 tests/test_noval/
+
+# 探针运行产物（可重跑再生，只提交探针脚本与报告）
+novel_workspace/_harness/.probe_castings/
