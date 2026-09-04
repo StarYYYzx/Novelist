@@ -129,6 +129,125 @@ def _dup_stats(lines: list[str]) -> tuple[int, int]:
     return dup_paras, dup_sents
 
 
+# ---------------------------------------------------------------- 近重复（事件重演）
+
+# 近重复判定参数（ch7/ch8 实证标定，见 tests/test_chapter_dedup.py）：
+# 事件重演的典型形态是"后文用不同措辞把已写过的收尾再写一遍"——精确比对查不出，
+# 必须用字符 n-gram 覆盖率。阈值 0.62 是实测分界：真实重演 0.67~1.0，
+# 正常行文（同一人物、不同动作）最高 0.4 左右；低于 0.62 会把正常叙述误杀。
+NEAR_DUP_THRESHOLD = 0.62
+NEAR_DUP_MIN_CHARS = 15
+_NEAR_DUP_N = 3
+
+
+def _gram_coverage(a: str, b: str, n: int = _NEAR_DUP_N) -> float:
+    """`a` 的字符 n-gram 被 `b` 覆盖的比例（对称归一化：除以较小的 gram 集）。
+
+    分母取 **min(|A|,|B|)** 而非 |A|：重写时模型常增删修饰语使句子变长，
+    用 |A| 做分母会把"加了几字但内容相同"的复述稀释到阈值以下。
+    """
+    A = {a[i:i + n] for i in range(len(a) - n + 1)}
+    B = {b[i:i + n] for i in range(len(b) - n + 1)}
+    if not A or not B:
+        return 0.0
+    return len(A & B) / min(len(A), len(B))
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+
+def find_near_dup_paragraphs(text: str, threshold: float = NEAR_DUP_THRESHOLD,
+                             min_chars: int = NEAR_DUP_MIN_CHARS
+                             ) -> list[tuple[int, int, float]]:
+    """找出"内容高度相似但不完全相同"的段落对（事件重演/结尾段复制）。
+
+    返回 `[(i, j, sim)]`（i < j，行号 0 基，按正文行计）。**精确相同**的段落不计入
+    ——那归 `_dup_stats` 的 `dup_paragraphs` 管，避免重复报数。
+    """
+    paras = [_norm(p) for p in _paragraphs(text)]
+    out: list[tuple[int, int, float]] = []
+    for i in range(len(paras)):
+        for j in range(i + 1, len(paras)):
+            if len(paras[i]) < min_chars or len(paras[j]) < min_chars:
+                continue
+            if paras[i] == paras[j]:
+                continue
+            sim = _gram_coverage(paras[i], paras[j])
+            if sim >= threshold:
+                out.append((i, j, round(sim, 3)))
+    return out
+
+
+def _is_dialogue(s: str) -> bool:
+    """整句是否是对白（去空白后包在 “” 内）。对白允许复现（呼应/口头禅），不删。"""
+    return len(s) >= 2 and s[0] in "“\"" and s[-1] in "”\""
+
+
+def strip_near_dup_sentences(text: str, threshold: float = NEAR_DUP_THRESHOLD,
+                             min_chars: int = NEAR_DUP_MIN_CHARS) -> tuple[str, int]:
+    """删掉后文里与前文近重复的句子，返回 (新正文, 删除句数)。
+
+    **为什么删句子而不是删段落**：重演的后一段往往夹带一两句新信息
+    （ch8 实证：重演段首句"段无涯转身离去，背影孤傲而决绝"是新的，
+    后面整段才是复制）。整段删除会误杀新内容，句级删除能只切掉复制部分。
+
+    判定：句子（去空白 ≥ `min_chars` 字）与**任意**前文句子的 n-gram 覆盖率
+    ≥ `threshold` 即删。两类句子**不删**（ch6/ch7 实证，误删代价高于漏删）：
+
+    1. **对白句**（整句包在 “” 内）：ch6 实证老夫先后两次说"五五开……三个字，
+       老夫听过"，后者是**有意的呼应/回收**，n-gram 相似度 0.857 比真正的重演
+       还高——靠阈值分不开，只能靠"是不是对白"分。
+    2. **系统面板行**（`【…】` 开头）：面板文本本就允许逐字复现；且切分时会把
+       行尾的 `】` 切出去，删半截会留下孤零零的 `】`。整行按原子处理。
+
+    标题行（`#` 开头）与短行（< `min_chars`）同样不参与比较也不删除。
+    """
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    seen: list[str] = []
+    kept: list[str] = []
+    removed = 0
+    for ln in lines:
+        raw = ln.strip()
+        if not raw:
+            kept.append(ln)
+            continue
+        if raw.startswith("#") or len(_norm(raw)) < min_chars:
+            # 标题与短行（单句成段、拟声、单句对白）不进比较池，也不删
+            kept.append(ln)
+            continue
+        if raw.startswith("【"):
+            kept.append(ln)          # 面板行按原子保留，不切不删
+            seen.append(_norm(raw))
+            continue
+        is_dialogue_line = _is_dialogue(_norm(raw))
+        parts = re.findall(r"[^。！？；\n]+[。！？；]?", raw)
+        kept_parts: list[str] = []
+        for p in parts:
+            key = _norm(p)
+            if len(key) < min_chars:
+                kept_parts.append(p)
+                continue
+            # 整行包在引号里 → 行内每一句都算对白（ch6 实证：呼应句在引号内的第二句，
+            # 只看单句会漏判，把"老夫听过"的回收当成重演删掉）
+            if is_dialogue_line or _is_dialogue(key):
+                kept_parts.append(p)   # 对白：呼应与口头禅允许复现
+                continue
+            # 同一句话在**本行内**重复出现也算（模型偶发句内复制）
+            if any(_gram_coverage(key, prev) >= threshold for prev in seen):
+                removed += 1
+                continue
+            kept_parts.append(p)
+            seen.append(key)
+        new_line = "".join(kept_parts).strip()
+        if new_line:
+            kept.append(new_line)
+    if removed == 0:
+        return text, 0  # 干净文本原样返回：不因换行归一化改动一个字
+    # 删段会留下连续空行（原段落连同它前后的分隔符一起消失）→ 收敛成单个空行
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)), removed
+
+
 def completeness(text: str) -> dict:
     """生成完整性检查（B-04）：截断 / 元叙事泄漏 / 篇幅 / **重复**。"""
     stripped = text.strip()
@@ -142,6 +261,9 @@ def completeness(text: str) -> dict:
     # 重复检测（前两章归因 P0）：此前 completeness 只查截断/元叙事，
     # 实测 ch1 有整段重复 4 次却 0 告警——"系统自带 0 告警 ≠ 没问题，只是没检查"。
     dup_paras, dup_sents = _dup_stats(lines)
+    # 近重复段落（事件重演/结尾段复制）：ch7/ch8 实证——同一收尾动作写了两遍，
+    # 措辞不同故精确比对查不出，日志只报 1~2 处精确重复，人工审读才发现整段重演。
+    near = find_near_dup_paragraphs(stripped)
     return {
         "chars": len(stripped),
         "ends_properly": bool(last) and last[-1] in _END,
@@ -150,6 +272,7 @@ def completeness(text: str) -> dict:
         "paragraphs": len(lines),
         "dup_paragraphs": dup_paras,
         "dup_sentences": dup_sents,
+        "dup_near_paragraphs": len(near),
     }
 
 

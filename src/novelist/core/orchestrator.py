@@ -107,6 +107,13 @@ def _completeness_problems(comp: dict) -> list[str]:
         problems.append(f"正文有 {comp['dup_paragraphs']} 处整段重复，必须删除多余份")
     elif comp.get("dup_sentences", 0) >= 3:
         problems.append(f"正文有 {comp['dup_sentences']} 处整句重复，必须删除多余份")
+    # 近重复（事件重演/结尾段复制）：ch7/ch8 实证——同一事件或同一收尾动作被写了两遍，
+    # 措辞不同所以精确比对查不出（日志只报 1~2 处精确重复），人工审读才发现整段重演。
+    if comp.get("dup_near_paragraphs", 0) >= 1:
+        problems.append(
+            f"正文有 {comp['dup_near_paragraphs']} 处近似重复段落"
+            f"（同一事件或收尾动作被换措辞写了两遍），必须删掉后写的那一份，"
+            f"只保留情节推进到最新状态的一次")
     return problems
 
 
@@ -1068,7 +1075,7 @@ def produce_chapter(
       编纂不可用 / 一条都没写出来时才回退写入，保证章节进度至少留痕。
     """
     from .context import build_chapter_context, parse_key_events
-    from .polish import completeness, polish_chapter
+    from .polish import completeness, polish_chapter, strip_near_dup_sentences
 
     sess = session or SessionInfo(project_id=project_id, agent="orchestrator")
     # F7.1：整章 LLM 用量聚合（含嵌套函数与编纂），出口统一写审计
@@ -1197,6 +1204,7 @@ def produce_chapter(
     events_revised = 0      # 因 block 重写的事件数
     events_capped = 0       # 每章事件数超限截掉的事件数（第二批·人工审查）
     lessons_added = 0       # 本轮沉淀的历史教训数
+    near_dup_removed = 0    # 章级近重复（事件重演/结尾段复制）删除的句数
     try:
         if prefer_direct:
             mode = "direct"
@@ -1503,6 +1511,13 @@ def produce_chapter(
                             except Exception:  # noqa: BLE001 - 视角失败不阻断
                                 pass
                 final = _dedupe_chapter_titles("\n\n".join(pieces))
+                # 章级近重复确定性修复（ch7/ch8 实证）：事件循环里每个片段单独看过
+                # 都没问题，拼起来才发现"同一收尾动作写了两遍"——片段级去重够不着，
+                # 必须在拼接后对整章再扫一遍。句级删除，保留重演段里的新信息。
+                if validate:
+                    final, _near_removed = strip_near_dup_sentences(final)
+                    if _near_removed:
+                        near_dup_removed = _near_removed
             else:
                 last_problems: list[str] = []
                 for attempt in range(max_retries + 1):
@@ -1549,6 +1564,8 @@ def produce_chapter(
 
     if not comp and final:
         comp = completeness(final)
+    if near_dup_removed:
+        comp["near_dup_removed"] = near_dup_removed
 
     # ---- 3) 落盘草稿 ----
     draft = ws.draft_path(project_id, vol, ch)
@@ -1570,7 +1587,10 @@ def produce_chapter(
 
     # ---- 4) 文风润色（成章后额外一次 LLM 调用；tone 驱动，第七批第 2 条）----
     polish_res = None
-    if polish and mode == "direct":
+    # 事件模式此前**不做章级润色**（只做事件级，max_tokens 1500）——ch7/ch8 实证
+    # AI 味 38.98→38.7 几乎不动：事件级润色各自为政，拼起来的整章从未被统一润过。
+    # 章级润色按 `polish` 开关（默认关）对两种模式一视同仁。
+    if polish and final:
         try:
             polish_res = polish_chapter(final, provider, vol=vol, ch=ch,
                                         tone=_style_tone(ws, project_id),
