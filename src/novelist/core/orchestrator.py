@@ -118,6 +118,11 @@ def _completeness_problems(comp: dict) -> list[str]:
 
 
 _SEAM_CHARS = 300  # 事件间接缝：取上一事件末尾若干字，让模型自然续写
+# M3t（用户 2026-09-04 提议）：正文滑动窗口 + prompt 总预算。
+# 窗口>接缝部分承担"让模型看见前文发生了什么"的反重演职责；预算默认关（0），
+# 本地 9B 思考 token 两头夹击时建议 9000~12000，云端/DeepSeek 可放开或不设。
+_PROSE_WINDOW_CHARS = 1200
+_PROMPT_CHAR_BUDGET = 0
 
 _SCRIPT_INSTRUCTION = ("""
 
@@ -531,60 +536,89 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 hist_lines: list[str] | None = None,
                 direction_lines: list[str] | None = None,
                 extra_readback: list[str] | None = None,
-                appeared_notes: list[str] | None = None) -> str:
+                appeared_notes: list[str] | None = None,
+                prose_window: str = "",
+                char_budget: int = 0) -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
     `readback_text`：前章正文原文（回读机制），只在第一个事件注入。
     `cast_lines` / `hist_lines` / `direction_lines` / `extra_readback`（ADR-020）：
     出场人物卡（无条件注入）、角色视角近况、人物调度单、久未出场角色的原文回读。
+    `prose_window`：已写正文的最近片段（M3t 滑动窗口，反事件重演），段落边界切片。
+    `char_budget`：prompt 总字符预算（M3t 预算器；0=不限，行为与旧版完全一致）。
+    超预算时按 prompt_budget.EVICT_PRIORITY 从低价值层整段淘汰，钉死层不动。
     """
-    parts = [f"{chapter_goal}", "",
-             f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】"]
+    from .prompt_budget import apply_prompt_budget
+
+    blocks: list[tuple[str, str]] = [("goal", chapter_goal),
+                                     ("step", f"【本步骤】只撰写本章第 {idx}/{total} 个事件：【{ev_text}】")]
     # 延迟拟题（ADR-020 决策一）：事件级一律不输出标题，标题在整章拼完后统一拟
-    parts += ["", "【输出纪律】直接写正文，**不要写章节标题**、不要写「第X章」字样；"
-                  "不要重复上文已经写过的内容。"]
+    blocks.append(("discipline", "【输出纪律】直接写正文，**不要写章节标题**、不要写「第X章」字样；"
+                                "不要重复上文已经写过的内容。"))
     if appeared_notes:
-        parts += ["", "【本章已出场记录（防重复登场）】下列人物在前面事件已出场过；"
-                      "本场再写他们时，登场方式与互动动作必须与记录不同，"
-                      "严禁重复同样的出场套路（如已'窜出来吓人'就不得再窜出来）：",
-                  *appeared_notes[-12:]]
+        blocks.append(("appeared", "\n".join([
+            "【本章已出场记录（防重复登场）】下列人物在前面事件已出场过；"
+            "本场再写他们时，登场方式与互动动作必须与记录不同，"
+            "严禁重复同样的出场套路（如已'窜出来吓人'就不得再窜出来）：",
+            *appeared_notes[-12:]])))
     if direction_lines:
-        parts += ["", "【本场人物表演指令】（逐人遵守，违反即人物崩坏；"
-                      "各人的语气与取舍必须彼此不同）：", *direction_lines]
+        blocks.append(("direction", "\n".join([
+            "【本场人物表演指令】（逐人遵守，违反即人物崩坏；"
+            "各人的语气与取舍必须彼此不同）：", *direction_lines])))
     if cast_lines:
-        parts += ["", "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
-                      "修为、与其他人的关系都要对得上）：", *cast_lines]
+        blocks.append(("cast", "\n".join([
+            "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
+            "修为、与其他人的关系都要对得上）：", *cast_lines])))
     if hist_lines:
-        parts += ["", "【人物近况】（他们带着这些经历进入本场，言行要与之一致）：",
-                  *hist_lines]
+        blocks.append(("hist_lines", "\n".join([
+            "【人物近况】（他们带着这些经历进入本场，言行要与之一致）：",
+            *hist_lines])))
     if readback_text and idx == 1:
-        parts += ["", readback_text]
+        blocks.append(("readback", readback_text))
     if extra_readback:
-        parts += ["", *extra_readback]
+        blocks.append(("extra_readback", "\n".join(extra_readback)))
+    if prose_window:
+        blocks.append(("prose_window", "\n".join([
+            "【前文正文（最近片段）】下面是已写正文的最近部分；续写必须自然衔接，"
+            "片段里已经发生过的事件、已用过的出场方式与对白严禁再写一遍；"
+            "片段中已出场的人物若再度登场，方式必须不同：",
+            prose_window])))
     if prev_piece:
-        parts += ["", f"【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
-                  "…" + prev_piece[-seam_chars:]]
+        blocks.append(("seam", "\n".join([
+            "【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
+            "…" + prev_piece[-seam_chars:]])))
     if memories:
-        parts += ["", "【相关前情】（先忆，保持一致）：", *memories]
+        blocks.append(("memories", "\n".join([
+            "【相关前情】（先忆，保持一致）：", *memories])))
     if setting_lines:
-        parts += ["", "【本事件首次出现的设定】（以下设定此前未在正文交代过，"
-                      "必须在本次事件里自然带出，让读者第一次见到就明白：）", *setting_lines]
+        blocks.append(("settings", "\n".join([
+            "【本事件首次出现的设定】（以下设定此前未在正文交代过，"
+            "必须在本次事件里自然带出，让读者第一次见到就明白：）", *setting_lines])))
     if related:
         char_lines = related.get("character") or []
         if char_lines:
-            parts += ["", "【本事件相关人物】（按其性格/弧线/当前状态写）：", *char_lines]
+            blocks.append(("related:character", "\n".join([
+                "【本事件相关人物】（按其性格/弧线/当前状态写）：", *char_lines])))
         set_lines = related.get("setting") or []
         if set_lines:
-            parts += ["", "【相关知识·设定】（与本次事件相关的世界设定，须一致）：", *set_lines]
+            blocks.append(("related:setting", "\n".join([
+                "【相关知识·设定】（与本次事件相关的世界设定，须一致）：", *set_lines])))
         for key, label in (("thread", "伏笔"), ("lesson", "教训"), ("faction", "势力")):
             ls = related.get(key) or []
             if ls:
-                parts += ["", f"【相关知识·{label}】（本事件相关的{label}，保持连续）：", *ls]
-    parts += ["", "篇幅约 300–600 字。" + ("这是本章最后一个事件，结尾必须是一个完整的收束句。"
-                                         if is_last else
-                                         "不要写本章其他事件的内容，写到本事件结束即停。")]
-    return "\n".join(parts)
+                blocks.append((f"related:{key}", "\n".join([
+                    f"【相关知识·{label}】（本事件相关的{label}，保持连续）：", *ls])))
+    blocks.append(("tail", "篇幅约 300–600 字。" + (
+        "这是本章最后一个事件，结尾必须是一个完整的收束句。"
+        if is_last else
+        "不要写本章其他事件的内容，写到本事件结束即停。")))
+    if char_budget > 0:
+        blocks, _evicted = apply_prompt_budget(blocks, char_budget)
+        # 淘汰可审计（M3t 纪律：绝不静默丢上下文）——先打印，后续接 ProductionResult
+        if _evicted:
+            print(f"[budget] evicted: {','.join(_evicted)}", flush=True)
+    return "\n\n".join(text for _, text in blocks)
 
 
 def _make_chronicler(ws, project_id: str, provider, embedding, semantic_checker):
@@ -1379,6 +1413,12 @@ def produce_chapter(
                             direction_lines = sheet.lines()
                             _director.save_direction(ws, project_id, sheet)
                             directions_built += 1
+                    # M3t 正文滑动窗口：注入已写正文最近片段（含接缝），压制事件重演
+                    # 与出场套路复用；切片按段落边界对齐（prompt_budget.prose_tail）
+                    _prose_win = ""
+                    if pieces:
+                        from .prompt_budget import prose_tail
+                        _prose_win = prose_tail("\n\n".join(pieces), _PROSE_WINDOW_CHARS)
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
                                          memories_ev, is_last, setting_lines, related,
@@ -1386,7 +1426,9 @@ def produce_chapter(
                                          hist_lines=hist_lines,
                                          direction_lines=direction_lines,
                                          extra_readback=extra_rb,
-                                         appeared_notes=appeared_notes)
+                                         appeared_notes=appeared_notes,
+                                         prose_window=_prose_win,
+                                         char_budget=_PROMPT_CHAR_BUDGET)
                     # D12 跨切片位置记忆：本场出场方式记入防重复记录
                     # （在 prompt 构建之后追加——本场记录只影响后续事件）
                     _sheet_map = {d.name: d.how for d in (sheet.characters if sheet else [])}
