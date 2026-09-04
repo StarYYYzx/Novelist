@@ -62,9 +62,10 @@ class CharacterNeed:
 @dataclass
 class FactoryReport:
     ok: bool = False
-    card: dict | None = None          # 过闸门并注册后的正式卡
+    card: dict | None = None          # 过闸门并注册后的正式卡（复用时=被复用的现有卡）
     rejections: list[str] = field(default_factory=list)   # 各闸门拒绝原因（全程披露）
     queued: bool = False              # True=因配额/闸门进需求队列待下章
+    reused: str = ""                  # 非空=本需求经检索复用现有角色（未造新卡，不占配额）
 
 
 # ---------------------------------------------------------------- 名册读取（纯确定性）
@@ -335,20 +336,185 @@ def produce(ws, project_id: str, need: CharacterNeed, provider, *,
     return report
 
 
+# ---------------------------------------------------------------- 检索复用（needs resolver，2026-09-04 用户拍板）
+#
+# 需求先在现有卡池里找复用，找不到才走工厂造卡——防止"池里明明有未登场角色，
+# 工厂又造一个同职能新卡"。链路：确定性打分 → top-3 候选 → LLM 从严判定。
+# 复用不占工厂配额（没有新卡），判定失败/无候选/无 provider 一律落回原工厂路径。
+
+
+def _card_text(card: dict) -> str:
+    """卡的全文本投影（打分用）：名字/别名/职能/性格/行为规格/弧线/境界/阵营。"""
+    p = card.get("power") or {}
+    parts = [card.get("name"), *(card.get("aliases") or []), card.get("role"),
+             *(card.get("core_traits") or []), *(card.get("behavior_rules") or []),
+             card.get("arc"), p.get("level"), p.get("faction")]
+    return "".join(str(x) for x in parts if x)
+
+
+def score_card_for_need(card: dict, need: CharacterNeed) -> tuple[float, list[str]]:
+    """确定性打分：需求各字段对卡文本的命中。返回 (分数, 命中说明)。"""
+    score = 0.0
+    hits: list[str] = []
+    text = _card_text(card)
+    power = card.get("power") or {}
+
+    def _grams(s: str, n: int = 2) -> list[str]:
+        s = re.sub(r"\s+", "", str(s or ""))
+        return [s[i:i + n] for i in range(0, max(len(s) - n + 1, 0), 1)]
+
+    # 1) 职能命中（权重最高）：need.role 的 2-gram 在卡文本中的覆盖率
+    grams = _grams(need.role)
+    if grams:
+        cov = sum(1 for g in grams if g in text) / len(grams)
+        if cov >= 0.5:
+            score += 1.0 + cov            # 1.0 ~ 2.0
+            hits.append(f"职能≈{cov:.0%}")
+    # 2) 阵营倾向命中 power.faction
+    if need.faction_hint and str(need.faction_hint) in str(power.get("faction") or ""):
+        score += 2.0
+        hits.append(f"阵营={need.faction_hint}")
+    # 3) 境界倾向前缀命中 power.level
+    if need.realm_hint:
+        r = re.sub(r"\s+", "", str(need.realm_hint))
+        lv = re.sub(r"\s+", "", str(power.get("level") or ""))
+        if r and (r in lv or lv in r):
+            score += 1.0
+            hits.append(f"境界≈{power.get('level')}")
+    # 4) 需求描述对卡文本的 2-gram 覆盖（低权重，只做加分不做门槛）
+    grams = _grams(need.description)
+    if len(grams) >= 3:
+        cov = sum(1 for g in grams if g in text) / len(grams)
+        if cov >= 0.2:
+            score += min(cov, 1.0)
+            hits.append(f"描述≈{cov:.0%}")
+    # 5) 关系钩子牵引：need.hooks 指向的角色与本卡存在关系边
+    idx = {str(card.get("name", ""))}
+    idx |= {str(a) for a in (card.get("aliases") or [])}
+    for h in need.hooks:
+        if str(h.get("to") or "") in idx:
+            score += 1.0
+            hits.append(f"钩子→{h.get('to')}")
+            break
+    return score, hits
+
+
+def _judge_reuse(provider, need: CharacterNeed, cands: list[dict]) -> tuple[str, str]:
+    """LLM 从严判定：top 候选是否满足需求。返回 (复用名或空, 理由)。任何异常返回空。"""
+    lines = []
+    for c in cands:
+        p = c.get("power") or {}
+        rels = "；".join(f"{r.get('target')}:{r.get('type')}" for r in (c.get("relationships") or [])
+                         if isinstance(r, dict))
+        lines.append(
+            f"- {c.get('name')}｜职能:{c.get('role') or '未指明'}｜境界:{p.get('level')}"
+            f"｜阵营:{p.get('faction')}｜性格:{'、'.join(str(x) for x in (c.get('core_traits') or [])[:3])}"
+            f"｜关系:{rels or '无'}")
+    prompt = (
+        "你是选角导演。判断**现有角色**能否满足下面的缺人需求（避免重复造卡）。\n"
+        f"【缺人需求】职能:{need.role}｜描述:{need.description}\n"
+        f"境界倾向:{need.realm_hint or '不限'}｜阵营倾向:{need.faction_hint or '不限'}\n"
+        f"为何现有池不行（广播判定，仅供参考）:{need.why_existing_fail or '无'}\n"
+        "【候选角色】\n" + "\n".join(lines) + "\n\n"
+        "从严判定：候选必须能承担需求的职能（含境界量级匹配），性格可塑但职能不可塑；"
+        "拿不准一律判不满足。只输出 JSON："
+        '{"reuse": "角色名或null", "reason": "一句话理由"}')
+    try:
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="user", content=prompt)],
+            max_tokens_out=200, temperature=0.2, response_format="json_object"))
+        import json as _json
+
+        d = _json.loads(res.content or "{}")
+        name = str(d.get("reuse") or "").strip()
+        cand_names = {str(c.get("name") or "") for c in cands}
+        if name and name in cand_names:
+            return name, str(d.get("reason") or "")
+    except Exception:  # noqa: BLE001 - 判定失败从严落回工厂
+        pass
+    return "", "LLM 判定失败/未通过"
+
+
+def try_reuse(ws, project_id: str, need: CharacterNeed, provider, *,
+              vol: int, ch: int) -> FactoryReport:
+    """需求检索复用：打分 → top-3 → LLM 判定 → 满足则登记 serves_needs 回链。
+
+    复用成功返回 ok=True + reused=名字（未造新卡，不占工厂配额）；
+    未复用返回 ok=False，调用方应继续走 `produce()` 原路径。
+    `serves_needs` 回链写在卡上（ADR-016 文件=事实源），供调度层参考与审计。
+    """
+    report = FactoryReport()
+    chars = [c for c in (_read_bible(ws, project_id, "characters.json") or [])
+             if isinstance(c, dict) and c.get("name")]
+    scored = []
+    for c in chars:
+        s, hits = score_card_for_need(c, need)
+        if s >= 4.0:                      # 门槛：阵营+境界压线（3.0）不够，须职能级命中
+            scored.append((s, hits, c))
+    scored.sort(key=lambda t: -t[0])
+    top = scored[:3]
+    if not top:
+        report.rejections.append("检索复用：无候选（打分门槛 4.0 未命中）")
+        return report
+    report.card = top[0][2]
+    if provider is None:
+        report.rejections.append("检索复用：无 provider 不可判定，转工厂")
+        return report
+    name, reason = _judge_reuse(provider, need, [c for _, _, c in top])
+    if not name:
+        report.rejections.append(f"检索复用：{reason}（候选："
+                                 + "、".join(str(c.get("name")) for _, _, c in top) + "）")
+        return report
+    # 复用成立：写 serves_needs 回链（按 id 定位原卡，落盘）
+    for c in chars:
+        if str(c.get("name")) == name:
+            c.setdefault("serves_needs", []).append(
+                {"role": need.role, "description": need.description,
+                 "vol": vol, "ch": ch, "source": need.source})
+            ws.write_json(ws._abs(f"{project_id}/bible/characters.json"), chars)  # noqa: SLF001
+            report.ok = True
+            report.reused = name
+            report.rejections.append(f"检索复用：{name}（{reason or '满足需求'}）")
+            return report
+    report.rejections.append("检索复用：判定名与卡不符，转工厂")
+    return report
+
+
 def drain_queue(ws, project_id: str, provider, *, vol: int, ch: int,
                 limit: int = PER_CHAPTER_QUOTA) -> list[FactoryReport]:
-    """章前消化需求队列（事件循环调用点）：按配额逐个生产，成功的出队。"""
+    """章前消化需求队列（事件循环调用点）：先检索复用，未复用才按配额生产。
+
+    复用不占工厂配额（没有新卡）；JIT 告警（source=jit_alarm）点名具体缺失名字，
+    池内必然没有（缺卡判定已查别名），跳过复用直接生产。
+    """
     reports: list[FactoryReport] = []
     needs = load_queue(ws, project_id)
     if not needs:
         return reports
     remain: list[CharacterNeed] = []
     quota = max(PER_CHAPTER_QUOTA - _produced_this_chapter(ws, project_id, vol, ch), 0)
-    for i, need in enumerate(needs):
-        if len(reports) < min(limit, quota):
-            r = produce(ws, project_id, need, provider, vol=vol, ch=ch)
-            reports.append(r)
-            if not r.ok:
+    produced = 0
+    for need in needs:
+        # 1) 检索复用（用户拍板 2026-09-04）：零成本消需求，不占配额
+        reuse_note: list[str] = []
+        if need.source != "jit_alarm" and provider is not None:
+            try:
+                r = try_reuse(ws, project_id, need, provider, vol=vol, ch=ch)
+            except Exception:  # noqa: BLE001 - 复用任何异常都落回工厂
+                r = None
+            if r is not None and r.ok:
+                reports.append(r)
+                continue
+            if r is not None:
+                reuse_note = list(r.rejections)   # 复用尝试留痕，不随 produce 报告丢失
+        # 2) 工厂生产（受配额约束）
+        if produced < min(limit, quota):
+            rep = produce(ws, project_id, need, provider, vol=vol, ch=ch)
+            rep.rejections = reuse_note + rep.rejections
+            reports.append(rep)
+            if rep.ok:
+                produced += 1
+            else:
                 remain.append(need)
         else:
             remain.append(need)

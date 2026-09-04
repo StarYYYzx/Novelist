@@ -175,6 +175,124 @@ def check_proposal(card: dict, proposal: dict, *, ws, project_id: str) -> list[s
     return reasons
 
 
+# ---------------------------------------------------------------- 语义闸门（A3 剩余，2026-09-04）
+#
+# 词级信号、零模型调用。词表是天花板——能挡明显矛盾，隐晦冲突挡不住，
+# 兜底是人工确认（pending 通道本来就不自动入档）。
+
+# 亲近/坦诚类表述（提案关系描述 & 账本状态通用）
+_CLOSE_WORDS = ("坦诚", "信任", "托付", "亲传", "挚友", "恩师", "亲密", "推心置腹",
+                "毫无保留", "救命", "情深")
+# 隐瞒/试探/戒备类（账本状态侧的"表面平常、暗中另有动作"）
+_HIDDEN_WORDS = ("底细", "试探", "暗中", "猜忌", "提防", "戒备", "调查", "盯上",
+                 "列为目标", "留意", "观察")
+# 敌对类
+_HOSTILE_WORDS = ("仇", "恨", "背叛", "敌对", "不共戴天", "追杀", "灭门")
+# 未写章细纲的"首次"类前提词 vs 提案的"旧识"类断言
+_FIRST_TIME_WORDS = ("初次", "首次", "第一次", "初见", "初识", "素不相识", "素未谋面")
+_OLD_TIE_WORDS = ("旧识", "旧交", "旧部", "多年", "老友", "故友", "熟识", "早已相识",
+                  "旧好", "多年未见")
+
+
+def _ledger_state_for(ws, project_id: str, a_id: str, b_id: str) -> str:
+    """实然账本中 (a,b) 双向对的当前状态文本（无记录返回空）。"""
+    ledger = _read_memory_json(ws, project_id, "relationship_ledger.json")
+    if not isinstance(ledger, dict):
+        return ""
+    for p in ledger.get("pairs") or []:
+        if not isinstance(p, dict):
+            continue
+        if {str(p.get("a") or ""), str(p.get("b") or "")} == {a_id, b_id}:
+            return str(p.get("state") or "")
+    return ""
+
+
+def _unwritten_key_events(ws, project_id: str) -> list[tuple[int, int, str]]:
+    """未写章的 key_events 文本行 [(vol, ch, 事件文本)]。
+
+    判定：outline/chapters/{v}-{c}.md 存在而 drafts/chapters/{v}-{c}.md 不存在。
+    """
+    import re as _re
+
+    outline_dir = ws._abs(f"{project_id}/outline/chapters")
+    if not outline_dir.is_dir():
+        return []
+    out: list[tuple[int, int, str]] = []
+    for f in sorted(outline_dir.glob("*.md")):
+        m = _re.match(r"(\d+)-(\d+)", f.stem)
+        if not m or ws._abs(f"{project_id}/drafts/chapters/{f.stem}.md").exists():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for ln in text.splitlines():
+            if ln.strip().startswith("key_events:"):
+                try:
+                    evs = json.loads(ln.split(":", 1)[1])
+                except ValueError:
+                    evs = []
+                out.extend((int(m.group(1)), int(m.group(2)), str(e))
+                           for e in evs if e)
+    return out
+
+
+def semantic_gate(card: dict, proposal: dict, *, ws, project_id: str
+                  ) -> tuple[list[str], list[str]]:
+    """A3 语义闸门（词级，零模型调用）。返回 (拒绝原因, 提案备注)。
+
+    - 账本冲突 → **拒绝**（实然账本已观测的关系态与提案断言直接矛盾）；
+    - 未写章细纲前提冲突 → **备注**（写进 pending 的 notes，人工拍板——
+      细纲是计划态，可能本身就待改，不替人做主）。
+    """
+    from .character_factory import _char_index  # noqa: PLC0415 - 同源复用
+
+    reasons: list[str] = []
+    notes: list[str] = []
+    idx = _char_index(ws, project_id)
+    my_id = str(card.get("id") or "")
+    for r in (proposal.get("relationships") or [])[:MAX_RELS]:
+        if not isinstance(r, dict):
+            continue
+        tid = idx.get(str(r.get("target") or ""))
+        rel = str(r.get("type") or "")
+        if not tid or tid == my_id:
+            continue
+        # ① vs 实然关系账本
+        state = _ledger_state_for(ws, project_id, my_id, tid)
+        if state:
+            state_hidden = any(w in state for w in _HIDDEN_WORDS)
+            state_close = any(w in state for w in _CLOSE_WORDS)
+            state_hostile = any(w in state for w in _HOSTILE_WORDS)
+            rel_close = any(w in rel for w in _CLOSE_WORDS)
+            rel_hostile = any(w in rel for w in _HOSTILE_WORDS)
+            rel_old = any(w in rel for w in _OLD_TIE_WORDS)
+            if (state_hidden or state_hostile) and rel_close:
+                reasons.append(
+                    f"与实然账本冲突：与「{r.get('target')}」账本状态为「{state}」"
+                    f"（隐瞒/敌对），提案却断言亲近（{rel!r}）")
+            elif state_close and rel_hostile:
+                reasons.append(
+                    f"与实然账本冲突：与「{r.get('target')}」账本状态为「{state}」"
+                    f"（亲近），提案却断言敌对（{rel!r}）")
+            elif rel_old and ("素不相识" in state or "素未谋面" in state):
+                reasons.append(
+                    f"与实然账本冲突：与「{r.get('target')}」账本仍是「{state}」，"
+                    f"提案却断言旧识（{rel!r}）")
+        # ② vs 未写章细纲前提（计划态 → 只备注）
+        tgt_name = str(r.get("target") or "")
+        for vol, ch, ev in _unwritten_key_events(ws, project_id):
+            if tgt_name not in ev:
+                continue
+            if (any(w in ev for w in _FIRST_TIME_WORDS)
+                    and any(w in rel for w in _OLD_TIE_WORDS)):
+                notes.append(
+                    f"细纲前提留意：未写章 {vol}-{ch} 事件「{ev[:60]}」含「首次」意图，"
+                    f"提案关系 {rel!r} 断言旧识——请人工确认是否冲突")
+                break
+    return reasons, notes
+
+
 def _apply_one_card(card: dict, proposal: dict, *, ws, project_id: str) -> dict:
     """闸门通过后的合并（新值并入，已有值保全）。返回更新后的卡。"""
     idx = _char_index(ws, project_id)
@@ -281,6 +399,10 @@ def propose(ws, project_id: str, provider, *, card_ids: list[str] | None = None)
             continue
         proposal = res["proposal"]
         reasons = check_proposal(card, proposal, ws=ws, project_id=project_id)
+        # A3 语义闸门：账本冲突并入拒绝原因；细纲前提冲突降级为备注（人工拍板）
+        sem_reasons, sem_notes = semantic_gate(card, proposal, ws=ws,
+                                               project_id=project_id)
+        reasons = reasons + sem_reasons
         if reasons:
             res["ok"] = False
             res["proposed"] = False
@@ -294,6 +416,7 @@ def propose(ws, project_id: str, provider, *, card_ids: list[str] | None = None)
             "age": proposal.get("age"),
             "relationships": proposal.get("relationships") or [],
             "behavior_rules": proposal.get("behavior_rules") or [],
+            "notes": sem_notes,
             "reason": "P0-A 数据补喂：LLM 提案待人工确认（origin=enrich，确认后入档）",
         })
         results.append({"card_id": cid, "name": card.get("name"), "ok": True,
@@ -366,6 +489,8 @@ def list_pending(ws, project_id: str) -> list[str]:
             out.append(f"    relationships: {rels}")
         if rules:
             out.append(f"    behavior_rules: {rules}")
+        for note in (p.get("notes") or []):   # A3 语义闸门备注（细纲前提留意）
+            out.append(f"    ⚠ {note}")
         chars.pop(p.get("card_id"), None)   # 已在 pending 的卡不用再提示
     return out
 

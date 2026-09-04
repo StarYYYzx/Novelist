@@ -1164,8 +1164,14 @@ def produce_chapter(
         try:
             from .character_factory import drain_queue as _factory_drain
 
-            factory_added = sum(1 for r in _factory_drain(ws, project_id, provider,
-                                                          vol=vol, ch=ch) if r.ok)
+            for _r in _factory_drain(ws, project_id, provider, vol=vol, ch=ch):
+                if not _r.ok:
+                    continue
+                if _r.reused:   # 检索复用（未造新卡）：登记回链，不进 factory_added 计数
+                    print(f"[ch{ch}] 需求复用现有角色：{_r.reused}"
+                          f"（{_r.rejections[-1] if _r.rejections else ''}）", flush=True)
+                else:
+                    factory_added += 1
         except Exception:  # noqa: BLE001
             factory_added = 0
     if system_prompt is None and final_goal is None and inject_bible:

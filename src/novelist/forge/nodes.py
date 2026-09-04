@@ -307,6 +307,8 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 3. characters 用角色 id（char:xxx），只列本章实际出场者。
 4. threads_involved 只能从本书伏笔清单选 id：{threads_block}；本章没碰就空数组，禁止自造 id。
 5. turns 1–3 条：本章转折/推进点。
+6. tension：一句话说清本章张力来源（主角的两难/威胁/悬念——每个事件都要服务于它，
+   不是重复事件内容）。hook：章末钩子（最后一个事件以此收尾，拉住读者翻下一章）。
 {opening_rule}
 
 【输出 JSON】
@@ -315,6 +317,8 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
   "pov": "视角（默认：第三人称限知（主角视角））",
   "key_events": ["事件1", "事件2"],
   "turns": ["转折/推进1"],
+  "tension": "本章张力来源一句话（主角在两难什么）",
+  "hook": "章末钩子一句话",
   "characters": ["char:xxx"],
   "threads_involved": ["伏笔清单中的 pt:xxx"],
   "after_days": 0
@@ -810,6 +814,8 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
         "pov": str(gist.get("pov") or ""),
         "key_events": [str(e) for e in (gist.get("key_events") or [])],
         "turns": [str(t) for t in (gist.get("turns") or [])],
+        "tension": str(gist.get("tension") or ""),   # D1：张力来源（行内注入事件 prompt）
+        "hook": str(gist.get("hook") or ""),         # D1：章末钩子
         "characters": [str(c) for c in (gist.get("characters") or [])],
         "threads_involved": [str(t) for t in (gist.get("threads_involved") or [])],
         "after_days": int(gist.get("after_days") or 0),
@@ -834,6 +840,11 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
     ]
     if fm["turns"]:
         parts.append(f"- 转折：{'；'.join(fm['turns'])}")
+    if fm.get("tension"):
+        # D1：行内注入（本 md 整篇进章级 goal → 每个事件的 prompt 都看得见）
+        parts.append(f"- 全章张力（每个事件都要服务于它，不得偏离）：{fm['tension']}")
+    if fm.get("hook"):
+        parts.append(f"- 章末钩子（最后一个事件必须以此收尾）：{fm['hook']}")
     if fm["threads_involved"]:
         parts.append(f"- 伏笔：{'、'.join(fm['threads_involved'])}")
     if fm["beats"]:
@@ -889,6 +900,10 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
         "pov": str(art.get("pov") or "") or "第三人称限知（主角视角）",
         "key_events": key_events,
         "turns": _str_list(art.get("turns"))[:6],
+        # D1 情节工艺（2026-09-04 拍板）：张力来源 + 章末钩子。校验从宽——
+        # 旧细纲/模型没给就留空字符串，只少注入两行，绝不 block。
+        "tension": str(art.get("tension") or "").strip()[:120],
+        "hook": str(art.get("hook") or "").strip()[:80],
         "characters": cids,
         "threads_involved": threads,
         "after_days": int(art.get("after_days") or 0),

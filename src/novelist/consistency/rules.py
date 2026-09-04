@@ -12,6 +12,12 @@
   端到端实测 22 建档人物 3 人零出场无告警）。区分「计划出场已越过但跳票」（强信号）
   与「无 first_appear 无法判断」（弱信号）；first_appear 在未来（渐进写作，卷 2+
   人物未在卷 1 出场）不告警。
+- R-TITLE 称谓一致性（2026-09-04）：只查**视角无关的至高职位**（掌门/宗主/家主等
+  ——不论谁开口称呼都一样），师承/师兄妹类**视角相对称谓刻意不查**（"自己的师姐
+  在大师兄口中是师妹"——任一合法视角能解释即放行，用户拍板）。查两类：
+  ①bible 内部：同一至高职位被 ≥2 角色声称 → warn；②正文 vs bible：正文以职位
+  称呼了不属于该职位的人（「掌门段无涯」而 bible 掌门是青云子）→ warn。
+  豁免（伪装剧情等）写 bible/title_rules.json：{"exempt": [{"name","title","note"}]}。
 """
 
 from __future__ import annotations
@@ -47,6 +53,14 @@ WESTERN_ALLUSIONS = (
 
 # 境界细分后缀：同一境界混用即为表述不一致
 _LEVEL_SUFFIX_RE = r"([一二三四五六七八九]?[层重]|初期|中期|后期|大圆满|巅峰)"
+
+# 至高职位词（R-TITLE）：一个组织同职位只能一人；**视角无关**——不论谁称呼，
+# 「掌门」都指向同一个人。师承/同门类视角相对称谓（师尊/师兄/徒儿…）刻意不进
+# 本表：换个人开口称谓就变，确定性规则无法归因说话人，交给 LLM 语义检。
+SUPREME_TITLES = (
+    "掌门", "宗主", "家主", "城主", "岛主", "谷主", "殿主", "阁主",
+    "会长", "帮主", "门主", "教主", "皇帝", "国主",
+)
 
 
 def _read_json(path) -> dict | list | None:
@@ -241,6 +255,82 @@ def _item_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     return alerts
 
 
+def _title_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
+    """R-TITLE 称谓一致性（至高职位，视角无关子集）。
+
+    职位来源：角色卡 role 字段 + relationships[].type 文本（如「青云宗掌门」）。
+    - ①bible 内部矛盾：同一至高职位被 ≥2 角色声称 → warn
+    - ②正文 vs bible：正文出现「职位+他人名」/「他人名+职位」且该人不含此职位 → warn
+      （正文全拼相连检查，"掌门段无涯"“段无涯掌门”均命中；称呼持有者本人不报）
+    豁免名单 bible/title_rules.json：{"exempt": [{"name","title","note"}]}（伪装剧情）。
+    """
+    chars = _load(ws, project_id, "bible/characters.json")
+    if not isinstance(chars, list):
+        return []
+    name_to_id: dict[str, str] = {}
+    for c in chars:
+        if isinstance(c, dict) and c.get("id"):
+            if c.get("name"):
+                name_to_id[str(c["name"])] = str(c["id"])
+            for a in (c.get("aliases") or []):
+                if a:
+                    name_to_id[str(a)] = str(c["id"])
+
+    def _claimed(c: dict) -> set[str]:
+        """角色声称的至高职位——只认 role 字段（13 字段卡的角色/职位）。
+
+        刻意**不**从 relationships[].type 提取：「对掌门怀恨在心」这类关系描述
+        里的职位指的是对方或第三人，提取会把关系误当身份。
+        """
+        return {t for t in SUPREME_TITLES if t in str(c.get("role") or "")}
+
+    claims: dict[str, set[str]] = {}   # title -> {角色名}
+    who: dict[str, str] = {}           # title -> 首个声称者名
+    for c in chars:
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        for t in _claimed(c):
+            claims.setdefault(t, set()).add(str(c["name"]))
+            who.setdefault(t, str(c["name"]))
+
+    exempt: set[tuple[str, str]] = set()
+    tr = _load(ws, project_id, "bible/title_rules.json")
+    for e in (tr.get("exempt") or []) if isinstance(tr, dict) else []:
+        if isinstance(e, dict) and e.get("name") and e.get("title"):
+            exempt.add((str(e["name"]), str(e["title"])))
+
+    alerts: list[RuleAlert] = []
+    # ① bible 内部：同一至高职位多人声称
+    for t, names in claims.items():
+        if len(names) > 1:
+            alerts.append(RuleAlert(
+                level="warn", rule_id="R-TITLE", object_ref=t,
+                detail=f"bible 中「{t}」被多人声称：{sorted(names)}（一个组织同一至高"
+                       "职位应只有一人；若是夺位/伪装剧情请写 title_rules.json 豁免）"))
+    # ② 正文 vs bible：职位冠到别人头上（「掌门段无涯」/「段无涯掌门」紧邻模式）
+    if claims:
+        for _stem, text in _iter_chapters(ws, project_id):
+            for t, owner in who.items():
+                legit = claims.get(t, {owner})
+                for n in name_to_id:
+                    if n == owner or n in legit or (n, t) in exempt:
+                        continue
+                    if n not in text:
+                        continue
+                    # 名与职位**严格紧邻**才算称呼（「掌门段无涯」「段无涯掌门」）；
+                    # 允许间隔会误伤「段无涯在掌门大选中…」这类叙述
+                    if re.search(re.escape(t) + re.escape(n), text) or \
+                       re.search(re.escape(n) + re.escape(t), text):
+                        alerts.append(RuleAlert(
+                            level="warn", rule_id="R-TITLE", object_ref=n,
+                            detail=f"正文将「{n}」称为「{t}」，但 bible 中 {t} 是"
+                                   f"「{owner}」。若为伪装/自称/错称剧情，"
+                                   "写 bible/title_rules.json 豁免"))
+                        break   # 每人每职位报一次即够
+    return alerts
+
+
+
 def _load(ws: Workspace, project_id: str, rel: str) -> dict | list:
     p = ws._abs(f"{project_id}/{rel}")
     if not p.exists():
@@ -266,6 +356,7 @@ def run_rule_checks(ws: Workspace, project_id: str) -> list[RuleAlert]:
     alerts += run_state_checks(ws, project_id)
     alerts += _thread_payoff_check(ws, project_id)
     alerts += _cast_coverage_check(ws, project_id)
+    alerts += _title_check(ws, project_id)
     return alerts
 
 
