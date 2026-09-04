@@ -251,6 +251,10 @@ class Chronicler:
                 continue
             kind = parts[1] if len(parts) > 1 and parts[1] in EVENT_KINDS else "turning_point"
             names = [n.strip() for n in (parts[2].split(",") if len(parts) > 2 else []) if n.strip()]
+            # 质量闸门（2026-09-04 实证：「目标出现」4 字压线入库，无参与者无线索，
+            # 对 RAG 是纯噪声）：无参与者的事件须摘要 ≥8 字才有最低信息量。
+            if not names and len(summary) < 8:
+                continue
             out.append(ExtractedEvent(
                 summary=summary[:120],
                 kind=kind,

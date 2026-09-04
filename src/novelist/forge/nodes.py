@@ -1178,8 +1178,67 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
 
 
 # ---- 确定性落盘（零 LLM）----
+
+# 运行态字段白名单：这些字段由生成/回写组件维护（交代状态机 verify、编纂员伏笔流转、
+# worldstate 状态域），蓝图里没有真实值。sync_bible 可能晚于生成运行（蓝图修订重落盘），
+# 全量覆盖会把运行态抹掉（实证 proj-20260903194907：ch1-5 verify 已置 revealed=true，
+# 重同步后全被重置回 false → 交代状态机空转）。布尔第二位：是否保留盘上独有行/键
+# （True = 工厂/enrich 运行期追加的行与扩展键不被覆盖；False = 盘上仅蓝图行，直接换新）。
+_RUNTIME_FIELDS: dict[str, tuple[tuple[str, ...], bool]] = {
+    "bible/settings.json": (("revealed", "first_ch"), True),
+    "bible/plot_threads.json": (("status", "planted", "returned"), False),
+    "bible/items.json": (("state", "aliases"), False),
+    "bible/skills.json": (("state", "aliases"), False),
+    "bible/locations.json": (("status", "aliases"), True),
+    "bible/characters.json": ((), True),
+}
+
+
+def _merge_bible_rows(ws: Workspace, project_id: str, rel: str, rows: list[dict],
+                      runtime_fields: tuple[str, ...] = (), keep_extra: bool = False) -> list[dict]:
+    """蓝图重写前按 id 合并盘上运行态（ADR-016 文件=事实源）。
+
+    合并方向：蓝图计划字段胜；`runtime_fields` 盘上值胜；`keep_extra` 时盘上独有键
+    （provenance/behavior_rules 等 enrich/工厂补喂）与独有行（工厂注册的新卡）保留，
+    独有行追加在尾部。蓝图里要**删除**实体请直接改盘（同步是合并不是镜像）。
+    """
+    p = ws._abs(f"{project_id}/{rel}")  # noqa: SLF001
+    try:
+        old = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (ValueError, OSError):
+        old = []
+    by_id = ({r.get("id"): r for r in old if isinstance(r, dict) and r.get("id")}
+             if isinstance(old, list) else {})
+    if not by_id:
+        return rows
+    out: list[dict] = []
+    seen: set = set()
+    for row in rows:
+        prev = by_id.get(row.get("id"))
+        if prev is None:
+            out.append(row)
+            continue
+        seen.add(row.get("id"))
+        if keep_extra:
+            merged = {k: v for k, v in prev.items() if k not in row}
+        else:
+            merged = dict(row)
+        merged.update(row)
+        for f in runtime_fields:
+            if prev.get(f) is not None:
+                merged[f] = prev[f]
+        out.append(merged)
+    if keep_extra:
+        out.extend(r for rid, r in by_id.items() if rid not in seen)
+    return out
+
+
 def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
-    """蓝图 → bible 文件全量重写（剥离 role、补默认字段、主角引用）。返回写入的相对路径。"""
+    """蓝图 → bible 文件落盘（剥离 role、补默认字段、主角引用）。返回写入的相对路径。
+
+    非 mirror 语义：按 id 合并盘上运行态（_RUNTIME_FIELDS / _merge_bible_rows），
+    生成期攒下的 revealed/伏笔流转/状态域与工厂/enrich 追加行不被覆盖。
+    """
     written: list[str] = []
 
     def write(rel: str, data: Any) -> None:
@@ -1200,14 +1259,16 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                 norm.append(f)
         wv["factions"] = norm
     write("bible/worldview.json", wv)
-    # characters（剥离 role；protagonist → is_protagonist）
+    # characters（剥离 role；protagonist → is_protagonist；运行期扩展键/工厂卡保留）
     chars = []
     for c in bp.section("characters"):
         card = {k: v for k, v in c.items() if k != "role"}
-        card.setdefault("status", "active")
         if c.get("role") == "protagonist":
             card["is_protagonist"] = True
         chars.append(card)
+    chars = _merge_bible_rows(ws, project_id, "bible/characters.json", chars, (), True)
+    for card in chars:
+        card.setdefault("status", "active")
     write("bible/characters.json", chars)
     # style（补 protagonist 引用）
     st = dict(bp.get("style") or {})
@@ -1226,6 +1287,8 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                         if k in ("id", "desc", "scope", "target_vol", "planted",
                                  "status", "report_deadline", "returned", "revision",
                                  "plant_desc", "payoff_desc")})
+    threads = _merge_bible_rows(ws, project_id, "bible/plot_threads.json", threads,
+                                *_RUNTIME_FIELDS["bible/plot_threads.json"])
     write("bible/plot_threads.json", threads)
     # 有内容才写其余段（同样白名单过滤）
     for section, rel, keep in (("locations", "bible/locations.json",
@@ -1243,6 +1306,12 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
             if section == "items":  # D3：category/kind 白名单外会被剥离，type 在此归一化补齐
                 for src, row in zip((x for x in data if isinstance(x, dict)), rows):
                     row["type"] = _normalize_item_type(src)
+            rt_fields, keep_extra = _RUNTIME_FIELDS[rel]
+            rows = _merge_bible_rows(ws, project_id, rel, rows, rt_fields, keep_extra)
+            if rel == "bible/settings.json":  # 与 synthesize_seed_settings 卡形对齐（自描述）
+                for r in rows:
+                    r.setdefault("revealed", False)
+                    r.setdefault("first_ch", 1)
             write(rel, rows)
     # D2：seed 模式 build 无 settings 节点 → V3（settings ≥5）必挡、检索空转。
     # 零 LLM 从蓝图实体合成种子卡；仅蓝图与磁盘双空时兜底（enrich 增量不被覆盖）。

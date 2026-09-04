@@ -81,6 +81,12 @@ def commit_event(
         embedding=embedding,
         semantic_checker=semantic_checker,
     )
+    # 同章合成事件消歧（2026-09-04 实证 proj-20260903194907：失败轮留下的
+    # 「完成第X卷第Y章」与新轮真实事件并存污染 plot_events/RAG）：
+    # - 来者是真实事件 → 同章旧合成事件已过时（设计上二者互斥，orchestrator:1737
+    #   有真实事件就不写合成），清掉；
+    # - 来者是合成事件 → 幂等重写，防重跑叠加。
+    writer.drop_synthetic_chapter(event.vol, event.ch)
     try:
         writer.append_plot_event(
             {

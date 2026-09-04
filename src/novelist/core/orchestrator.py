@@ -94,6 +94,30 @@ _REVISE_HINT = (
     "结尾必须是完整的收束句。"
 )
 
+# 事件模式章末修复（2026-09-04）：事件循环里每个片段单独看过都合格，拼起来才会
+# 暴露截断/元叙事/残留重复——direct 模式有 problem→重试闭环（_REPAIR_HINT），
+# 事件模式此前只有确定性去重、无修复通道。整章修复一次，问题减少才采纳。
+_CHAPTER_REPAIR_HINT = (
+    "\n\n【本章正文存在以下问题，必须修复】\n"
+    "{problems}\n"
+    "【修复纪律】只修复上述问题：删除重复段落与重复句、把截断的结尾补成完整的"
+    "收束句、删除元叙事表述；不改动情节、人物、时间线与既有文风；"
+    "直接输出修复后的完整正文，不要任何解释。"
+)
+
+
+def _repair_chapter_text(provider, system_prompt: str, text: str,
+                         problems: list[str], generation_tokens: int) -> str:
+    """章末问题清单 → 一次 LLM 修复调用。返回修复稿（失败/过短返回空串由调用方丢弃）。"""
+    if not problems:
+        return ""
+    prompt = (text + "\n" + _CHAPTER_REPAIR_HINT.format(problems="；".join(problems)))
+    try:
+        return _generate_with_continuation(provider, system_prompt, prompt,
+                                           generation_tokens, 0)
+    except Exception:  # noqa: BLE001 - 修复失败不影响原稿
+        return ""
+
 
 def _completeness_problems(comp: dict) -> list[str]:
     problems = []
@@ -1560,6 +1584,24 @@ def produce_chapter(
                     final, _near_removed = strip_near_dup_sentences(final)
                     if _near_removed:
                         near_dup_removed = _near_removed
+                    # 章末问题清单反馈重试（direct 模式 :1564 起有同款闭环）：
+                    # 拼接后的问题（截断/元叙事/残留重复）一次修复调用，问题减少才采纳。
+                    if max_retries > 0:
+                        try:
+                            ev_problems = _completeness_problems(completeness(final))
+                        except Exception:  # noqa: BLE001
+                            ev_problems = []
+                        if ev_problems:
+                            repaired = _repair_chapter_text(
+                                provider, system_prompt or "", final, ev_problems,
+                                generation_tokens)
+                            if repaired and len(repaired) >= direct_words_floor:
+                                try:
+                                    p2 = _completeness_problems(completeness(repaired))
+                                except Exception:  # noqa: BLE001
+                                    p2 = ev_problems
+                                if len(p2) < len(ev_problems):
+                                    final = repaired
             else:
                 last_problems: list[str] = []
                 for attempt in range(max_retries + 1):

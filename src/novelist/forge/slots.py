@@ -76,6 +76,10 @@ def default_slots() -> list[Slot]:
              "第三人称限知（主角视角）", 3, "style.pov", 0.6),
         Slot("style.tense", "叙述时态", "recommended", "choice",
              "叙述时态？", "enum", ["过去", "现在"], "过去", 3, "style.tense", 0.6),
+        Slot("style.narration", "叙事节奏", "recommended", "free",
+             "叙事节奏偏好？（如：冲突密集、打脸干脆、升级快 / 慢热铺垫、张弛有度）",
+             "llm", [], "", 3, "style.narration，节奏是最该用户拍板的风格维度"
+             "（AI 味罚分主要来自段落节奏均匀）", 0.6),
         Slot("style.forbidden_words", "禁用词", "recommended", "free",
              "禁用词（现代词/出戏词）？", "template", [], "", 3, "style.forbidden_words，默认取 Genre Pack", 0.6),
         Slot("style.glossary", "术语表", "recommended", "free",

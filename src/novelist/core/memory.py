@@ -638,6 +638,32 @@ class MemoryWriter:
 
 
     # ---- 修订与回退（B-07）----
+    def drop_synthetic_chapter(self, vol: int, ch: int) -> int:
+        """删除某一章的章级合成事件（type=chapter）。
+
+        与 `drop_by_source` 的"合成事件保留"不矛盾：那边是情节回滚（真实记忆撤
+        回、进度记录不动）；这里是**提交前消歧**——合成事件与真实事件互斥、且自身
+        幂等，新事件落库前同章旧合成记录一律清除（由 `commit_event` 调用）。
+        返回删除条数。
+        """
+        idx = self._ensure_index()
+        path = self.ws._abs(f"{self.project_id}/memory/plot_events.json")  # noqa: SLF001
+        events = _read_json(path)
+        if not isinstance(events, list):
+            return 0
+        kept, removed = [], 0
+        for e in events:
+            if (isinstance(e, dict) and e.get("type") == "chapter"
+                    and isinstance(e.get("at"), dict)
+                    and int(e["at"].get("vol", -1)) == vol and int(e["at"].get("ch", -1)) == ch):
+                removed += 1
+                continue
+            kept.append(e)
+        if removed:
+            self.ws.write_json(path, kept)  # noqa: SLF001
+            idx.rebuild(self.ws, self.project_id, self.embedding)
+        return removed
+
     def drop_by_source(self, vol: int, ch: int, *, kinds: Iterable[str] | None = None) -> dict:
         """回退某一章写入的真实记忆（章节重写 / 人工撤销时用）。
 
