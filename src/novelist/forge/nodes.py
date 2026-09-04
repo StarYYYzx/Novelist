@@ -536,6 +536,33 @@ def _beat_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 
 # ---- apply（落盘 + 蓝图回写，provenance 保护）----
+def _coerce_str_list(v):
+    """LLM 数组字段防御归一（schema 要求 string 数组）。
+
+    强模型常把"分类列表"输出成 dict（如 civilizations={社会结构:…, 科技:…}）
+    或单串——schema 校验在 bp.save 时才跑，直接崩掉整次构建（2026-09-04 云端
+    Qwen3.6-35B 真机实证）。规则：dict → "键：值" 列表；str → 单元素；
+    list 内非 str 项展开/字符串化；归不出非空列表返回 None（调用方跳过）。
+    """
+    if isinstance(v, dict):
+        return [f"{k}：{val}" for k, val in v.items()
+                if isinstance(val, str) and val.strip()]
+    if isinstance(v, str):
+        return [v.strip()] if v.strip() else None
+    if isinstance(v, list):
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+            elif isinstance(item, dict):
+                out.extend(f"{k}：{val}" for k, val in item.items()
+                           if isinstance(val, str) and val.strip())
+            elif item:
+                out.append(str(item))
+        return out or None
+    return None
+
+
 def _merge_worldview(bp: Blueprint, art_wv: dict) -> None:
     """worldview 合并（保护 user 字段；power_system 二级路径逐键保护）。"""
     wv = dict(bp.get("worldview") or {})
@@ -559,6 +586,15 @@ def _merge_worldview(bp: Blueprint, art_wv: dict) -> None:
                 bp.set_provenance(f"worldview.power_system.{pk}", "llm", 0.8)
             wv["power_system"] = cur_ps
             continue
+        if k in ("rules", "factions", "civilizations"):
+            cv = _coerce_str_list(v)
+            if not cv:
+                continue
+            if bp.is_protected(f"worldview.{k}"):
+                continue
+            wv[k] = cv
+            bp.set_provenance(f"worldview.{k}", "llm", 0.8)
+            continue
         if bp.is_protected(f"worldview.{k}"):
             continue
         wv[k] = v
@@ -574,6 +610,16 @@ def _merge_style(bp: Blueprint, style_art: dict) -> None:
         if v in (None, ""):
             continue
         if isinstance(v, list) and not v:
+            continue
+        if k in ("tone", "forbidden_words"):
+            # schema 要求 string 数组；强模型常给 dict 分类或单串（2026-09-04 真机实证）
+            cv = _coerce_str_list(v)
+            if not cv:
+                continue
+            if bp.is_protected(f"style.{k}"):
+                continue
+            st[k] = cv
+            bp.set_provenance(f"style.{k}", "llm", 0.8)
             continue
         if bp.is_protected(f"style.{k}"):
             continue

@@ -187,6 +187,11 @@ class LocalEmbedding:
         if self._backend is not None:
             return self._backend
         try:
+            # 国内网络直连 huggingface.co 普遍 502（实测 2026-09-04）；hf-mirror 为全量代理，
+            # 海外亦可用。用户显式设置 HF_ENDPOINT 时不覆盖（setdefault 语义）。
+            import os
+
+            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
             from fastembed import TextEmbedding
         except ImportError as e:  # pragma: no cover - 可选依赖
             raise ProviderError(
@@ -221,9 +226,10 @@ def make_embedding(spec: str | None = None, **kw):
     - "openai" → OpenAIEmbedding；构造失败（缺 key/缺 httpx）自动降级为 KeywordEmbedding
     - "local" / "fastembed" → LocalEmbedding（项目内置 ONNX，CPU）；
       缺 fastembed 或模型加载失败降级 KeywordEmbedding
-    - "auto" → 依次尝试 openai（有 key 时）→ local → keyword
+    - "auto"（默认）→ **内置模型优先**（用户需求：所有 embedding 任务统一走系统自带模型）：
+      local → openai（有 key 时）→ keyword
     """
-    name = (spec or "keyword-fallback").lower()
+    name = (spec or "auto").lower()
     if name in ("keyword", "keyword-fallback", "none", "off"):
         return KeywordEmbedding(**kw)
     if name in ("openai", "cloud"):
@@ -245,6 +251,17 @@ def make_embedding(spec: str | None = None, **kw):
         except Exception:  # noqa: BLE001 - 模型失败等 → 降级（F9.4）
             return KeywordEmbedding()
     if name == "auto":
+        # 内置 ONNX 模型优先（离线、零 API 成本、768 维真实语义向量）；
+        # 本地不可用再试云端（需 key），最后关键词降级。
+        try:
+            import fastembed  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            try:
+                return LocalEmbedding()
+            except Exception:  # noqa: BLE001
+                pass
         import os
 
         if kw.get("api_key") or os.getenv("OPENAI_API_KEY"):
@@ -252,12 +269,5 @@ def make_embedding(spec: str | None = None, **kw):
                 return OpenAIEmbedding(**kw)
             except ProviderError:
                 pass
-        try:
-            import fastembed  # noqa: F401
-        except ImportError:
-            return KeywordEmbedding()
-        try:
-            return LocalEmbedding()
-        except Exception:  # noqa: BLE001
-            return KeywordEmbedding()
+        return KeywordEmbedding()
     return KeywordEmbedding()

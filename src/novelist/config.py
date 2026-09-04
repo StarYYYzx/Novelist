@@ -17,7 +17,7 @@ class ProviderConfig:
     fallback: str | None = None
     model: str | None = None
     fallback_model: str | None = None
-    embedding: str = "keyword-fallback"  # auto | cloud | local | keyword-fallback
+    embedding: str = "auto"  # auto=内置local优先 | cloud | local | keyword-fallback
     timeout_s: float = 60.0
     api_base: str | None = None
 
@@ -75,7 +75,7 @@ def load_config(path: str | None = None) -> Config:
             fallback=p.get("fallback"),
             model=p.get("model"),
             fallback_model=p.get("fallback_model"),
-            embedding=p.get("embedding", "keyword-fallback"),
+            embedding=p.get("embedding", "auto"),
             timeout_s=p.get("timeout_s", 60.0),
             api_base=p.get("api_base"),
         ),

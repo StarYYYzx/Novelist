@@ -89,11 +89,23 @@ def test_cosine_returns_zero_on_dim_mismatch():
 
 
 def test_make_embedding_degrades_to_keyword_without_key(monkeypatch):
-    """F9.4：无 key / 缺依赖时自动降级为关键词索引，不抛错。"""
+    """F9.4：无 key / 缺依赖时自动降级为关键词索引，不抛错。
+
+    2026-09-04 语义变更：make_embedding(None) 默认走 "auto"（内置 local 优先），
+    fastembed 已安装的环境返回 local 而非 keyword；显式 "openai" 无 key 仍降级。
+    """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     emb = make_embedding("openai")
     assert isinstance(emb, KeywordEmbedding)
-    assert make_embedding(None).kind == "keyword-hash"
+    try:
+        import fastembed  # noqa: F401
+        installed = True
+    except ImportError:
+        installed = False
+    if installed:
+        assert make_embedding(None).kind == "local"
+    else:
+        assert make_embedding(None).kind == "keyword-hash"
     assert make_embedding("keyword-fallback").kind == "keyword-hash"
 
 

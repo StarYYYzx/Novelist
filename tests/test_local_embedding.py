@@ -30,7 +30,7 @@ def test_local_missing_dependency_degrades_to_keyword():
 
 
 def test_make_embedding_backward_compat():
-    assert isinstance(make_embedding(None), KeywordEmbedding)
+    # 2026-09-04 语义变更：None 默认 "auto"（内置 local 优先，用户需求：全系统统一内置 embedding）
     assert isinstance(make_embedding("keyword-fallback"), KeywordEmbedding)
     assert isinstance(make_embedding("off"), KeywordEmbedding)
 
