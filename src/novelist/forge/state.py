@@ -146,6 +146,23 @@ def _coerce_src_deep(node: Any) -> None:
             _coerce_src_deep(item)
 
 
+def _coerce_int_or_none(v) -> int | None:
+    """数值字段防御归一（幂等）：'vol_1'/'第2卷'/'3' → int；解析失败 → None（schema 放行 null）。"""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str):
+        m = re.search(r"(\d+)", v)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 # ---- Blueprint ----
 @dataclass
 class Blueprint:
@@ -204,6 +221,14 @@ class Blueprint:
                                                _THREAD_STATUS_ALIASES, "unplanned")
                     t["scope"] = _coerce_enum(t.get("scope"), _THREAD_SCOPE,
                                               _THREAD_SCOPE_ALIASES, "book")
+                    # 数值字段归一（真机：LLM 把 target_vol 写成 'vol_1' 字符串，schema 要 integer）
+                    if "target_vol" in t:
+                        t["target_vol"] = _coerce_int_or_none(t.get("target_vol"))
+                    planted = t.get("planted")
+                    if isinstance(planted, dict):
+                        for k in ("vol", "ch"):
+                            if k in planted:
+                                planted[k] = _coerce_int_or_none(planted.get(k))
         chars = self.data.get("characters")
         if isinstance(chars, list):
             for c in chars:
@@ -234,9 +259,29 @@ class Blueprint:
     def set(self, path: str, value: Any) -> None:
         set_path(self.data, path, value)
 
+    # 数组段白名单：section() 仅对这些段做"缺省建空"（真机事故 2026-09-05：
+    # section("worldview") 把 dict 段 worldview 强制洗成 []，schema 校验即崩。
+    # 读 dict 段必须用 bp.get()，不许用 section()）。
+    _LIST_SECTIONS = ("characters", "locations", "items", "skills",
+                      "settings", "threads", "volumes", "chapters")
+
+    # 数组段白名单：section() 仅对这些段做"缺省建空"（真机事故 2026-09-05：
+    # section("worldview") 把 dict 段 worldview 强制洗成 []，schema 校验即崩。
+    # 读 dict 段必须用 bp.get()，不许用 section()）。
+    _LIST_SECTIONS = ("characters", "locations", "items", "skills",
+                      "settings", "threads", "volumes", "chapters")
+
     def section(self, name: str) -> list:
-        """取数组段（characters/locations/…），缺省建空。"""
-        if name not in self.data or not isinstance(self.data[name], list):
+        """取数组段（characters/locations/…），缺省建空。
+
+        已有非 list 值（dict 段误用/脏数据）**原样返回不覆盖**——防止把已生成的
+        dict 段静默洗成 []（真机事故 2026-09-05：run_blueprint_review 读 worldview
+        即触发）。调用方拿到 dict 后操作会立刻报错（fail loud），好过静默丢数据。
+        """
+        cur = self.data.get(name)
+        if isinstance(cur, list):
+            return cur
+        if cur is None:
             self.data[name] = []
         return self.data[name]
 

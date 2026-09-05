@@ -200,7 +200,7 @@ def run_blueprint_review(ws, project_id: str, bp, provider, *, count_hook=None) 
     `count_hook`：调用计数钩子（G2，同 run_coherence_review）。
     """
     try:
-        wv = bp.section("worldview") or {}
+        wv = bp.get("worldview") or {}  # dict 段禁止用 section()（会把 dict 洗成 []，见 state.py）
         chars = bp.section("characters") or []
         vols = bp.section("volumes") or []
         threads = bp.section("threads") or []

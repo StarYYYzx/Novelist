@@ -243,3 +243,113 @@ def test_system_prompt_event_loop_no_title():
     assert "第一行是章节标题" in sp_direct
     assert "第一行是章节标题" not in sp_event
     assert "不要写章节标题" in sp_event
+
+
+def test_bp_section_does_not_clobber_dict_section(tmp_path):
+    """回归：section("worldview") 不得把 dict 段洗成 []（2026-09-05 真机事故，
+    run_blueprint_review 读 worldview 即触发，蓝图在内存中被毁，schema 崩）。"""
+    from novelist.forge.state import Blueprint
+
+    bp = Blueprint.blank()
+    bp.data["worldview"] = {"name": "深渊怪谈界", "rules": ["规则一"]}
+    wv = bp.section("worldview")  # 旧实现此处返回 [] 且毁掉原值
+    assert bp.data["worldview"] == {"name": "深渊怪谈界", "rules": ["规则一"]}
+    # list 段行为不变：缺省建空、可变
+    chars = bp.section("characters")
+    chars.append({"id": "char:x"})
+    assert bp.data["characters"] == [{"id": "char:x"}]
+    # 缺失段建空
+    assert bp.section("locations") == []
+
+
+def test_bp_section_does_not_clobber_dict_section(tmp_path):
+    """回归：section("worldview") 不得把 dict 段洗成 []（2026-09-05 真机事故，
+    run_blueprint_review 读 worldview 即触发，蓝图在内存中被毁，schema 崩）。"""
+    from novelist.forge.state import Blueprint
+
+    bp = Blueprint.blank()
+    bp.data["worldview"] = {"name": "深渊怪谈界", "rules": ["规则一"]}
+    wv = bp.section("worldview")  # 旧实现此处返回 [] 且毁掉原值
+    assert bp.data["worldview"] == {"name": "深渊怪谈界", "rules": ["规则一"]}
+    # list 段行为不变：缺省建空、可变
+    chars = bp.section("characters")
+    chars.append({"id": "char:x"})
+    assert bp.data["characters"] == [{"id": "char:x"}]
+    # 缺失段建空
+    assert bp.section("locations") == []
+
+
+def test_volume_facts_chunked_path(tmp_path, monkeypatch):
+    """超长卷走两段式：逐章摘要 + 合并，每段请求都小（12GB 显存 OOM 教训）。"""
+    import novelist.core.volume_facts as vf
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p1"
+    for ch in range(1, 4):
+        ws.draft_path(pid, 1, ch).parent.mkdir(parents=True, exist_ok=True)
+        ws.draft_path(pid, 1, ch).write_text("第" + str(ch) + "章正文" * 50, encoding="utf-8")
+
+    calls = {"n": 0}
+
+    class FakeProv:
+        def complete(self, req):
+            calls["n"] += 1
+            content = req.messages[0].content
+            if "第 1 卷第" in content:  # 逐章摘要段
+                return _Resp("- 陈讯：管理员权限+1")
+            # 合并段
+            assert content.count("### 第 1-") == 3
+            return _Resp("## 人物状态\n- 陈讯：权限+1\n## 时间线\n- 未明\n"
+                         "## 未回收伏笔\n- x\n## 未决冲突\n- y")
+
+    class _Resp:
+        def __init__(self, content):
+            self.content = content
+            self.ok = True
+
+    # 正文合计 >6000 → 触发分块路径；把阈值调低以免造 6000 字假数据
+    monkeypatch.setattr(vf, "_MAX_REQUEST_CHARS", 100)
+    ok = vf.build_volume_facts(ws, pid, FakeProv(), 1)
+    assert ok is True
+    assert calls["n"] == 4  # 3 章摘要 + 1 合并
+    out = (tmp_path / "p1" / "workspace/forge/volume-facts-v1.md").read_text(encoding="utf-8")
+    assert "## 人物状态" in out
+
+
+def test_volume_facts_chunked_path(tmp_path, monkeypatch):
+    """超长卷走两段式：逐章摘要 + 合并，每段请求都小（12GB 显存 OOM 教训）。"""
+    import novelist.core.volume_facts as vf
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p1"
+    for ch in range(1, 4):
+        ws.draft_path(pid, 1, ch).parent.mkdir(parents=True, exist_ok=True)
+        ws.draft_path(pid, 1, ch).write_text("第" + str(ch) + "章正文" * 50, encoding="utf-8")
+
+    calls = {"n": 0}
+
+    class FakeProv:
+        def complete(self, req):
+            calls["n"] += 1
+            content = req.messages[0].content
+            if "第 1 卷第" in content:  # 逐章摘要段
+                return _Resp("- 陈讯：管理员权限+1")
+            # 合并段
+            assert content.count("### 第 1-") == 3
+            return _Resp("## 人物状态\n- 陈讯：权限+1\n## 时间线\n- 未明\n"
+                         "## 未回收伏笔\n- x\n## 未决冲突\n- y")
+
+    class _Resp:
+        def __init__(self, content):
+            self.content = content
+            self.ok = True
+
+    # 正文合计 >6000 → 触发分块路径；把阈值调低以免造 6000 字假数据
+    monkeypatch.setattr(vf, "_MAX_REQUEST_CHARS", 100)
+    ok = vf.build_volume_facts(ws, pid, FakeProv(), 1)
+    assert ok is True
+    assert calls["n"] == 4  # 3 章摘要 + 1 合并
+    out = (tmp_path / "p1" / "workspace/forge/volume-facts-v1.md").read_text(encoding="utf-8")
+    assert "## 人物状态" in out
