@@ -590,6 +590,40 @@ def _resolve_forge_target(ws: Workspace, directory: str | None) -> tuple[Workspa
     return _resolve_project(ws, directory)
 
 
+@forge.command("craft")
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def forge_craft(ctx: click.Context, directory: str | None) -> None:
+    """列出题材工艺卡（无 LLM）：可用卡 id / 名称 / 规范摘要 / 当前项目已启用项。
+
+    工艺卡把"怎么呈现"固化成硬规范（如系统流的【】发言格式、单章节奏、伏笔分级），
+    在设定敲定阶段勾选，写入 style.craft_cards。
+    """
+    from novelist.craft import loader
+
+    cards = loader.list_cards()
+    if not cards:
+        raise click.ClickException("未找到任何工艺卡（src/novelist/craft/cards/*.md）")
+    click.echo("== 可用题材工艺卡 ==")
+    for c in cards:
+        click.echo(f"  {c.id}  {c.name}")
+        click.echo(f"      {c.summary}")
+        if c.knobs:
+            kn = "，".join(f"{k}={v}" for k, v in c.knobs.items())
+            click.echo(f"      敲定项: {kn}")
+    ws: Workspace = ctx.obj["workspace"]
+    try:
+        ws2, project_id = _resolve_forge_target(ws, directory)
+        from novelist.forge import Blueprint
+
+        bp = Blueprint.load(ws2, project_id)
+        picked = (bp.get("style") or {}).get("craft_cards") or []
+        click.echo(f"\n== {project_id} 已启用 ==")
+        click.echo("  " + ("、".join(str(x) for x in picked) if picked else "（无）"))
+    except Exception:
+        pass  # 无蓝图 / 无项目目录：只列卡即可
+
+
 @forge.command("show")
 @click.argument("directory", required=False, default=None)
 @click.pass_context

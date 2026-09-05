@@ -194,6 +194,11 @@
         "tone": { "type": "array", "items": { "type": "string" } },
         "target_words_per_chapter": { "type": "integer", "minimum": 100 },
         "forbidden_words": { "type": "array", "items": { "type": "string" } },
+        "craft_cards": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "设定阶段勾选的题材工艺卡 id（src/novelist/craft/cards/*.md），provenance=user"
+        },
         "glossary": {
           "type": "array",
           "items": {

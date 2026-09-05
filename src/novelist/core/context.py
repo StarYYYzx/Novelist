@@ -234,6 +234,22 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             L.append("- 专有名词（写法必须固定）：" + "、".join(
                 f"{g.get('term')}（{g.get('note', '')}）" for g in glossary if isinstance(g, dict)))
 
+    # 题材工艺卡（craft）：设定敲定阶段勾选的硬规范（src/novelist/craft/cards/*.md）。
+    # 动机（2026-09-05 lingyu5 真机）：设定阶段只拍了"写什么"，"怎么呈现"交给模型
+    # 自由发挥 → 风格节点把"系统提示音/叮/机械音"当俗套写进禁用词表，系统流小说里
+    # 系统零次发声。卡片把工艺规范固化下来，随文风一起进 prompt。
+    craft_ids = [str(x) for x in (st.get("craft_cards") or []) if str(x).strip()]
+    if craft_ids:
+        from ..craft.loader import inject_block
+
+        blk = inject_block(craft_ids)
+        if blk:
+            L.append("")
+            L.append(blk)
+        # 注：不在 prompt 注入字数目标——2026-09-05 用户决定移除字数注入
+        # （注入会诱发凑字）。chapter-rhythm 卡因此只规范节奏结构，
+        # 篇幅达标由生成后的统计/验收环节负责。
+
     proto = st.get("protagonist") or {}
     if proto.get("name"):
         pronoun = GENDER_PRONOUN.get(proto.get("gender"), "他/她")

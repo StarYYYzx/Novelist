@@ -38,6 +38,16 @@ class Slot:
     confidence_threshold: float = 0.6  # provenance 低于此值视为低置信缺口
 
 
+def _craft_ids() -> list[str]:
+    """可用题材工艺卡 id（src/novelist/craft/cards/*.md 的文件名）。"""
+    try:
+        from ..craft.loader import valid_ids
+
+        return valid_ids()
+    except Exception:      # 卡目录缺失/损坏不应拖垮槽位表
+        return []
+
+
 def _char_slot(role: str, sub: str) -> str:
     return f"characters[role:{role}].{sub}"
 
@@ -84,6 +94,12 @@ def default_slots() -> list[Slot]:
              "禁用词（现代词/出戏词）？", "template", [], "", 3, "style.forbidden_words，默认取 Genre Pack", 0.6),
         Slot("style.glossary", "术语表", "recommended", "free",
              "需要登记的专属术语？", "llm", [], "", 3, "style.glossary，防术语漂移", 0.6),
+        # 题材工艺卡：把"怎么呈现"固化成硬规范（2026-09-05 教训：风格解释权全交模型
+        # → 模型把"系统提示音/叮"当俗套禁用，系统流小说里系统零次发声）
+        Slot("style.craft_cards", "题材工艺卡", "recommended", "free",
+             "启用哪些题材工艺卡？（多选用顿号/逗号分隔；直接回车=不启用）",
+             "enum", _craft_ids(), "", 3,
+             "style.craft_cards，规范'怎么呈现'（如系统流的【】发言、单章节奏、伏笔分级）", 0.6),
         # 轮 4：人物与伏笔
         Slot(_char_slot("rival", "name"), "反派设定", "recommended", "free",
              "主要反派/对手？", "llm", [], "", 4, "rival 角色卡", 0.6),

@@ -307,6 +307,13 @@ def _apply_slot_value(bp: Blueprint, slot: Slot, value: str, src: str, conf: flo
         if not any(t.get("term") == value for t in terms):
             terms.append({"term": value})
         return f"style.glossary[term:{value[:20]}]"
+    if key == "style.craft_cards":
+        # 结构化：工艺卡是多选列表。蓝图若未预置空列表（非 seed 路径创建的蓝图），
+        # 下面的 list 分支会退化成单值写入 → schema 崩（真机 2026-09-05）。
+        style = bp.data.setdefault("style", {})
+        style["craft_cards"] = _to_text_list(value)
+        bp.set_provenance(key, src, conf)
+        return "style.craft_cards"
     if key in _LIST_TEXT_KEYS or isinstance(bp.get(key), list):
         bp.set(key, _to_text_list(value))
     else:

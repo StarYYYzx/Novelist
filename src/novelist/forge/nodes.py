@@ -606,10 +606,33 @@ def _style_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【要求】artifact = 完整文风：pov/tense/narration/tone[]/target_words_per_chapter/
 forbidden_words[]（禁用词，含现代词与陈词滥调）/glossary[{{term,note}}]（本书术语表）。
-不改 pov/tense（已与商讨答案对齐）。
+不改 pov/tense（已与商讨答案对齐）。{_craft_block(st)}
 
 {_protocol_block('  "artifact": { …完整文风… },', leaf=True)}"""
     return "你是文风定稿师（Forge style 节点，docs/10 §7.1 L1）。", user
+
+
+def _craft_block(st: dict) -> str:
+    """题材工艺卡约束（2026-09-05 真机教训：风格解释权全交给模型 → 模型把
+    "系统提示音/叮/机械音"当爽文俗套加进禁用词表，导致系统流小说里系统零次发声）。
+
+    风格节点必须知晓本书已勾选的工艺规范，且不得生成与之冲突的禁用词。
+    """
+    ids = [str(x) for x in (st.get("craft_cards") or []) if str(x).strip()]
+    if not ids:
+        return ""
+    from ..craft.loader import inject_block
+
+    blk = inject_block(ids)
+    if not blk:
+        return ""
+    return (
+        "\n\n【本书已启用的题材工艺卡（硬约束，文风不得与之冲突）】\n"
+        f"{blk}\n"
+        "注意：上列卡片明确规定的呈现标识（如【】专用于系统发言）"
+        "及其相关提示音/机械音色，属于题材核心要素，**不得写入 forbidden_words**；"
+        "若嫌俗套，应规范其呈现频次与格式，而不是禁用。"
+    )
 
 
 def _thread_set_prompt(ctx: NodeContext) -> tuple[str, str]:

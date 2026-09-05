@@ -159,7 +159,8 @@ def _scale_of(spec: SeedSpec, volumes: int | None, chapters_per_volume: int | No
 def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
                     pack: dict, pack_id: str,
                     volumes: int | None, chapters_per_volume: int | None,
-                    target_words: int | None) -> Blueprint:
+                    target_words: int | None,
+                    craft: list[str] | None = None) -> Blueprint:
     """SeedSpec + 包默认 → 蓝图（provenance 分层：user > llm > template）。"""
     bp = Blueprint.blank()
     meta = bp.data["meta"]
@@ -227,6 +228,26 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
     bp.set_provenance("style.target_words_per_chapter", "template", 1.0)
     bp.set_provenance("style.forbidden_words", "template", 1.0)
 
+    # 题材工艺卡（craft）：设定阶段勾选的硬规范 id 列表。
+    # 动机见 src/novelist/craft/__init__.py——风格解释权不能全交模型。
+    st.setdefault("craft_cards", [])
+    if craft:
+        from ..craft.loader import valid_ids
+
+        known = set(valid_ids())
+        picked, unknown = [], []
+        for cid in craft:
+            s = str(cid).strip()
+            if not s:
+                continue
+            (picked if s in known else unknown).append(s)
+        if unknown:
+            warnings.append(
+                f"未知工艺卡 id：{'、'.join(unknown)}（已忽略；可用：{'、'.join(sorted(known))}）")
+        if picked:
+            st["craft_cards"] = picked
+            bp.set_provenance("style.craft_cards", "user", 1.0)
+
     # 主角骨架（提炼给名才建档；book 节点会补全/兜底）
     name = spec.protagonist_hint.get("name", "")
     if name:
@@ -288,12 +309,15 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
              volumes: int | None = None, chapters_per_volume: int | None = None,
              target_words: int | None = None,
              max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
+             craft: list[str] | None = None,
              smoke: bool = False, deepen: bool = True, gate: bool = True,
              ask_fn: Callable[[Blueprint, SeedSpec, str], str] | None = None) -> SeedResult:
     """一句话 → 蓝图 → 构建。mode=interactive 且 TTY 时先授权询问。
 
     `ask_fn` 返回 'auto'（全权）或 'consult'（商讨）。`smoke=True`：只提炼 + 建蓝图，
     不跑构建（CLI --smoke，docs/10 §11）。
+    `craft`：题材工艺卡 id 列表（src/novelist/craft/cards/*.md），写入
+    style.craft_cards（provenance=user），正文生成时注入其规范段。
     """
     warnings: list[str] = []
     state = ForgeState.load(ws, project_id)
@@ -332,7 +356,7 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
         pack_id = _genres.GENERIC_ID
         warnings.append(f"模板 {genre_pack or spec.template_suggestion!r} 不存在，装载通用包")
     bp = _init_blueprint(ws, project_id, brief, spec, pack, pack_id,
-                         volumes, chapters_per_volume, target_words)
+                         volumes, chapters_per_volume, target_words, craft)
     bp.save(ws, project_id)
     append_transcript(ws, project_id, "seed.blueprint", rev=bp.data["rev"],
                       genre=pack_id, scale=bp.get("meta.scale"))

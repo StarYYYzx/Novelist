@@ -244,7 +244,8 @@ def test_cli_forge_show(ws_factory, tmp_path):
     assert "== proj-test ==" in out
     assert "蓝图 rev=1" in out
     assert "测试书" in out and "修仙男频" in out
-    assert "缺口: 18 处" in out  # 空蓝图 18 缺口（09-04 增补 style.narration 槽位）
+    # 空蓝图 19 缺口（09-04 增补 style.narration 槽位；09-05 增补 style.craft_cards 槽位）
+    assert "缺口: 19 处" in out
     assert "来源: user=1" in out
 
 
