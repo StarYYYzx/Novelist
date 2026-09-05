@@ -57,3 +57,8 @@ novel_workspace/_harness/firstbook5_log.jsonl
 novel_workspace/_harness/cloud5_*.log
 novel_workspace/_harness/cloud5_*.jsonl
 novel_workspace/_harness/cloud5_*.txt
+.git_wiped_20260905/
+
+# 云端 B 服务器（cloudb5）运行日志
+novel_workspace/_harness/cloudb5_*.txt
+novel_workspace/_harness/cloudb5_*.jsonl
