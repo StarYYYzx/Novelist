@@ -624,6 +624,39 @@ def forge_craft(ctx: click.Context, directory: str | None) -> None:
         pass  # 无蓝图 / 无项目目录：只列卡即可
 
 
+@forge.command("lines-replay")
+@click.argument("directory", required=False, default=None)
+@click.option("--vol", type=int, required=True, help="卷号")
+@click.option("--ch", type=int, required=True, help="章号")
+@click.pass_context
+def forge_lines_replay(ctx: click.Context, directory: str | None,
+                       vol: int, ch: int) -> None:
+    """细纲修订转正（ADR-025 批2，无 LLM）：人工改细纲后重放本章 lines_present。
+
+    人工编辑 outline/scenes/V-C.md 的「本章线索: [...]」行后运行本命令：
+    旧声明在本章留下的状态被确定性回滚，新声明重新落账——账本与细纲保持一致。
+    """
+    from novelist.core.lines import replay_chapter_lines
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    k = 0
+    try:
+        from novelist.forge import Blueprint
+
+        bp = Blueprint.load(ws, project_id)
+        k = int((((bp.get("meta") or {}).get("scale")) or {}).get(
+            "chapters_per_volume") or 0)
+    except Exception:  # noqa: BLE001 - 无蓝图时 replay 仍可执行（k 仅回退定位用）
+        pass
+    warns = replay_chapter_lines(ws, project_id, vol, ch, k)
+    if not warns:
+        click.echo(f"{vol}-{ch}: 无线索声明变更")
+        return
+    for w in warns:
+        click.echo(w)
+
+
 @forge.command("show")
 @click.argument("directory", required=False, default=None)
 @click.pass_context

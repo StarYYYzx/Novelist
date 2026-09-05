@@ -48,6 +48,9 @@ ACTION_CN = {"open": "开", "advance": "推", "close": "闭", "weave": "交织",
 
 # 分档冷却（告警级）：main 2-3 章内必须 flicker/advance；subplot 5 章；hidden 跨卷合法
 COOLDOWN_CH = {"main": 3, "subplot": 5, "hidden": 0}   # 0 = 不查（伏笔型静默合法）
+# 回声（dormant 防遗忘，批2·外部方法论吸收）：dormant 线静默超 max(ECHO_MIN_CH, K)
+# 章 → 建议轻提及（flicker 重置冷却，不推进不揭真相）——令牌整卷躺背包=读者忘光。
+ECHO_MIN_CH = 8
 MAX_ACTIVE_SUBPLOTS = 3        # 活跃支线预算（告警级）
 MAX_EVENT_LINES = 3            # 单事件注入线卡上限
 PROGRESS_TAIL = 2              # 单行卡携带的进度尾条数
@@ -175,6 +178,28 @@ def cooldown_warnings(lines: list[dict], vol: int, ch: int, k: int) -> list[str]
     return out
 
 
+def echo_warnings(lines: list[dict], vol: int, ch: int, k: int) -> list[str]:
+    """dormant 线回声告警（批2）：静默超 max(ECHO_MIN_CH, K) 章 → 建议轻提及。
+
+    只看有 last_seen/opened 的 dormant 线（露过面后休眠——从未出场的登记骨架
+    由卷纲"待开线索"清单负责，不在此重复催）。hidden 跨卷静默合法，但超过一卷
+    量级仍会"读者忘光"，回收时恍然大悟变一脸懵——这是告警不是硬闸。
+    """
+    out: list[str] = []
+    limit = max(ECHO_MIN_CH, int(k or 0) or ECHO_MIN_CH)
+    for ln in lines:
+        if ln.get("status") != "dormant" or is_dead(ln):
+            continue
+        if str(ln.get("kind")) not in ("subplot", "hidden"):
+            continue
+        gap = ch_gap((vol, ch), ln.get("last_seen") or ln.get("opened"), k)
+        if gap is not None and gap > limit:
+            out.append(f"{ln['id']}（{KIND_CN.get(ln.get('kind'), '?')}·dormant，距上次露面"
+                       f" {gap} 章 > {limit}）——建议本章 flicker 轻提及（重置冷却，"
+                       f"不推进不揭真相，防止读者遗忘）")
+    return out
+
+
 def line_card(ln: dict, vol: int, ch: int, k: int, *, note: str = "") -> str:
     """单行紧凑卡（不给 desc 全文、不给全量 progress——模型只要当前状态+本章目标）。"""
     kind = KIND_CN.get(str(ln.get("kind")), "线")
@@ -205,6 +230,10 @@ def chapter_view(lines: list[dict], vol: int, ch: int, k: int, *,
         return "", warns
     cd = cooldown_warnings(lines, vol, ch, k)
     warns.extend(f"冷却告警：{x}——本章必须露面（advance/flicker）或显式挂起（suspend）" for x in cd)
+    warns.extend(echo_warnings(lines, vol, ch, k))
+    # 强制处理项（卷中检查点/卷末审计写入的 due 欠账，推进/闭合后自动清算）
+    due = [ln for ln in ledger if ln.get("due")]
+    warns.extend(f"强制处理项：{ln['id']}——{ln['due']}" for ln in due)
     if tail_phase and any(ln.get("status") == "dormant" for ln in ledger):
         warns.append("收尾期告警：本章不得开新线（open 动作将被拒绝）")
     if opening_phase:
@@ -214,13 +243,16 @@ def chapter_view(lines: list[dict], vol: int, ch: int, k: int, *,
             warns.append("开篇期告警：暗线只许埋（提及）不许揭开真相——" + "、".join(hid))
 
     cd_set = {w.split("（")[0] for w in cd}
+    due_ids = {str(ln.get("id")) for ln in due}
     ordered = sorted(
         active,
-        key=lambda x: (0 if x["id"] in cd_set else 1,
+        key=lambda x: (0 if x["id"] in due_ids else (1 if x["id"] in cd_set else 2),
                        0 if x.get("kind") == "main" else 1,
                        (x.get("last_seen") or {}).get("vol", 99),
                        (x.get("last_seen") or {}).get("ch", 99)))
-    rows = [line_card(ln, vol, ch, k) for ln in ordered]
+    rows = [line_card(ln, vol, ch, k,
+                      note="强制推进（检查点/审计欠账）" if ln["id"] in due_ids else "")
+            for ln in ordered]
     block = "【进行中的线索】（每条都要按本章动作处理：推进剧情，不是复述进度）\n" + "\n".join(rows)
     closed = [ln for ln in lines if is_dead(ln)]
     if closed:
@@ -261,7 +293,17 @@ def event_view(lines: list[dict], declared_ids: list[str], ev_text: str,
                     hits.append(ln)
                     if len(hits) >= MAX_EVENT_LINES:
                         break
-    cards = [line_card(ln, vol, ch, k) for ln in hits]
+    cards = []
+    for ln in hits:
+        note = ""
+        op = ln.get("opened") or {}
+        try:
+            if int(op.get("vol") or 0) == int(vol) and int(op.get("ch") or 0) == int(ch):
+                # 埋设式出场（批2·外部方法论）：开启章首场只写表象，轻淡带过
+                note = "埋设式出场（轻淡带过，只写表象，不渲染其价值）"
+        except (TypeError, ValueError):
+            note = ""
+        cards.append(line_card(ln, vol, ch, k, note=note))
     if len(hits) >= 2:
         ids = "×".join(str(ln.get("id")) for ln in hits[:2])
         cards.append(f"※ 本事件 = {ids} 交织点（两条线在同一事件里互相作用，不是各写各的）")
@@ -337,6 +379,7 @@ def apply_chapter_actions(ws, project_id: str, lines: list[dict], vol: int, ch: 
         if action in ("advance", "flicker", "open"):
             ln["last_seen"] = {"vol": vol, "ch": ch}
             _append_progress(ln, vol, ch, note or ACTION_CN[action], mark=ACTION_CN[action])
+        ln.pop("due", None)   # 人审已对该线作出处置 → 强制处理项清算（批2）
         changed = True
     if changed:
         try:
@@ -435,6 +478,7 @@ def apply_extracted_rows(ws, project_id: str, lines: list[dict], rows: list[dict
                 ln["closing_candidate"] = {"vol": vol, "ch": ch, "note": note}
                 out["candidates"].append(f"{lid} 计划外闭合候选：{note}"
                                          f"（target={target or '未设'}，待人工确认）")
+        ln.pop("due", None)   # 正文回写已触及该线 → 强制处理项清算（批2）
         dirty = True
     if dirty:
         try:
@@ -493,3 +537,256 @@ def parse_line_decl(gist_text: str) -> list[dict]:
                         "action": str(x.get("action") or "advance"),
                         "note": str(x.get("note") or "")})
     return out
+
+
+# ---------------------------------------------------------------------------
+# 批2：卷中检查点 / 卷末到期审计 / 细纲修订 replay（ADR-025 阶段5）
+# ---------------------------------------------------------------------------
+
+def _vol_progress(ln: dict, vol: int) -> list[str]:
+    prefix = f"{vol}-"
+    return [p for p in (ln.get("progress") or []) if str(p).startswith(prefix)]
+
+
+def checkpoint(ws, project_id: str, lines: list[dict], vol: int, ch: int, k: int
+               ) -> list[str]:
+    """卷中检查点（约 50% 章落定后自查，批2·方案A）：本卷进度核对。
+
+    - active/suspended 线本卷零推进 → 写 `due` 强制处理项（chapter_view 置顶 +
+      卡片标注；章纲人审动作/正文回写触及该线即清算）；
+    - dormant 线不写 due（伏笔休眠合法，回声交给 echo_warnings）；
+    - 计划外闭合候选堆积 / 提名待转正 → 报告提醒人工处理。
+    返回报告行（供 soft_failures 呈现）；报告本身也写 reports/lines-checkpoint 文件。
+    """
+    report: list[str] = []
+    dirty = False
+    cand = [ln for ln in lines if ln.get("closing_candidate")]
+    if cand:
+        report.append(f"计划外闭合候选 {len(cand)} 条未决："
+                      f"{'、'.join(str(ln['id']) for ln in cand)}（章末人工确认）")
+    pends = [ln for ln in lines if ln.get("status") == "pending"]
+    if pends:
+        report.append(f"提名待转正 {len(pends)} 条："
+                      f"{'、'.join(str(ln['id']) for ln in pends)}")
+    for ln in lines:
+        if is_dead(ln) or ln.get("status") in ("pending", "dormant"):
+            continue
+        if _vol_progress(ln, vol):
+            if ln.pop("due", None) is not None:
+                dirty = True
+            continue
+        is_main = ln.get("kind") == "main"
+        ln["due"] = ("卷中检查点：主线本卷零推进，剩余章纲必须安排实质推进"
+                     if is_main else
+                     "卷中检查点：本卷零推进，剩余章纲必须安排露面/推进或显式挂起")
+        dirty = True
+        report.append(f"{ln['id']} 本卷前半零推进 → 已写强制处理项")
+    if dirty:
+        try:
+            save_lines(ws, project_id, lines)
+        except Exception:  # noqa: BLE001 - 落盘失败降级
+            report.append("lines.json 落盘失败（检查点 due 未持久化）")
+    return report
+
+
+def _load_threads(ws, project_id: str) -> list[dict]:
+    """运行态伏笔（bible/plot_threads.json）；缺失/损坏返回 []。"""
+    p = ws._abs(f"{project_id}/bible/plot_threads.json")  # noqa: SLF001
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    return [t for t in data if isinstance(t, dict) and t.get("id")] \
+        if isinstance(data, list) else []
+
+
+def _save_threads(ws, project_id: str, threads: list[dict]) -> None:
+    ws.write_json(ws._abs(f"{project_id}/bible/plot_threads.json"),  # noqa: SLF001
+                  list(threads))
+
+
+def volume_audit(ws, project_id: str, vol: int, k: int) -> dict:
+    """卷末到期审计（批2·方案A，告警级不强逼闭合，确定性零 LLM）。
+
+    1. **伏笔到期**：target_vol ≤ 当前卷且未回收（status 非 paid_off/returned）
+       → 伏笔行写 `due`（下卷卷纲注入"强制处理项"），告警；
+    2. **回收升级提名**：已回收（paid_off/returned）且登记了 `carrier` 的伏笔
+       → 若账本无对应线，register_pending 提名（人审转正）——"令牌回收后
+       持续出场 → 升级为物线索"路径；
+    3. **yield 缺失**：本卷闭合的线未登记收获 → 告警（yield 回流断链）；
+    4. **篇幅比**：main 线本卷进度占比 <30% → 告警；
+    5. 本卷有进度的线清算 due 欠账。
+    报告落 reports/lines-audit-vol{N}.md；返回摘要 dict 供调用方呈现。
+    """
+    out: dict[str, list[str]] = {"due_threads": [], "nominations": [],
+                                 "yield_missing": [], "share": [], "warnings": []}
+    lines = load_lines(ws, project_id)
+    if not lines:
+        return out
+    dirty_lines = False
+
+    # 1) due 清算 + 4) 篇幅比
+    prog_counts: dict[str, int] = {}
+    for ln in lines:
+        n = len(_vol_progress(ln, vol))
+        if n:
+            prog_counts[str(ln["id"])] = n
+            if not is_dead(ln) and ln.pop("due", None) is not None:
+                dirty_lines = True
+    total = sum(prog_counts.values())
+    if total:
+        for ln in lines:
+            if ln.get("kind") == "main" and not is_dead(ln):
+                share = prog_counts.get(str(ln["id"]), 0) / total
+                if share < 0.3:
+                    out["share"].append(f"{ln['id']} 本卷进度占比 {share:.0%}（<30%，"
+                                        f"{prog_counts.get(str(ln['id']), 0)}/{total}）")
+
+    # 3) yield 缺失
+    for ln in lines:
+        c = ln.get("closed") or {}
+        if ln.get("status") == "closed" and isinstance(c, dict) \
+                and int(c.get("vol") or 0) == int(vol) and not ln.get("yield"):
+            out["yield_missing"].append(f"{ln['id']}（闭合于 {vol}-{c.get('ch')}，"
+                                        f"收获未登记——支线 yield 回流主线断链）")
+
+    # 2) 伏笔到期 / 回收升级提名
+    threads = _load_threads(ws, project_id)
+    dirty_threads = False
+    for t in threads:
+        status = str(t.get("status") or "")
+        try:
+            tv = int(t.get("target_vol") or 0)
+        except (TypeError, ValueError):
+            tv = 0
+        if tv and tv <= int(vol) and status not in ("paid_off", "returned"):
+            t["due"] = f"第 {vol} 卷卷末审计：target_vol={tv} 已到期未回收"
+            out["due_threads"].append(f"{t.get('id')}（target_vol={tv}，status={status}）")
+            dirty_threads = True
+        if status in ("paid_off", "returned") and t.get("carrier"):
+            tail = str(t.get("id") or "").split(":", 1)[-1].strip(": ") or "line"
+            ln_id = f"ln:{tail}"
+            if any(str(x.get("id")) == ln_id for x in lines):
+                continue
+            if register_pending(lines, ln_id,
+                                f"（伏笔 {t.get('id')} 回收升级·carrier={t['carrier']}）"
+                                f"{str(t.get('desc') or '')[:40]}"):
+                out["nominations"].append(f"{ln_id} ← {t.get('id')}（回收后预期持续出场，"
+                                          f"待人工转正为线）")
+                dirty_lines = True
+    if dirty_lines:
+        try:
+            save_lines(ws, project_id, lines)
+        except Exception:  # noqa: BLE001 - 落盘失败降级
+            out["warnings"].append("lines.json 落盘失败")
+    if dirty_threads:
+        try:
+            _save_threads(ws, project_id, threads)
+        except Exception:  # noqa: BLE001 - 落盘失败降级
+            out["warnings"].append("plot_threads.json 落盘失败")
+
+    # 报告落盘
+    try:
+        p = ws._abs(f"{project_id}/reports/lines-audit-vol{vol}.md")  # noqa: SLF001
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rows = [f"# 线索卷末审计 · 第 {vol} 卷", ""]
+        for key, title in (("due_threads", "到期未回收伏笔（已写 due，下卷卷纲强制处理项）"),
+                           ("nominations", "回收升级提名（pending，待人工转正）"),
+                           ("yield_missing", "收获未登记（yield 回流断链）"),
+                           ("share", "主线进度占比告警"),
+                           ("warnings", "落盘告警")):
+            if out[key]:
+                rows.append(f"## {title}")
+                rows.extend(f"- {x}" for x in out[key])
+                rows.append("")
+        if not any(out[x] for x in out):
+            rows.append("（本卷无到期告警）")
+        ws.write_text(p, "\n".join(rows) + "\n")
+    except Exception:  # noqa: BLE001 - 报告落盘失败不影响账本
+        out["warnings"].append("审计报告写盘失败（账本变更已保留）")
+    return out
+
+
+def replay_chapter_lines(ws, project_id: str, vol: int, ch: int, k: int, *,
+                         gist_text: str | None = None) -> list[str]:
+    """细纲修订转正（批2·revise 通道）：人工改细纲后账本联动。
+
+    流程：读细纲 md → 旧声明（front-matter `lines_present`，构建期落账的凭据）
+    中**修订后不再涉及的 id** 逐条确定性回滚（仅回滚本章留下的状态：opened/
+    last_seen/进度行/本章闭合）→ 新声明（行内 `本章线索:` JSON，人工改的）重放
+    apply_chapter_actions。人工修订从"地下行为"变成正式流程：账本与细纲始终一致。
+
+    回滚规则（只动本章痕迹，跨章历史不碰）：
+    - 本章 open 的线 → status 回 dormant、opened/last_seen 清空；
+    - 本章 advance/flicker 的线 → 删本章进度行，last_seen 回退到上一条进度位置；
+    - 本章闭合的线 → 撤销闭合（status 回 active、closed/closing_candidate 清空）。
+    """
+    warns: list[str] = []
+    p = ws.outline_chapter_path(project_id, vol, ch)
+    if gist_text is None:
+        if not p.exists():
+            return [f"{vol}-{ch}: 细纲不存在，无可重放"]
+        gist_text = p.read_text(encoding="utf-8")
+    # 旧声明：front-matter JSON（构建期 apply 的凭据）
+    old_acts: list[dict] = []
+    try:
+        fm = json.loads(gist_text.split("---\n")[1])
+        old_acts = [x for x in (fm.get("lines_present") or []) if isinstance(x, dict)]
+    except (IndexError, ValueError):
+        warns.append(f"{vol}-{ch}: front-matter 解析失败，按无旧声明处理")
+    new_acts = parse_line_decl(gist_text)
+    if not old_acts and not new_acts:
+        return warns + [f"{vol}-{ch}: 新旧声明均为空，无需重放"]
+
+    lines = load_lines(ws, project_id)
+    if not lines:
+        return warns + [f"{vol}-{ch}: 账本为空，跳过重放"]
+    by_id = {str(ln.get("id")): ln for ln in lines}
+    new_ids = {str(a.get("id")) for a in new_acts}
+    chap_prefix = f"{vol}-{ch} "
+
+    def _revert(ln: dict) -> None:
+        """回滚该线在本章留下的状态（确定性，只动本章痕迹）。"""
+        c = ln.get("closed") or {}
+        if isinstance(c, dict) and int(c.get("vol") or 0) == int(vol) \
+                and int(c.get("ch") or 0) == int(ch):
+            ln["closed"] = None
+            ln["closing_candidate"] = None
+            ln["status"] = "active"   # 闭合前的必然状态（闭合只能发生在 active 上）
+        cc = ln.get("closing_candidate") or {}
+        if isinstance(cc, dict) and int(cc.get("vol") or 0) == int(vol) \
+                and int(cc.get("ch") or 0) == int(ch):
+            ln["closing_candidate"] = None
+        op = ln.get("opened") or {}
+        if isinstance(op, dict) and int(op.get("vol") or 0) == int(vol) \
+                and int(op.get("ch") or 0) == int(ch):
+            ln["status"] = "dormant"
+            ln["opened"] = None
+            ln["last_seen"] = None
+        ln["progress"] = [x for x in (ln.get("progress") or [])
+                          if not str(x).startswith(chap_prefix)]
+        if ln.get("status") == "active":
+            # last_seen 回退：上一条进度行位置，否则 opened，否则 None
+            prog = ln["progress"]
+            if prog:
+                m = re.match(r"(\d+)-(\d+)", str(prog[-1]))
+                ln["last_seen"] = ({"vol": int(m.group(1)), "ch": int(m.group(2))}
+                                   if m else None)
+            else:
+                op2 = ln.get("opened")
+                ln["last_seen"] = dict(op2) if isinstance(op2, dict) and op2 else None
+
+    for act in old_acts:
+        lid = str(act.get("id") or "")
+        if lid in new_ids:
+            continue   # 新声明仍包含 → 重放时重落，无需回滚
+        ln = by_id.get(lid)
+        if ln is None:
+            warns.append(f"{lid}: 账本无此线（旧声明悬空），跳过回滚")
+            continue
+        _revert(ln)
+        warns.append(f"{lid}: 旧声明已回滚（修订后不再涉及）")
+    warns.extend(apply_chapter_actions(ws, project_id, lines, vol, ch, new_acts))
+    return warns

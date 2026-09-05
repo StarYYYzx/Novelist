@@ -378,3 +378,139 @@ def test_schema_files_valid():
     bad = dict(row)
     bad["status"] = "nope"
     assert list(v.iter_errors([bad]))
+
+
+# ---------------------------------------------------------------- 批2（检查点/审计/回声/replay）
+
+def test_echo_warnings_dormant_stale():
+    rows = _ledger()
+    rows[2]["status"], rows[2]["last_seen"] = "dormant", {"vol": 1, "ch": 1}
+    out = L.echo_warnings(rows, 1, 12, 10)          # 距 11 章 > max(8, 10)
+    assert any("ln:jade" in x and "flicker" in x for x in out)
+    # 刚露面不久 → 不催
+    assert not L.echo_warnings(rows, 1, 5, 10)
+    # active 线不走回声（走冷却）
+    rows[1]["status"], rows[1]["last_seen"] = "active", {"vol": 1, "ch": 1}
+    assert not any("ln:sect" in x for x in L.echo_warnings(rows, 1, 12, 10))
+
+
+def test_checkpoint_writes_due_and_chapter_view_surfaces(tmp_path):
+    ws = _ws(tmp_path)
+    rows = _ledger()
+    for ln, seen in ((rows[0], {"vol": 1, "ch": 1}), (rows[1], {"vol": 1, "ch": 1})):
+        ln["status"], ln["opened"], ln["last_seen"] = "active", seen, seen
+    report = L.checkpoint(ws, "proj-ln", rows, 1, 10, 20)   # 50% 处，两线均零推进
+    assert any("ln:sect" in r for r in report)
+    assert rows[1]["due"].startswith("卷中检查点：")
+    assert rows[0]["due"].startswith("卷中检查点：主线")
+    assert "due" not in rows[2]                             # dormant 不写 due
+    blk, warns = L.chapter_view(rows, 1, 11, 20)
+    assert any("强制处理项" in w and "ln:sect" in w for w in warns)
+    assert "强制推进" in blk
+    # 推进即清算
+    L.apply_chapter_actions(ws, "proj-ln", rows, 1, 12,
+                            [{"id": "ln:sect", "action": "advance", "note": "补课"}])
+    assert "due" not in rows[1]
+
+
+def test_checkpoint_clears_due_on_progress(tmp_path):
+    ws = _ws(tmp_path)
+    rows = _ledger()
+    rows[1]["status"], rows[1]["opened"] = "active", {"vol": 1, "ch": 1}
+    rows[1]["due"] = "卷中检查点：本卷零推进"
+    rows[1]["progress"] = ["1-5 [推]查访"]
+    report = L.checkpoint(ws, "proj-ln", rows, 1, 10, 20)
+    assert "due" not in rows[1]
+    assert not any("ln:sect" in r for r in report)
+
+
+def test_volume_audit_due_nomination_yield_share(tmp_path):
+    ws = _ws(tmp_path)
+    L.save_lines(ws, "proj-ln", _ledger())
+    threads = [
+        {"id": "pt:token", "desc": "青铜令牌", "status": "planted",
+         "target_vol": 1, "carrier": "object"},
+        {"id": "pt:paid", "desc": "已回收令牌", "status": "paid_off",
+         "target_vol": 1, "carrier": "object"},
+        {"id": "pt:later", "desc": "未到期", "status": "planted", "target_vol": 3},
+    ]
+    ws.write_json(ws._abs("proj-ln/bible/plot_threads.json"), threads)
+    out = L.volume_audit(ws, "proj-ln", 1, 20)
+    assert any("pt:token" in x for x in out["due_threads"])
+    assert any("ln:paid" in x for x in out["nominations"])   # paid_off+carrier → 提名
+    assert not any("pt:later" in x for x in out["due_threads"])
+    tp = {t["id"]: t for t in json.loads(
+        ws._abs("proj-ln/bible/plot_threads.json").read_text(encoding="utf-8"))}
+    assert "due" in tp["pt:token"] and "due" not in tp["pt:later"]
+    led = {x["id"]: x for x in L.load_lines(ws, "proj-ln")}
+    assert led["ln:paid"]["status"] == "pending"            # 提名不自动转正
+    rows = L.load_lines(ws, "proj-ln")
+    assert L.confirm_pending(rows, "ln:paid", vol=1, ch=20)
+    L.save_lines(ws, "proj-ln", rows)
+    assert L.load_lines(ws, "proj-ln")[3]["status"] == "dormant"
+    assert Path(ws._abs(f"proj-ln/reports/lines-audit-vol1.md")).exists()
+
+
+def test_volume_audit_yield_missing_and_share(tmp_path):
+    ws = _ws(tmp_path)
+    rows = _ledger()
+    rows[0]["status"], rows[0]["opened"] = "active", {"vol": 1, "ch": 1}
+    rows[0]["progress"] = ["1-2 推a"]
+    rows[1]["status"], rows[1]["opened"] = "active", {"vol": 1, "ch": 1}
+    rows[1]["progress"] = ["1-2 推b", "1-3 推c", "1-4 推d"]
+    L.save_lines(ws, "proj-ln", rows)
+    # ln:sect 本卷闭合但不登记 yield
+    L.apply_extracted_rows(ws, "proj-ln", rows,
+                           [{"id": "ln:sect", "action": "close", "note": "查清"}], 1, 19)
+    out = L.volume_audit(ws, "proj-ln", 1, 20)
+    assert any("ln:sect" in x for x in out["yield_missing"])
+    assert any("ln:main" in x and "25%" in x for x in out["share"])
+
+
+def test_replay_chapter_lines_rollback_and_reapply(tmp_path):
+    ws = _ws(tmp_path)
+    rows = _ledger()
+    L.save_lines(ws, "proj-ln", rows)
+    L.apply_chapter_actions(ws, "proj-ln", rows, 1, 2,
+                            [{"id": "ln:sect", "action": "open", "note": "密报"}])
+    gist = ("---\n"
+            + json.dumps({"id": "ch:1:2", "vol": 1, "ch": 2, "title": "t",
+                          "lines_present": [{"id": "ln:sect", "action": "open",
+                                             "note": "密报"}]},
+                         ensure_ascii=False)
+            + "\n---\n\n# 第 2 章\n\nkey_events: []\n\n"
+              '本章线索: [{"id": "ln:main", "action": "open", "note": "主线启动"}]\n')
+    warns = L.replay_chapter_lines(ws, "proj-ln", 1, 2, 20, gist_text=gist)
+    led = {x["id"]: x for x in L.load_lines(ws, "proj-ln")}
+    assert led["ln:sect"]["status"] == "dormant" and led["ln:sect"]["opened"] is None
+    assert not [p for p in led["ln:sect"]["progress"] if p.startswith("1-2 ")]
+    assert led["ln:main"]["status"] == "active"
+    assert led["ln:main"]["opened"] == {"vol": 1, "ch": 2}
+    assert any("回滚" in w for w in warns)
+
+
+def test_event_view_planting_note_on_open_chapter():
+    rows = _ledger()
+    rows[1]["status"], rows[1]["opened"] = "active", {"vol": 1, "ch": 3}
+    cards = L.event_view(rows, ["ln:sect"], "宗门来人", 1, 3, 20)
+    assert any("埋设式出场" in c for c in cards)
+    cards2 = L.event_view(rows, ["ln:sect"], "宗门来人", 1, 4, 20)
+    assert not any("埋设式出场" in c for c in cards2)
+
+
+def test_volume_lines_block_carries_due(tmp_path):
+    from novelist.forge.nodes import _lines_block_for_volume
+
+    ws2 = _ws(tmp_path)
+    rows = _ledger()
+    rows[1]["status"], rows[1]["opened"] = "active", {"vol": 1, "ch": 1}
+    rows[1]["due"] = "卷末审计：本卷进度不足"
+    L.save_lines(ws2, "proj-ln", rows)
+
+    class _Ctx:
+        ws = ws2
+        project_id = "proj-ln"
+        bp = None
+
+    blk = _lines_block_for_volume(_Ctx(), 2)
+    assert "强制处理项" in blk and "ln:sect" in blk

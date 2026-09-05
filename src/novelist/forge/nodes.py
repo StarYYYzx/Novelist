@@ -146,7 +146,7 @@ _BOOK_OUTPUT_PROTOCOL = """{
   "locations": [{"id": "loc:xxx", "name": "地名", "category": "类别", "desc": "描述"}],
   "items": [{"id": "item:xxx", "name": "物品名", "type": "consumable|equipment|artifact|material|currency|other", "desc": "描述"}],
   "style": {"tense": "过去|现在", "narration": "叙事风格说明", "glossary": [{"term": "术语", "note": "解释"}]},
-  "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1}],
+  "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1, "carrier": "回收后若载体将持续出场可填 object|goal|character|emotion|faction|theme，否则省略"}],
   "lines": [{"id": "ln:xxx", "desc": "线索内容一句话", "kind": "main|subplot|hidden",
              "carrier": "object|goal|character|emotion|faction|theme", "scope": "book|volume",
              "members": ["char:xxx"], "target": {"vol": 1, "note": "远期落点一句话"}}],
@@ -261,6 +261,10 @@ def _lines_block_for_volume(ctx: NodeContext, vol: int) -> str:
     if closed:
         parts.append("已闭合线索的收获（支线 yield 回流主线的落点，本卷消费或呼应）：")
         parts.extend(f"- {r['id']} → {str(r.get('yield'))[:60]}" for r in closed[:6])
+    due = [r for r in rows if r.get("due")]
+    if due:
+        parts.append("上卷检查点/卷末审计强制处理项（本卷必须落实，不得再拖）：")
+        parts.extend(f"- {r['id']}：{str(r.get('due'))[:70]}" for r in due[:6])
     return "\n".join(parts)
 
 
@@ -288,11 +292,23 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     lines_section = f"\n\n【线索账本视图（ADR-025，卷级）】\n{lines_block}\n" \
                     "本卷 line_plan.open 只能从上列待开线索选 id，不得自造。" \
         if lines_block else ""
+    # 批2：卷末审计写回运行态伏笔的 due（到期未回收）→ 本卷卷纲强制处理
+    threads_due_section = ""
+    try:
+        from ..core.lines import _load_threads
+        _tdue = [t for t in _load_threads(ctx.ws, ctx.project_id) if t.get("due")]
+        if _tdue:
+            threads_due_section = (
+                "\n\n【伏笔到期强制项（卷末审计）】下列伏笔已到期未回收，"
+                "threads_to_payoff 必须包含它们（确需改期请在 chapter_notes 说明）：\n"
+                + "\n".join(f"- {t['id']}：{str(t['due'])[:60]}" for t in _tdue[:6]))
+    except Exception:  # noqa: BLE001 - 到期项读取失败降级为无强制项
+        threads_due_section = ""
     user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}{anchor_section}{endgame_section}{lines_section}
+【流派卷弧提示】{arc}{anchor_section}{endgame_section}{lines_section}{threads_due_section}
 
 【输出 JSON】
 {{
@@ -1163,6 +1179,11 @@ def _apply_threads(bp: Blueprint, threads: list) -> None:
         tid = t["id"]
         t.setdefault("scope", "book")
         t.setdefault("status", "unplanned")
+        # carrier（批2·ADR-025）：伏笔载体（object/goal/character/...）——回收后
+        # 满足跨章判据时由卷末审计提名升级为线（"令牌回收后持续出场→物线索"）。
+        if t.get("carrier") and str(t["carrier"]) not in (
+                "object", "goal", "character", "emotion", "faction", "theme"):
+            t["carrier"] = "object"
         existing = bp.find_by_id("threads", tid)
         if existing is None:
             bp.upsert("threads", dict(t))

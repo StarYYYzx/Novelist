@@ -2169,6 +2169,38 @@ def produce_chapter(
         except Exception:  # noqa: BLE001 - 事实清单是增强层，失败不影响成稿
             volume_facts_built = False
 
+    # ---- 4.4c) 线索卷中检查点 / 卷末审计（ADR-025 批2，确定性零 LLM）----
+    # 检查点：本卷约 50% 章落定后自查（active 线本卷零推进 → 写 due 强制处理项）；
+    # 卷末审计：伏笔到期写 due（下卷卷纲强制项）+ 回收升级提名 + yield 缺失 +
+    # 篇幅比告警，报告落 reports/lines-audit-vol{N}.md。账本空 = 全部跳过（降级）。
+    if final:
+        try:
+            from ..forge.state import Blueprint as _l_bp_cls
+
+            _l_bp = _l_bp_cls.load(ws, project_id)
+            _l_K = int((((_l_bp.get("meta") or {}).get("scale")) or {}).get(
+                "chapters_per_volume") or 0)
+            _l_later = []
+            for _g in (_l_bp.section("chapters") or []):
+                try:
+                    if int(_g.get("vol") or 0) == int(vol) and int(_g.get("ch") or 0) > ch:
+                        _l_later.append(_g)
+                except (TypeError, ValueError):
+                    continue
+            from .lines import (checkpoint as _l_chk, load_lines as _l_load,
+                                volume_audit as _l_aud)
+            _l_rows = _l_load(ws, project_id)
+            if _l_rows:
+                if not _l_later:
+                    _l_audit = _l_aud(ws, project_id, vol, _l_K)
+                    for _w in (_l_audit.get("warnings") or []):
+                        soft_failures.append(f"线索卷末审计：{_w}")
+                elif _l_K and ch == max(1, _l_K // 2):
+                    for _w in _l_chk(ws, project_id, _l_rows, vol, ch, _l_K):
+                        soft_failures.append(f"线索检查点：{_w}")
+        except Exception:  # noqa: BLE001 - 检查点/审计失败不影响成稿
+            pass
+
     # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
     # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
     # 未命中的保留 false，下一章继续注入。

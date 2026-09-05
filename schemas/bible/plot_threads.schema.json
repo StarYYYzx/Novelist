@@ -109,6 +109,21 @@
       "revision": {
         "type": "integer",
         "minimum": 0
+      },
+      "carrier": {
+        "enum": [
+          "object",
+          "goal",
+          "character",
+          "emotion",
+          "faction",
+          "theme"
+        ],
+        "description": "伏笔载体（ADR-025 批2）：回收后载体预期持续出场时登记，卷末审计据此提名升级为线（ln:xxx）。"
+      },
+      "due": {
+        "type": "string",
+        "description": "卷末审计写回的到期强制处理项（target_vol 已到未回收）；回收/改期后由审计清除。"
       }
     },
     "additionalProperties": false

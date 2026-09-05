@@ -472,7 +472,7 @@
     旧文风险，自动修订暂缓——按用户指示搁置）。
   - 测试 8 例（tests/test_review_gate.py）；存量 build/run_seed 测试补 `gate=False`。
 
-### ADR-025 线索（Line）子系统：一份账本四级视图（设计定稿 2026-09-06，**批1 已编码 2026-09-06**）
+### ADR-025 线索（Line）子系统：一份账本四级视图（设计定稿 2026-09-06，**批1+批2 已编码 2026-09-06**）
 
 > 来源：lingyu5 真机实证——宗门暗线 5 章 7654 字仅 3 次名词提及、零处暗线场景。
 > threads（plot_threads）语义是伏笔（何时收），从不回答"这条线这章在不在场"；
@@ -497,11 +497,22 @@
      冷却超阈（main 3、subplot 5、hidden 跨卷合法）= 告警。微线不入账。
   6. **卷弧五元组**：卷纲 summary 升 goal/obstacle/outcome（允许受挫）/cost/bridge
      ——治"每卷必全胜"（老问题 C1）。
-- **实施**：批1（阶段1-4 数据层/规划侧/生成注入/回写闭环）已编码，
-  `core/lines.py` + `schemas/bible/lines.schema.json` + forge book/volume/chapter
-  节点接入 + chronicler 回写 + 字数下限注入（目标 85%，2026-09-06 拍板）；
-  测试 +20（tests/test_lines.py），全量 765 passed。批2（卷中检查点/卷末审计/
-  revise 转正/真机验收）待做。
+  7. **伏笔↔线索生命周期衔接**（批2·外部方法论吸收）：threads 增可选 `carrier`
+     （object/goal/character/...）；卷末审计对"已回收 + 登记了 carrier"的伏笔
+     register_pending 提名升级为线（"令牌回收后持续出场 → 物线索"），人审转正。
+     threads 增 `due`（target_vol 到期未回收，卷末审计写回 → 下卷卷纲强制项）。
+  8. **回声与检查点**（批2）：dormant 线静默超 max(8, K) 章 → 回声告警（建议
+     flicker 轻提及，防"令牌整卷躺背包读者忘光"）；卷中 ~50% 章检查点对 active/
+     suspended 线本卷零推进者写 `due` 强制处理项（chapter_view 置顶 + 卡片标注，
+     章纲动作/正文回写触及即清算）；卷末审计（伏笔到期/回收升级提名/yield 缺失/
+     主线篇幅比 <30%）落 `reports/lines-audit-vol{N}.md`，全部确定性零 LLM。
+  9. **细纲修订 replay**（批2·revise 通道转正）：人工改细纲「本章线索: [...]」后
+     `forge lines-replay V C` 重放——旧声明在本章留下的状态确定性回滚（open→
+     dormant、进度行删除、本章闭合撤销），新声明重新落账；账本与细纲始终一致。
+- **实施**：批1（阶段1-4 数据层/规划侧/生成注入/回写闭环）+ 批2（阶段5 检查点/
+  审计/回声/replay + 借鉴三项 carrier/due/埋设提示）均已编码 2026-09-06；
+  测试 +28（tests/test_lines.py），全量 774 passed。阶段6 真机验收待做
+  （云服务器关闭期间未做任何依赖远程模型的验证，单测全走 fake provider）。
 
 ## 6. 与其他备选方案的对比小结
 

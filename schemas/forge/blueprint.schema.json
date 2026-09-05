@@ -180,7 +180,9 @@
               "ch": { "type": "integer", "minimum": 1 }
             }
           },
-          "status": { "enum": ["unplanned", "planted", "pending_return", "returned"] }
+          "status": { "enum": ["unplanned", "planted", "pending_return", "returned"] },
+          "carrier": { "enum": ["object", "goal", "character", "emotion", "faction", "theme"],
+                       "description": "伏笔载体（ADR-025 批2）：回收后载体预期持续出场时登记，卷末审计据此提名升级为线。" }
         },
         "additionalProperties": true
       }

@@ -838,6 +838,21 @@ lingyu5 真机归因的第三根主因链：线索在账上但生成时看不见
 校验落 reports、一致性引擎接死线复活拦截、revise 通道转正、真机验收（用户新需求 5 章
 按 7 项清单）。云服务器关闭期间本批未做任何依赖远程模型的验证（单测全走 fake provider）。
 
+### M3t++ — 线索（Line）子系统批2（ADR-025 阶段5，2026-09-06 ✅ 代码+测试完成）
+
+外部方法论（线索篇/伏笔篇）对比吸收后的三项借鉴随批2落地；全部确定性零 LLM，
+账本空=整批跳过（降级纪律不变）。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 卷中检查点 | produce_chapter 4.4c：本卷 ~50% 章（ch==K//2）自查——active/suspended 线本卷零推进 → 写 `due` 强制处理项；chapter_view 置顶告警 + 卡片"强制推进"标注；章纲动作/正文回写触及即清算；closing_candidate 堆积/提名待转正进报告（soft_failures） | ✅ |
+| 卷末审计 | volume_audit（卷末章触发）：threads target_vol 到期未回收 → 运行态写 `due` + 下卷卷纲"伏笔到期强制项"注入；已回收+carrier 伏笔 → register_pending 提名升级为线（人审转正）；本卷闭合线 yield 缺失告警；主线本卷进度占比 <30% 告警；报告落 reports/lines-audit-vol{N}.md | ✅ |
+| 伏笔↔线索衔接 | threads schema（蓝图+运行态）加可选 carrier；_apply_threads 归一非法值；卷末审计提名复用 confirm_pending | ✅ |
+| dormant 回声 | echo_warnings：dormant subplot/hidden 静默超 max(8,K) 章 → 建议 flicker 轻提及（重置冷却，不推进不揭真相）；接 chapter_view | ✅ |
+| 埋设式写法 | 事件层线卡：开启章首场自动附"埋设式出场（轻淡带过，只写表象，不渲染其价值）" | ✅ |
+| revise 通道转正 | replay_chapter_lines + CLI `forge lines-replay V C`：人工改细纲「本章线索:」后重放——旧声明本章痕迹确定性回滚（open→dormant/进度行删除/本章闭合撤销），新声明重新落账 | ✅ |
+| 测试 | tests/test_lines.py +8（回声/检查点写清 due/审计 due+提名+yield+篇幅比/replay 回滚重放/埋设提示/卷纲 due 注入/schema） | ✅ 28 passed，全量见提交说明 |
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
