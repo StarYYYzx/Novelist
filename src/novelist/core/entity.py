@@ -259,6 +259,10 @@ class EntityTracker:
         e = self.entities.get(key)
         return e.stage if e else "unseen"
 
+    def is_core(self, key: str) -> bool:
+        """是否主角/核心人物（开篇交代由 opening_rule 负责，首登场检查跳过）。"""
+        return key in self._core_keys
+
     def dormant_since(self, ch: int, min_gap: int = 5) -> list[str]:
         """超过 min_gap 章未出场且已 described 的实体（供检查员/评阅）。"""
         out = []

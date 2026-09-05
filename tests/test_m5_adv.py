@@ -310,7 +310,7 @@ def test_screenplay_two_pass(tmp_path):
     _seed(ws, pid)
     llm = _SeqLLM([
         _res("铁无涯：（冷冷地）末位者，逐出内门。\n苏晚：（叩首）弟子领命。"),
-        _res("## 第一章 弃徒\n\n铁无涯立在台上，令牌一扬：“末位者，逐出内门。”\n\n苏晚跪地，额头触地。"),
+        _res("## 第一章 弃徒\n\n铁无涯长老立在台上，令牌一扬：“末位者，逐出内门。”\n\n苏晚跪地，额头触地。"),
     ])
     res = produce_chapter(ws, pid, 1, 1, llm, prefer_direct=True,
                           inject_bible=False, screenplay=True,

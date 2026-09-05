@@ -20,6 +20,7 @@ dead − 闭关/失踪/被囚/渡劫，与 R-STATE 同源）里挑人；认为�
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from .llm import LLMMessage, LLMRequest
@@ -64,10 +65,36 @@ class CastDecision:
     needs: list = field(default_factory=list)        # [CastNeed]
     raw: str = ""                                    # 模型原始输出（留痕）
     alarms: list = field(default_factory=list)       # 校验告警（[str]）
+    rejected: list = field(default_factory=list)     # 方案6.4：被拒点名（正文禁令数据源）
 
     @property
     def names(self) -> list[str]:
         return [m.name for m in self.members]
+
+
+def _norm_name(s: str) -> str:
+    """名字归一：截掉括号注记与尾随标点（方案6.3——name 污染卡“苏晚晴（…长注）”
+    在池内匹配时归一为“苏晚晴”）。"""
+    t = re.sub(r"[（(【\[].*", "", str(s or ""))
+    return t.strip(" \t，,、；;。·—-")
+
+
+def build_alias_map(pool: list[dict]) -> dict[str, str]:
+    """可及池的别名归一表（方案6.3）：归一名/别名 → 规范名。
+
+    数据源 = 卡的 name（去括号注记）+ aliases。匹配顺序：精确 → 归一表 → 包含兜底。
+    """
+    amap: dict[str, str] = {}
+    for c in pool:
+        canon = str(c.get("name") or "").strip()
+        if not canon:
+            continue
+        names = [canon] + [str(a) for a in (c.get("aliases") or [])]
+        for n in names:
+            n = _norm_name(n)
+            if len(n) >= 2 and n not in amap:
+                amap[n] = canon
+    return amap
 
 
 # ---------------------------------------------------------------- 可及池（确定性，零模型调用）
@@ -206,8 +233,14 @@ BROADCAST_PROMPT = """你是这部小说的选角导演。判断"这一场戏谁
 # ---------------------------------------------------------------- 解析（防造名）
 
 
-def parse_decision(content: str, pool_names: set[str]) -> tuple[list[CastMember], list[CastNeed], list[str]]:
-    """解析模型输出。造名（不在池）拒绝 + 告警，不崩。返回 (members, needs, alarms)。"""
+def parse_decision(content: str, pool_names: set[str], *,
+                   alias_map: dict[str, str] | None = None,
+                   rejected_out: list[str] | None = None) -> tuple[list[CastMember], list[CastNeed], list[str]]:
+    """解析模型输出。造名（不在池）拒绝 + 告警，不崩。返回 (members, needs, alarms)。
+
+    方案6.3：匹配顺序 = 精确 → 别名归一表（name 去括号注记/别名）→ 包含兜底（带告警）。
+    `rejected_out`：被拒点名收集（调用方注入正文禁令，防“广播拒了正文照样写”）。
+    """
     alarms: list[str] = []
     try:
         data = json.loads(content)
@@ -231,9 +264,30 @@ def parse_decision(content: str, pool_names: set[str]) -> tuple[list[CastMember]
         name = str(p.get("name") or "").strip()
         if not name:
             continue
-        if name not in pool_names:
+        canon: str | None = None
+        if name in pool_names:
+            canon = name
+        else:
+            amap = alias_map or {}
+            nm = _norm_name(name)
+            hit = amap.get(nm) if nm else None
+            if hit and hit in pool_names:
+                canon = hit
+                alarms.append(f"「{name}」经别名归一为「{hit}」")
+            else:
+                # 包含兜底（双向）：池名与点名互为子串且都 ≥2 字 → 归一（带告警可审计）
+                for pool_name in sorted(pool_names):
+                    pn = _norm_name(pool_name)
+                    if len(nm) >= 2 and len(pn) >= 2 and (pn in nm or nm in pn):
+                        canon = pool_name
+                        alarms.append(f"「{name}」经包含匹配归一为「{pool_name}」")
+                        break
+        if canon is None:
             alarms.append(f"广播点名「{name}」不在可及池（自造名/不可出场），已拒绝")
+            if rejected_out is not None:
+                rejected_out.append(name)
             continue
+        name = canon
         cat = str(p.get("reason_category") or "")
         if cat not in REASON_CATEGORIES:
             cat = "职能必需" if not cat else f"{cat}"
@@ -412,7 +466,12 @@ def broadcast_cast(
     if res.blocked or not (res.content or "").strip():
         return None
 
-    members, needs, parse_alarms = parse_decision(res.content, pool_names)
+    # 方案6.3：别名归一表（name 污染卡“苏晚晴（…长注）”不再误杀点名）
+    alias_map = build_alias_map(pool)
+    rejected: list[str] = []
+    members, needs, parse_alarms = parse_decision(res.content, pool_names,
+                                                  alias_map=alias_map,
+                                                  rejected_out=rejected)
     if closed:
         # B4：封闭场景只许"职能必需"提名——关系牵引/动机主动/伏笔相关的加戏一律拒绝
         kept, dropped = [], []
@@ -423,14 +482,22 @@ def broadcast_cast(
                                 + "、".join(m.name for m in dropped))
         members = kept
     if not members and not needs:
+        if rejected:  # 方案6.4：有被拒点名也要返回——正文禁令需要这份名单
+            return CastDecision(raw=res.content, alarms=parse_alarms, rejected=rejected)
         return None  # 解析彻底失败 → 降级
 
-    # 校验：名字层面（细纲/文本命中/上限 cap）
+    # 校验：名字层面（细纲/文本命中/上限 cap）；声明/命中先过别名归一（方案6.3）
+    def _canon(n: str) -> str:
+        if n in pool_names:
+            return n
+        hit = alias_map.get(_norm_name(n))
+        return hit if (hit and hit in pool_names) else n
+
     final_names, val_alarms = validate_names(
         [m.name for m in members],
-        declared=[n for n in decl if n in pool_names],
+        declared=[c for c in (_canon(n) for n in decl) if c in pool_names],
         pool=list(pool_names),
-        text_hits=[h for h in (text_hits or []) if h in pool_names],
+        text_hits=[c for c in (_canon(h) for h in (text_hits or [])) if c in pool_names],
         cap=cap)
 
     # 成员按最终名单过滤并保留理由

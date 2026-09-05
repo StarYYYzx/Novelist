@@ -53,6 +53,8 @@ EVICT_PRIORITY: dict[str, int] = {
     "cast": -1,
     "seam": -1,
     "tail": -1,
+    "first_seen": -1,  # 方案6.1：首次出场硬约束（软提示失效实证后升级钉死）
+    "banned": -1,      # 方案6.4：广播拒绝点名禁令（一致性行，宁超不丢）
 }
 
 PINNED = -1

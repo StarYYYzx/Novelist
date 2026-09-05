@@ -141,6 +141,53 @@ def _completeness_problems(comp: dict) -> list[str]:
     return problems
 
 
+# ---- 方案6.2（质量加固 2026-09-05）：首次出场身份线索检查 ----
+_IDENTITY_CUE_RE = re.compile(
+    "学姐|学长|师兄|师姐|师弟|师妹|导师|教授|老师|同学|室友|队长|副队|长老|弟子|"
+    "掌门|馆主|医生|警察|学生|记者|老板|管家|侍女|仆人|少女|少年|青年|老者|"
+    "男子|女子|中年人|孩子|同事|上司|下属|修士|散修|客人|伙计|邻居|发小|闺蜜")
+
+
+def _has_identity_cue(text: str, name: str, *, window: int = 260) -> bool:
+    """名字首现处的邻近文本是否含身份/关系线索（启发式，供审校清单非硬闸）。"""
+    i = text.find(name)
+    if i < 0:
+        return True  # 正文未字面点名（别名出场等）不判
+    seg = text[max(0, i - 60): i + window]
+    if _IDENTITY_CUE_RE.search(seg):
+        return True
+    pre = text[max(0, i - 30): i]
+    if re.search(r"(名叫|叫做|名为|称为|自称)", pre):
+        return True
+    post = text[i + len(name): i + len(name) + 8]
+    if re.match(r"(是|乃是|便是|原来是)", post):
+        return True
+    return False
+
+
+def _first_appearance_problems(tracker, text: str) -> list[str]:
+    """本章首次出场的角色正文无身份线索 → 审校问题（进修复调用清单）。
+
+    问题3 真机归因：首登场只有一行软指令且无审校兜底——本检查补上"不过审校清单"
+    这一环。tracker 为 None 或异常时静默跳过（不阻断生成）。
+    """
+    if tracker is None or not text:
+        return []
+    try:
+        probs = []
+        for e in tracker.resolve(text):
+            if e.type != "character" or e.stage != "unseen" or e.first_ch:
+                continue  # 只查"从未出场过"的角色（首现即本章）
+            if tracker.is_core(e.key):
+                continue  # 主角/核心的开篇交代由 D15 opening_rule 负责，不在此重复施压
+            if not _has_identity_cue(text, e.name):
+                probs.append(f"新角色「{e.name}」首次出场未交代身份/与主角的关系，"
+                             f"须补一句自然介绍（通过行动或对白，不要人物简介式）")
+        return probs
+    except Exception:  # noqa: BLE001 - 检查失败不影响成稿
+        return []
+
+
 _SEAM_CHARS = 300  # 事件间接缝：取上一事件末尾若干字，让模型自然续写
 # M3t（用户 2026-09-04 提议）：正文滑动窗口 + prompt 总预算。
 # 窗口>接缝部分承担"让模型看见前文发生了什么"的反重演职责；预算默认关（0），
@@ -562,7 +609,9 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 extra_readback: list[str] | None = None,
                 appeared_notes: list[str] | None = None,
                 prose_window: str = "",
-                char_budget: int = 0) -> str:
+                char_budget: int = 0,
+                first_seen_lines: list[str] | None = None,
+                banned_names: list[str] | None = None) -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
@@ -594,6 +643,18 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
         blocks.append(("cast", "\n".join([
             "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
             "修为、与其他人的关系都要对得上）：", *cast_lines])))
+    if first_seen_lines:
+        # 方案6.1（质量加固 2026-09-05）：首次出场从"设定行软提示"升级为钉死层硬约束
+        blocks.append(("first_seen", "\n".join([
+            "【首次出场人物·硬性要求】下列人物首次/再度出场，**必须**在本事件内"
+            "通过行动或对白自然交代其身份、与主角的关系（不得省略、不得只报名字；"
+            "也不要写成人物简介式）：", *first_seen_lines])))
+    if banned_names:
+        # 方案6.4：广播拒绝点名 → 正文禁令（防"广播拒了、正文照样写"——ch1 苏晚晴实证）
+        blocks.append(("banned", "\n".join([
+            "【点名禁令】下列人物未经选角确认（不在本场可及池），"
+            "**禁止**在正文中点名或提及，也不得让其暗中出场：",
+            "、".join(banned_names)])))
     if hist_lines:
         blocks.append(("hist_lines", "\n".join([
             "【人物近况】（他们带着这些经历进入本场，言行要与之一致）：",
@@ -1303,6 +1364,7 @@ def produce_chapter(
                 pieces: list[str] = []
                 seam = max(200, min(400, _SEAM_CHARS))
                 _prev_cast_names: list[str] = []  # ADR-021：上一事件出场者（广播"前情"输入）
+                banned_names: list[str] = []  # 方案6.4：本章被广播拒绝的点名（正文禁令）
                 settings_idx = (settings if settings is not None
                                 else _load_settings(ws, project_id))
                 # 知识检索层（讨论第 8 轮 RAG）：每章构建一次（语义向量化秒级），
@@ -1399,6 +1461,14 @@ def produce_chapter(
                                 cast_source = _dec.names
                                 broadcasts_built += 1
                                 if _dec.alarms:
+                                    print(f"[ch{ch} e{idx}] 广播校验: "
+                                          + "; ".join(_dec.alarms)[:300], flush=True)
+                            if _dec is not None:
+                                # 方案6.4：被拒点名收集 → 后续事件正文禁令（含名单为空仅拒绝的情形）
+                                for _rn in (getattr(_dec, "rejected", None) or []):
+                                    if _rn not in banned_names:
+                                        banned_names.append(_rn)
+                                if _dec.alarms and not _dec.names:
                                     print(f"[ch{ch} e{idx}] 广播校验: "
                                           + "; ".join(_dec.alarms)[:300], flush=True)
                         if cast_source:
@@ -1597,6 +1667,9 @@ def produce_chapter(
                             ev_problems = _completeness_problems(completeness(final))
                         except Exception:  # noqa: BLE001
                             ev_problems = []
+                        # 方案6.2：首次出场身份线索并入审校清单（同走一次修复调用）
+                        ev_problems = ev_problems + _first_appearance_problems(
+                            entity_tracker, final)
                         if ev_problems:
                             repaired = _repair_chapter_text(
                                 provider, system_prompt or "", final, ev_problems,
@@ -1621,6 +1694,11 @@ def produce_chapter(
                         raise RuntimeError(f"direct generation too short ({len(final)} chars)")
                     comp = completeness(final)
                     problems = _completeness_problems(comp) if validate else []
+                    # 方案6.2：direct 模式同样查首次出场身份线索
+                    if validate:
+                        problems = problems + _first_appearance_problems(
+                            entity_tracker or _load_entity_tracker(ws, project_id),
+                            final)
                     if not problems:
                         break
                     last_problems = problems

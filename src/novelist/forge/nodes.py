@@ -63,6 +63,7 @@ class NodeContext:
     arcs: list[dict] | None = None  # 本卷 arc 产物（chapter 节点 prompt 注入，F4b）
     extra: dict = field(default_factory=dict)  # roll 注入的四块上下文（§7.7）等
     extra_warnings: list[str] = field(default_factory=list)
+    reject_note: str = ""   # 方案4：章纲去重闸拒绝原因（重生成 prompt 附带，成功后清空）
 
 
 @dataclass
@@ -247,6 +248,84 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     return f"你是卷大纲师（Forge volume 节点，第 {vol} 卷，docs/10 §7.2）。", user
 
 
+# ---- 方案4（质量加固 2026-09-05）：章纲事件母题去重 ----
+def _event_key(s: str) -> str:
+    """事件句归一：去空白与标点，留纯语义字符（用于包含/重合判定）。"""
+    return re.sub(r"[\s，,。；;：:、！？!?（）()【】\[\]\"'“”·—…-]", "", str(s or ""))
+
+
+def event_dup_violations(key_events: list[str], ledger: list[str], *,
+                         jaccard_threshold: float = 0.5,
+                         min_jaccard_chars: int = 12) -> list[str]:
+    """新细纲事件 vs 已规划账本的重复判定（方案4 确定性闸）。
+
+    归一后整条包含，或字符 Jaccard > `jaccard_threshold` 视为重复。
+    Jaccard 只对归一后 ≥`min_jaccard_chars` 的句子生效——短句（"事件1-1"类
+    占位/编号句）字符重合天然虚高，交由包含判定即可。ch4/ch5 实证：细纲
+    逐字相同时正文会以同条件采样产出近逐字句子——必须在细纲层拦下。
+    """
+    led_norm = [(_event_key(e)) for e in (ledger or [])]
+    led_norm = [x for x in led_norm if x]
+    out: list[str] = []
+    for ev in key_events or []:
+        en = _event_key(ev)
+        if not en:
+            continue
+        eset = set(en)
+        for ln in led_norm:
+            if en in ln or ln in en:
+                out.append(ev)
+                break
+            if len(en) < min_jaccard_chars or len(ln) < min_jaccard_chars:
+                continue
+            inter = len(eset & set(ln))
+            union = len(eset | set(ln))
+            if union and inter / union > jaccard_threshold:
+                out.append(ev)
+                break
+    return out
+
+
+def planned_events_ledger(bp: Blueprint, vol: int, ch: int, *,
+                          max_events: int = 40) -> list[str]:
+    """全卷已规划事件账本（方案4）：本卷 1..ch-1 章 + 上一卷最后 2 章的 key_events。
+
+    数据源 = 蓝图 chapters 段（build 期每章 apply 后即入账；resume 从盘上载入），
+    无需引擎额外维护状态。上一卷只取尾部 2 章（防跨卷开头复读，控制块大小）。
+    """
+    events: list[str] = []
+    scale = ((bp.get("meta") or {}).get("scale") or {})
+    K = int(scale.get("chapters_per_volume", 0)) or 0
+    for g in bp.section("chapters"):
+        try:
+            gv, gc = int(g.get("vol") or 0), int(g.get("ch") or 0)
+        except (TypeError, ValueError):
+            continue
+        same_vol = gv == vol and 0 < gc < ch
+        prev_vol = gv == vol - 1 and K > 0 and gc > K - 2  # 上一卷最后 2 章
+        if not (same_vol or prev_vol):
+            continue
+        for e in g.get("key_events") or []:
+            s = str(e).strip()
+            if s and s not in events:
+                events.append(s)
+    return events[-max_events:]
+
+
+def planned_titles(bp: Blueprint, vol: int, ch: int, *, n: int = 2) -> list[str]:
+    """近 n 章标题（同卷优先，不足回退上一卷尾）——标题句式复读检查用（方案4/问题1）。"""
+    rows = sorted((g for g in bp.section("chapters")
+                   if int(g.get("vol") or 0) == vol and 0 < int(g.get("ch") or 0) < ch),
+                  key=lambda g: int(g.get("ch") or 0))
+    titles = [str(g.get("title") or "") for g in rows[-n:]]
+    if len([t for t in titles if t]) < n:
+        prev = sorted((g for g in bp.section("chapters")
+                       if int(g.get("vol") or 0) == vol - 1),
+                      key=lambda g: int(g.get("ch") or 0))
+        titles = [str(g.get("title") or "") for g in prev[-n:]] + titles
+    return [t for t in titles if t][-n:]
+
+
 def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     bp = ctx.bp
     meta = bp.get("meta") or {}
@@ -287,6 +366,24 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     # D15：开篇 beat——第一章细纲必须包含世界/主角交代点
     opening_rule = ("6. 全书第一章：key_events 须含一个开场交代事件（借冲突带出世界现状、"
                     "力量体系与主角身份处境），并让本章出场人物完成亮相。" if (vol, ch) == (1, 1) else "")
+    # 方案4：全卷已规划事件账本 + 拒绝重生成说明 + 标题句式禁复读
+    ledger_events = planned_events_ledger(bp, vol, ch)
+    recent_titles = planned_titles(bp, vol, ch)
+    ledger_block = ""
+    if ledger_events:
+        ledger_block = ("\n\n【已规划事件账本（此前章节已分配的事件——key_events 严禁复用或高度相似）】\n"
+                        + "\n".join(f"- {e[:60]}" for e in ledger_events[-24:]))
+    reject_block = ""
+    if ctx.reject_note:
+        reject_block = ("\n\n【上一稿被拒】以下事件与账本重复：" + ctx.reject_note
+                        + "\n必须产出**全新**的事件（新冲突/新场景/新推进），违者整稿作废。")
+    title_rule = ""
+    if recent_titles:
+        title_rule = (f"\n8. 本章标题不得与近期标题（{'、'.join(recent_titles)}）"
+                      "同句式，禁止套用同一标题模板（如『XX重构修仙』复读）。")
+    dedup_rule = ("7. key_events 严禁与【已规划事件账本】中任何条目重复或高度相似"
+                  "（同主角+同动作+同对象即视为重复）；「与前一章衔接」指因果承接，"
+                  "不是重复叙述同一事件。")
     user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。
 
 【本卷主线】{vol_block}
@@ -295,7 +392,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【前一章（因果连续，必须衔接）】
 {prev_block}
-{actual_block}{anchor_section}
+{actual_block}{anchor_section}{ledger_block}{reject_block}
 【本章可用角色卡】
 {char_block}
 
@@ -309,6 +406,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 5. turns 1–3 条：本章转折/推进点。
 6. tension：一句话说清本章张力来源（主角的两难/威胁/悬念——每个事件都要服务于它，
    不是重复事件内容）。hook：章末钩子（最后一个事件以此收尾，拉住读者翻下一章）。
+{dedup_rule}{title_rule}
 {opening_rule}
 
 【输出 JSON】
@@ -665,6 +763,103 @@ def _normalize_item_type(entry: dict) -> str:
     return "other"
 
 
+# ---- 方案7（质量加固 2026-09-05）：角色卡 schema 防污染 ----
+_GENERIC_ROLE_IDS = {"char:protagonist": "protagonist", "char:rival": "rival",
+                     "char:love_interest": "love_interest", "char:mentor": "mentor"}
+
+
+def _coerce_character_card(card: dict) -> tuple[dict, list[str]]:
+    """角色卡 name 防污染归一（方案7）：括号注记挪入 background；超长名截取。
+
+    真机实证（proj-cloud5）：LLM 把整段人设写进 name（“苏晚晴（青梅竹马，前世主角
+    最愧疚之人…）”40 字）→ 广播精确匹配失败误杀（B2 三级放大的上游根）。
+    返回 (card, warns)。name 缺失原样返回。
+    """
+    warns: list[str] = []
+    raw = str(card.get("name") or "").strip()
+    if not raw:
+        return card, warns
+    name = raw
+    m = re.search(r"[（(【\[]", raw)
+    if m:
+        name = raw[:m.start()].strip(" ，,、；;。")
+        note = raw[m.start():].strip("（）()【】[] ，,、；;。")
+        if note:
+            bg = str(card.get("background") or "").strip()
+            card["background"] = (note + ("；" + bg if bg else ""))[:200]
+    if len(name) > 12:
+        cut = re.split(r"[，,；;：:。！？是的]", name)[0].strip()
+        bg = str(card.get("background") or "").strip()
+        card["background"] = (f"名字原注：{name}" + ("；" + bg if bg else ""))[:200]
+        name = cut if 1 < len(cut) <= 12 else name[:4]
+        warns.append(f"角色名超长已归一：{raw[:24]}… → {name}")
+    if name:
+        card["name"] = name
+    return card, warns
+
+
+def _norm_card_key(s: str) -> str:
+    return re.sub(r"\s+", "", str(s or ""))
+
+
+def _merge_generic_cards(bp: Blueprint) -> list[str]:
+    """泛型 id 卡（char:protagonist 等）与实名卡同角色/同名 → 并入实名卡（方案7）。
+
+    真机实证：seed 骨架卡（char:li_tianjie）与 book 节点产出的泛型卡
+    （char:protagonist）并存 → 实体双记（两个 key 各 104 次提及），别名共指失效。
+    在 book 落盘时合并（章细纲尚未生成、无 id 引用，删除安全）。
+    """
+    warns: list[str] = []
+    for gid, role in _GENERIC_ROLE_IDS.items():
+        g = bp.find_by_id("characters", gid)
+        if not isinstance(g, dict):
+            continue
+        gname = _norm_card_key(g.get("name"))
+        twin = None
+        for c in bp.section("characters"):
+            cid = str(c.get("id") or "")
+            if not cid or cid == gid:
+                continue
+            aliases = {_norm_card_key(a) for a in (c.get("aliases") or [])}
+            if c.get("role") == role or (gname and _norm_card_key(c.get("name")) == gname) \
+                    or (gname and gname in aliases):
+                twin = c
+                break
+        if twin is None:
+            continue
+        for k in ("background", "core_traits", "power", "arc", "gender",
+                  "aliases", "hook", "relationships", "first_appear"):
+            v = g.get(k)
+            if v and not twin.get(k):
+                twin[k] = v
+        if not twin.get("role"):
+            twin["role"] = role
+        bp.data["characters"] = [c for c in bp.section("characters")
+                                 if c.get("id") != gid]
+        warns.append(f"泛型卡 {gid} 与实名卡 {twin.get('id')} 同角色/同名，已合并")
+    return warns
+
+
+_RELATION_TEMPLATES = ("青梅竹马", "未婚妻", "指腹为婚", "娃娃亲", "救命恩人",
+                       "宿敌", "死对头", "金手指持有者", "重生者", "穿书者")
+
+
+def _character_conflict_warnings(bp: Blueprint) -> list[str]:
+    """卡间人设模板冲突检查（方案7/B1）：同一关系模板被多卡使用 → 警告。
+
+    真机实证：林婉清卡与苏晚晴卡同采“青梅竹马”模板 → 卡间冲突、正文称谓漂移。
+    """
+    hits: dict[str, list[str]] = {}
+    for c in bp.section("characters"):
+        blob = " ".join([str(c.get("background") or "")]
+                        + [str(t) for t in (c.get("core_traits") or [])])
+        for t in _RELATION_TEMPLATES:
+            if t in blob:
+                hits.setdefault(t, []).append(str(c.get("name") or c.get("id")))
+    return [f"人设模板「{t}」被多卡使用（{'、'.join(names)}）——人物关系可能撞型，请核对"
+            for t, names in hits.items() if len(names) > 1]
+
+
 def _apply_items(bp: Blueprint, section: str, items: list, *, default_role: str = "minor") -> None:
     """数组段按 id upsert；已有条目跳过 user 保护字段。"""
     for item in items or []:
@@ -712,8 +907,16 @@ def _apply_book(ctx: NodeContext, node: dict) -> list[str]:
     if art.get("worldview"):
         _merge_worldview(bp, _dict_of(art.get("worldview")))
 
-    # characters（含主角兜底）
-    _apply_items(bp, "characters", art.get("characters") or [])
+    # characters（含主角兜底；方案7：落库前 name 防污染归一 + 泛型卡合并 + 撞型检查）
+    chars_in = []
+    for c in art.get("characters") or []:
+        if isinstance(c, dict) and c.get("id") and c.get("name"):
+            c, w = _coerce_character_card(c)
+            warns.extend(w)
+            chars_in.append(c)
+    _apply_items(bp, "characters", chars_in)
+    warns.extend(_merge_generic_cards(bp))
+    warns.extend(_character_conflict_warnings(bp))
     if not any(c.get("role") == "protagonist" for c in bp.section("characters")):
         title = (bp.get("meta") or {}).get("title") or "主角"
         bp.upsert("characters", {"id": "char:protagonist", "name": title, "gender": "unknown",
@@ -890,7 +1093,10 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
         # D1：行内注入（本 md 整篇进章级 goal → 每个事件的 prompt 都看得见）
         parts.append(f"- 全章张力（每个事件都要服务于它，不得偏离）：{fm['tension']}")
     if fm.get("hook"):
-        parts.append(f"- 章末钩子（最后一个事件必须以此收尾）：{fm['hook']}")
+        # A3 归因修正（2026-09-05）：钩子行随整篇 md 注入**每个**事件——旧文案
+        # "最后一个事件必须以此收尾"诱导前置事件抢跑写钩子（ch1 两半重演根因之一）。
+        parts.append(f"- 章末钩子（收束方向指引：仅最后一个事件以此收尾；"
+                     f"前面的事件只须让情节朝此方向发展，严禁提前写钩子内容）：{fm['hook']}")
     if fm["threads_involved"]:
         parts.append(f"- 伏笔：{'、'.join(fm['threads_involved'])}")
     if fm["beats"]:
@@ -939,6 +1145,21 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
         else:
             warns.append(f"chapter {vol}-{ch}: key_events 为空，用占位事件兜底")
         key_events = [f"第 {ch} 章主线推进"]
+    # 方案4：章纲事件母题去重闸——首稿与账本重复 → 拒绝落盘并触发引擎重试
+    #（reject_note 附入重生成 prompt）；重试仍重复 → 按 ADR-017 retry=1 降级接受+告警。
+    try:
+        _viol = event_dup_violations(key_events, planned_events_ledger(bp, vol, ch))
+    except Exception:  # noqa: BLE001 - 闸门自身异常不阻断细纲
+        _viol = []
+    if _viol and not ctx.reject_note:
+        ctx.reject_note = "；".join(v[:40] for v in _viol[:3])
+        raise ValueError(f"chapter {vol}-{ch}: key_events 与已规划事件重复"
+                         f"（{ctx.reject_note}），拒绝落盘并重生成")
+    if _viol:
+        warns.append(f"chapter {vol}-{ch}: 重生成后仍与账本相似"
+                     f"（{_viol[0][:40]}…），按 ADR-017 retry=1 降级接受")
+    else:
+        ctx.reject_note = ""
     gist = {
         "vol": vol,
         "ch": ch,
@@ -1321,8 +1542,11 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
         wv["factions"] = norm
     write("bible/worldview.json", wv)
     # characters（剥离 role；protagonist → is_protagonist；运行期扩展键/工厂卡保留）
+    # 方案7：落盘前 name 防污染归一——存量污染卡（人设长句塞 name）在重同步时被修复，
+    # 广播池/实体别名/调度匹配从此拿到干净名字。
     chars = []
     for c in bp.section("characters"):
+        c, _cw = _coerce_character_card(dict(c))
         card = {k: v for k, v in c.items() if k != "role"}
         if c.get("role") == "protagonist":
             card["is_protagonist"] = True

@@ -22,7 +22,9 @@ def test_render_gist_md_inlines_tension_hook():
             "threads_involved": [], "after_days": 0}
     md = render_gist_md(gist, 1, 3, ["李天劫"])
     assert "- 全章张力（每个事件都要服务于它，不得偏离）：保人还是藏拙，两难" in md
-    assert "- 章末钩子（最后一个事件必须以此收尾）：苏老多看了两秒" in md
+    # A3 修正（2026-09-05）：钩子行降级为收束方向指引——防前置事件抢跑写钩子
+    assert "章末钩子（收束方向指引" in md and "严禁提前写钩子内容" in md
+    assert "仅最后一个事件以此收尾" in md
 
 
 def test_render_gist_md_without_tension_hook_backcompat():

@@ -118,7 +118,11 @@ _CARD_FIELDS_ORDER = ("gender", "power", "core_traits", "arc", "relationships",
 
 
 def load_characters(ws, project_id: str) -> list[dict]:
-    """读 bible/characters.json（失败返回空列表）。"""
+    """读 bible/characters.json（失败返回空列表）。
+
+    方案7 运行期兜底：读出时做 name 防污染归一（存量污染卡不再向广播池/
+    匹配/实体别名泄漏长句名）。视图级处理，不回写文件（落盘修复走 sync_bible）。
+    """
     p = ws._abs(f"{project_id}/bible/characters.json")
     if not p.exists():
         return []
@@ -126,7 +130,19 @@ def load_characters(ws, project_id: str) -> list[dict]:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return []
-    return [c for c in data if isinstance(c, dict) and c.get("id")] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    try:
+        from ..forge.nodes import _coerce_character_card
+    except Exception:  # noqa: BLE001 - 归一不可用时退回原样（不阻断）
+        return [c for c in data if isinstance(c, dict) and c.get("id")]
+    out = []
+    for c in data:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        c, _w = _coerce_character_card(dict(c))
+        out.append(c)
+    return out
 
 
 def match_cast(chars: list[dict], names: list[str]) -> list[dict]:
