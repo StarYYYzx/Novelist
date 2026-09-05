@@ -52,3 +52,8 @@ novel_workspace/_harness/.deepseek_key
 
 # 新书 5 章测试运行日志
 novel_workspace/_harness/firstbook5_log.jsonl
+
+# 云端五章（cloud5）运行日志（可重跑再生，不入库）
+novel_workspace/_harness/cloud5_*.log
+novel_workspace/_harness/cloud5_*.jsonl
+novel_workspace/_harness/cloud5_*.txt
