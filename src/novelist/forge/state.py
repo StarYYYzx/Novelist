@@ -77,6 +77,70 @@ def _norm_prov_path(path: str) -> str:
     return path
 
 
+# ---- 模型输出枚举归一（2026-09-05 云端 Qwen3.8-27B 真机实证）----
+# 模型会把 bible 侧行文态（plot_threads.status="active"）写进蓝图 threads，
+# 或输出同义英文/中文变体——枚举外值在 bp.save 的 SchemaError 直接崩掉整次构建。
+# 归一放在 validate() 入口（save/load 双通道覆盖），只改非法值，合法值原样通过。
+_THREAD_STATUS = {"unplanned", "planted", "pending_return", "returned"}
+_THREAD_STATUS_ALIASES = {
+    # bible 行文态 / 同义变体 → 蓝图最近合法态（已登记待埋设=planted）
+    "active": "planted", "ongoing": "planted", "in_progress": "planted",
+    "inprogress": "planted", "open": "planted", "live": "planted",
+    "进行中": "planted", "激活": "planted", "已埋": "planted",
+    "planned": "unplanned", "todo": "unplanned", "none": "unplanned",
+    "计划中": "unplanned", "未埋": "unplanned",
+    "pending": "pending_return", "pendingreturn": "pending_return",
+    "待回收": "pending_return",
+    "done": "returned", "resolved": "returned", "closed": "returned",
+    "paid_off": "returned", "paidoff": "returned", "paid": "returned",
+    "completed": "returned", "complete": "returned", "finished": "returned",
+    "已回收": "returned", "已兑现": "returned",
+}
+_THREAD_SCOPE = {"volume", "book"}
+_THREAD_SCOPE_ALIASES = {"vol": "volume", "卷": "volume", "volume_wide": "volume",
+                         "全书": "book", "series": "book", "book_wide": "book"}
+_CHAR_STATUS = {"active", "dead", "away", "unknown"}
+_CHAR_STATUS_ALIASES = {"alive": "active", "present": "active", "in_scene": "active",
+                        "在场": "active", "missing": "away", "absent": "away",
+                        "离场": "away", "deceased": "dead", "死亡": "dead"}
+_GENDER = {"male", "female", "unknown"}
+_GENDER_ALIASES = {"man": "male", "m": "male", "男": "male",
+                   "woman": "female", "f": "female", "女": "female"}
+_ROLE = {"protagonist", "mentor", "rival", "love_interest", "minor"}
+_ROLE_ALIASES = {"main": "protagonist", "主角": "protagonist",
+                 "master": "mentor", "teacher": "mentor", "师父": "mentor", "导师": "mentor",
+                 "villain": "rival", "antagonist": "rival", "反派": "rival", "对手": "rival",
+                 "love": "love_interest", "loveinterest": "love_interest",
+                 "恋人": "love_interest", "女主": "love_interest", "男主": "love_interest",
+                 "supporting": "minor", "配角": "minor", "龙套": "minor"}
+_SRC = {"user", "llm", "template", "ingested"}
+_SRC_ALIASES = {"model": "llm", "ai": "llm", "auto": "llm", "system": "template"}
+
+
+def _coerce_enum(value: Any, valid: set[str], aliases: dict[str, str], default: str) -> str:
+    """非法枚举值归一：合法原样通过；别名表映射；其余落 default。幂等。"""
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in valid:
+            return v
+        if v in aliases:
+            return aliases[v]
+    return default
+
+
+def _coerce_src_deep(node: Any) -> None:
+    """递归归一所有 `src` 字段（slot 应答/条目级 provenance 都可能被模型写歪）。"""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "src" and not (isinstance(v, str) and v.strip().lower() in _SRC):
+                node[k] = _coerce_enum(v, _SRC, _SRC_ALIASES, "llm")
+            else:
+                _coerce_src_deep(v)
+    elif isinstance(node, list):
+        for item in node:
+            _coerce_src_deep(item)
+
+
 # ---- Blueprint ----
 @dataclass
 class Blueprint:
@@ -125,7 +189,30 @@ class Blueprint:
         tmp.replace(path)
         return path
 
+    def normalize(self) -> None:
+        """枚举字段防御归一（幂等，只动非法值）——先于 schema 校验执行。"""
+        threads = self.data.get("threads")
+        if isinstance(threads, list):
+            for t in threads:
+                if isinstance(t, dict):
+                    t["status"] = _coerce_enum(t.get("status"), _THREAD_STATUS,
+                                               _THREAD_STATUS_ALIASES, "unplanned")
+                    t["scope"] = _coerce_enum(t.get("scope"), _THREAD_SCOPE,
+                                              _THREAD_SCOPE_ALIASES, "book")
+        chars = self.data.get("characters")
+        if isinstance(chars, list):
+            for c in chars:
+                if isinstance(c, dict):
+                    c["status"] = _coerce_enum(c.get("status"), _CHAR_STATUS,
+                                               _CHAR_STATUS_ALIASES, "unknown")
+                    c["gender"] = _coerce_enum(c.get("gender"), _GENDER,
+                                               _GENDER_ALIASES, "unknown")
+                    c["role"] = _coerce_enum(c.get("role"), _ROLE,
+                                             _ROLE_ALIASES, "minor")
+        _coerce_src_deep(self.data)
+
     def validate(self) -> None:
+        self.normalize()
         try:
             SchemaRegistry().validate("forge/blueprint", self.data)
         except SchemaError as e:
