@@ -85,9 +85,15 @@ def post(path: str, body: dict, timeout: int = 300) -> dict:
     return json.loads(raw), wall
 
 
+def get(path: str, timeout: int = 30) -> dict:
+    req = urllib.request.Request(BASE + path)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
 def main() -> None:
-    # 1. models
-    m, _ = post("/models", {})
+    # 1. models（GET）
+    m = get("/models")
     for x in m.get("data", []):
         print("MODEL:", x.get("id"), "ctx:", x.get("context_length"))
 
