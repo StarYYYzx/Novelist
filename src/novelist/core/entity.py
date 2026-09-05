@@ -47,12 +47,15 @@ class EntityProgress:
     first_ch: int = 0        # 正文首次出现章（0=未出现）
     last_ch: int = 0
     mentions: int = 0
+    # 按章提及数（key="vol-ch"）：重跑幂等的依据——同章重扫以最新正文**替换**
+    # 旧值而非累加（2026-09-05）。旧缓存无此字段时按 0 处理。
+    chapter_counts: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"key": self.key, "type": self.type, "name": self.name,
                 "aliases": self.aliases, "stage": self.stage,
                 "first_ch": self.first_ch, "last_ch": self.last_ch,
-                "mentions": self.mentions}
+                "mentions": self.mentions, "chapter_counts": self.chapter_counts}
 
 
 class EntityTracker:
@@ -134,6 +137,10 @@ class EntityTracker:
                         old.first_ch = int(d.get("first_ch", 0) or 0)
                         old.last_ch = int(d.get("last_ch", 0) or 0)
                         old.mentions = int(d.get("mentions", 0) or 0)
+                        cc = d.get("chapter_counts")
+                        if isinstance(cc, dict):
+                            old.chapter_counts = {str(k): int(v or 0)
+                                                  for k, v in cc.items()}
             except (ValueError, OSError):
                 pass
         else:
@@ -171,25 +178,33 @@ class EntityTracker:
         return stage
 
     def update_from_chapter(self, chapter_text: str, vol: int, ch: int) -> dict:
-        """扫正文更新实体进度（别名共指消歧）。返回 {new, stage_up, mentions} 供日志。"""
+        """扫正文更新实体进度（别名共指消歧）。返回 {new, stage_up, mentions} 供日志。
+
+        幂等语义（2026-09-05）：同章重扫为**替换**而非累加——mentions 按章快照
+        （chapter_counts）回差修正，重跑同章不再虚增阶段/干扰开篇配额判定。
+        """
         new_keys: list[str] = []
         stage_up: list[str] = []
         if not chapter_text:
             return {"new": new_keys, "stage_up": stage_up}
+        ck = f"{int(vol)}-{int(ch)}"
         for key, e in self.entities.items():
             count = 0
             for alias in [e.name, *e.aliases]:
                 if alias:
                     count += chapter_text.count(alias)
-            if count <= 0:
+            prev = int(e.chapter_counts.get(ck, 0) or 0)
+            if count <= 0 and prev <= 0:
                 continue
-            if e.first_ch == 0:
+            was_new = (int(e.mentions) - prev) <= 0   # 本章之前从未出现
+            e.mentions = max(0, int(e.mentions) - prev + count)
+            e.chapter_counts[ck] = count
+            if was_new and count > 0:
                 e.first_ch, e.last_ch = ch, ch
                 new_keys.append(key)
-            else:
+            elif count > 0:
                 e.last_ch = max(e.last_ch, ch)
             old_stage = e.stage
-            e.mentions += count
             e.stage = self._stage_for(key, e.mentions)
             if _STAGE_RANK[e.stage] > _STAGE_RANK[old_stage]:
                 stage_up.append(f"{e.name}({old_stage}→{e.stage})")

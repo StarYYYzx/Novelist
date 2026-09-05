@@ -73,7 +73,12 @@ def set_path(data: dict, path: str, value: Any) -> None:
 
 
 def _norm_prov_path(path: str) -> str:
-    """provenance 键归一：`characters[char:x].name` 视为 `characters[<id>].name` 形态，直接存原文。"""
+    """provenance 键归一（保留原样，恒等）。
+
+    键形态约定（2026-09-05 起）：人物槽位 provenance **双写**两种形态——
+    实 id 键 `characters[char:x].name`（is_protected 逐字段保护用）+ 伪路径键
+    `characters[role:*].name`（detect_gaps 按槽位 key 查询用），见 ask._apply_slot_value。
+    """
     return path
 
 

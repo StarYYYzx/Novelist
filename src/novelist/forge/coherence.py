@@ -74,8 +74,13 @@ def gather_chapter_plans(ws, bp, vol: int, up_to_ch: int) -> list[dict]:
 
 
 def run_coherence_review(ws, project_id: str, bp, provider, vol: int,
-                         up_to_ch: int) -> dict | None:
-    """连读审查：一次 LLM 调用产出 findings 并落盘。失败返回 None。"""
+                         up_to_ch: int, *, count_hook=None) -> dict | None:
+    """连读审查：一次 LLM 调用产出 findings 并落盘。失败返回 None。
+
+    `count_hook`：每次 provider 调用后回调一次（G2 修复，2026-09-05）——
+    审查调用计入 build/roll 的调用预算与 transcript，原先直接 complete
+    绕过计量，成本不可见。
+    """
     plans = gather_chapter_plans(ws, bp, vol, up_to_ch)
     if len(plans) < 2:
         return None  # 单章无可比性
@@ -88,6 +93,11 @@ def run_coherence_review(ws, project_id: str, bp, provider, vol: int,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
             max_tokens_out=1500, temperature=0.3))
+        if count_hook is not None:
+            try:
+                count_hook()
+            except Exception:  # noqa: BLE001 - 计量钩子失败不影响审查
+                pass
         raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
     except Exception:  # noqa: BLE001
         return None
@@ -181,12 +191,13 @@ def summarize_for_prompt(bans: list[str]) -> str:
 
 # ---------------------------------------------------------------- 蓝图连读（批次三·方案1）
 
-def run_blueprint_review(ws, project_id: str, bp, provider) -> dict | None:
+def run_blueprint_review(ws, project_id: str, bp, provider, *, count_hook=None) -> dict | None:
     """蓝图完成后、卷展开前的 LLM 连读审查（批次三·方案1）。
 
     蓝图一次产出全部核心设定与卷规划——这里的自相矛盾/人物撞型会污染整个下游，
     是"交给 AI 顺一遍"价值最高的引入点。一次调用产出 findings 并落盘；
     失败静默返回 None（增强层，不阻断 build）。
+    `count_hook`：调用计数钩子（G2，同 run_coherence_review）。
     """
     try:
         wv = bp.section("worldview") or {}
@@ -208,6 +219,11 @@ def run_blueprint_review(ws, project_id: str, bp, provider) -> dict | None:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
             max_tokens_out=1500, temperature=0.3))
+        if count_hook is not None:
+            try:
+                count_hook()
+            except Exception:  # noqa: BLE001 - 计量钩子失败不影响审查
+                pass
         raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
     except Exception:  # noqa: BLE001
         return None

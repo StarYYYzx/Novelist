@@ -184,6 +184,14 @@ def build(ws: Workspace, project_id: str, *, provider,
         return [m for m, spec in REVIEW_MODULES.items()
                 if spec["kind"] == kind and cfg["switches"].get(m, True)]
 
+    def _count_hook() -> None:
+        """G2 修复（2026-09-05）：连读/蓝图审查的 provider 调用计入调用预算。
+
+        原先审查直接 complete 绕过 calls_used 计量——预算与 transcript 双失真。
+        """
+        nonlocal calls_used
+        calls_used += 1
+
     # 构建前置文件快照（docs/10 §7.6 F5）：rollback / --diff 的基线
     from .snapshot import take_snapshot
 
@@ -322,7 +330,8 @@ def build(ws: Workspace, project_id: str, *, provider,
                 from .coherence import run_blueprint_review, BP_FINDINGS_REL
 
                 if not ws._abs(f"{project_id}/{BP_FINDINGS_REL}").exists():  # noqa: SLF001
-                    fnd = run_blueprint_review(ws, project_id, bp, provider)
+                    fnd = run_blueprint_review(ws, project_id, bp, provider,
+                                               count_hook=_count_hook)
                     if fnd:
                         nc = len(fnd.get("contradictions") or [])
                         nk = len(fnd.get("character_conflicts") or [])
@@ -391,6 +400,16 @@ def build(ws: Workspace, project_id: str, *, provider,
                 ctx_ch = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
                                      pack=pack, spec=spec, vol=1, ch=ch, prev_gist=prev,
                                      arcs=vol_arcs or None)
+                # G4 修复（2026-09-05）：连读审查禁令注入本章细纲 prompt（细纲层
+                # 也规避母题重复，而不是等问题固化到账本、正文期才拦）。
+                if coherence_review and ch >= 2:
+                    try:
+                        from .coherence import load_coherence_bans
+
+                        ctx_ch.extra["coherence_bans"] = load_coherence_bans(
+                            ws, project_id, 1, ch)
+                    except Exception:  # noqa: BLE001
+                        ctx_ch.extra["coherence_bans"] = []
                 res_ch = _call(ctx_ch, "chapter", 2, vol=1, ch=ch)
                 if res_ch is not None and res_ch.ok:
                     chapters_written += 1
@@ -405,7 +424,8 @@ def build(ws: Workspace, project_id: str, *, provider,
                         try:
                             from .coherence import run_coherence_review
 
-                            fnd = run_coherence_review(ws, project_id, bp, provider, 1, ch)
+                            fnd = run_coherence_review(ws, project_id, bp, provider, 1, ch,
+                                                       count_hook=_count_hook)
                             if fnd:
                                 nm = len(fnd.get("motif_repeats") or [])
                                 nc = len(fnd.get("causal_issues") or [])
@@ -434,8 +454,13 @@ def build(ws: Workspace, project_id: str, *, provider,
         warnings.append("SIGINT：当前节点后落盘退出（被中断节点未落盘、calls_used 不回退）")
     finally:
         # ---- 末尾：worldstate 确定性合成（零 LLM，docs/10 §7.5）----
-        wstate = synthesize_worldstate(bp)
-        ws.write_json(ws.bible_path(project_id, "worldstate"), wstate)
+        # F1 修复（2026-09-05）：仅在 worldstate **不存在**时初始化合成——
+        # 原先无条件重写会把正文期推进的 time.now / 人物死亡受伤位置 / 运行态
+        # pending 全部抹回蓝图初始态（排查 P0-F1）。roll 的日程登记走独立路径。
+        _ws_path = ws.bible_path(project_id, "worldstate")
+        if not _ws_path.exists():
+            wstate = synthesize_worldstate(bp)
+            ws.write_json(_ws_path, wstate)
         bp.save(ws, project_id)
         sync_bible(ws, project_id, bp)
         state.calls_used = calls_used
@@ -576,6 +601,8 @@ class RollResult:
     arcs_written: int = 0
     budget_exhausted: bool = False
     budget_limit: int = 40
+    gate_halted: bool = False
+    pending_review: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -630,12 +657,20 @@ def _roll_context(ws: Workspace, project_id: str, bp: Blueprint, vol: int, K: in
 
 def roll(ws: Workspace, project_id: str, *, provider, vol: int,
          max_calls: int = 40, max_depth: int = 4, max_width: int = 4,
+         gate: bool = True, resume: bool = False, coherence_review: bool = False,
          log_fn: Callable[[str], None] | None = None) -> RollResult:
     """滚动生成第 N 卷细纲（docs/10 §7.7）：注入四块上下文 → volume → arc? → chapter ×K → beat?。
 
     前置：vol ≥ 2 且第 vol−1 卷已有正文（chapters/<vol-1>-*.md）。
     末尾幂等追加新卷 after_days → worldstate.pending（due = 当前 now + 累计，
     id 沿用 pd:ke-<vol>-<ch>，已存在即跳过）。
+
+    G1 修复（2026-09-05）：
+    - `gate=True`（默认）：入口检查 ADR-024 待审模块，有待审即拦截；volume 产出
+      按审核开关落 pending——原先 roll 完全绕过闸门；
+    - `resume=True`：跳过已有细纲的章——原先重跑无条件覆盖全部旧细纲；
+    - 调用数入 ForgeState 账（原先局部计数丢弃，跨阶段总量失真）；
+    - `coherence_review=True`：逐章连读审查（与 build 同参同钩子）。
     """
     if vol <= 1:
         raise ValueError("roll 从第 2 卷起（卷 1 细纲由 forge build 生成）")
@@ -646,6 +681,15 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     prev_written = list(chapters_dir.glob(f"{vol - 1}-*.md")) if chapters_dir.exists() else []
     if not prev_written:
         raise ValueError(f"第 {vol - 1} 卷无正文——roll 需前卷已有稿子（docs/10 §7.1 卷闸门）")
+    # ---- 审核闸门（ADR-024，G1）：有待审模块 → 不消耗任何调用，直接交还用户 ----
+    pending_now = sorted(pending_modules(ws, project_id)) if gate else []
+    if pending_now:
+        for m in pending_now:
+            log_line = f"[gate] {REVIEW_MODULES[m]['label']}({m}) 待审核：forge review {m} → approve / revise"
+            (log_fn or (lambda s: print(s, flush=True)))(log_line)
+        return RollResult(ok=True, project_id=project_id, vol=vol,
+                          gate_halted=True, pending_review=pending_now,
+                          warnings=["审核闸门拦截：先处置 pending 模块再 roll"])
     pack = _pack_for_bp(bp)
     state = ForgeState.load(ws, project_id)
     append_transcript(ws, project_id, "roll.start", rev=bp.data["rev"], vol=vol, max_calls=max_calls)
@@ -664,6 +708,7 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     arcs_written = 0
     budget_exhausted = False
     interrupted = False
+    gate_halted = False
 
     def _budget_check() -> bool:
         nonlocal budget_exhausted
@@ -671,6 +716,11 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             budget_exhausted = True
             return False
         return True
+
+    def _count_hook() -> None:
+        """G2：审查调用计入调用预算（与 build 同语义）。"""
+        nonlocal calls_used
+        calls_used += 1
 
     def _call(ctx: NodeContext, kind: str, depth: int, vol_n: int = 0, ch: int = 0,
               child: dict | None = None):
@@ -704,6 +754,11 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
                 calls_used = started + 1
                 warnings.append(f"{label}: 重试仍失败，回退父层产物: {e2}")
                 return None
+        except ModerationBlockedError as e:
+            # G1：roll 原先缺该分支——审核拦截被当普通异常吞掉，无痕迹
+            calls_used = started
+            warnings.append(f"{label}: 审核拦截（{e}），该节点标记 blocked、人工补")
+            return None
         except Exception as e:  # noqa: BLE001
             calls_used = started
             warnings.append(f"{label}: 节点异常，回退父层产物: {e}")
@@ -716,6 +771,14 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
         res = _call(ctx, "volume", 1, vol_n=vol)
         _persist_node(ws, project_id, f"volume:{vol}", res)
         bp.save(ws, project_id)
+        # G1：审核闸门——volume 产出按开关落 pending（与 build 同语义，ADR-024）
+        if gate and res is not None and res.ok:
+            cfg = load_review(ws, project_id)
+            gated_v = [m for m, s in REVIEW_MODULES.items()
+                       if s["kind"] == "volume" and cfg["switches"].get(m, True)]
+            if gated_v:
+                mark_pending(ws, project_id, bp, gated_v, log_fn=log, vol=vol)
+                raise _GateHalt(gated_v)
         # ---- arc? ----
         vol_arcs: list[dict] = []
         if res is not None and res.decide == "expand" and res.children:
@@ -743,6 +806,10 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             if budget_exhausted:
                 warnings.append(f"chapter {vol}-{ch}: 预算耗尽，未生成（剩余 {K - ch + 1} 章）")
                 break
+            gist_path = ws.outline_chapter_path(project_id, vol, ch)
+            if resume and gist_path.exists():
+                log(f"[skip] chapter {vol}-{ch}（outline 已有细纲）")
+                continue
             prev = None
             if ch > 1:
                 prev = parse_gist(ws, project_id, vol, ch - 1)
@@ -751,9 +818,40 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             ctx_ch = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
                                  pack=pack, vol=vol, ch=ch, prev_gist=prev,
                                  arcs=vol_arcs or None)
+            # G4：连读审查禁令注入本章细纲 prompt（与 build 同语义）
+            if coherence_review and ch >= 2:
+                try:
+                    from .coherence import load_coherence_bans
+
+                    ctx_ch.extra["coherence_bans"] = load_coherence_bans(
+                        ws, project_id, vol, ch)
+                except Exception:  # noqa: BLE001
+                    ctx_ch.extra["coherence_bans"] = []
             res_ch = _call(ctx_ch, "chapter", 2, vol_n=vol, ch=ch)
             if res_ch is not None and res_ch.ok:
                 chapters_written += 1
+                # G1：审核闸门——chapter 产出按开关落 pending（与 build 同语义）
+                if gate:
+                    cfg_c = load_review(ws, project_id)
+                    gated_c = [m for m, s in REVIEW_MODULES.items()
+                               if s["kind"] == "chapter" and cfg_c["switches"].get(m, True)]
+                    if gated_c:
+                        mark_pending(ws, project_id, bp, gated_c, log_fn=log,
+                                     vol=vol, ch=ch)
+                        raise _GateHalt(gated_c)
+                # 细纲连读审查（opt-in，≥2 章触发；调用计入预算）
+                if coherence_review and ch >= 2:
+                    try:
+                        from .coherence import run_coherence_review
+
+                        fnd = run_coherence_review(ws, project_id, bp, provider, vol, ch,
+                                                   count_hook=_count_hook)
+                        if fnd:
+                            nm = len(fnd.get("motif_repeats") or [])
+                            nc = len(fnd.get("causal_issues") or [])
+                            log(f"[coherence] {vol}-{ch} 连读审查：母题重复{nm} 因果{nc}")
+                    except Exception as e:  # noqa: BLE001
+                        warnings.append(f"coherence {vol}-{ch}: {type(e).__name__}: {e}"[:120])
             bp.save(ws, project_id)
             # beat?
             if res_ch is not None and res_ch.ok \
@@ -767,16 +865,22 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
                 res_b = _call(ctx_b, "beat", 3, vol_n=vol, ch=ch, child=ctx_b.child)
                 _persist_node(ws, project_id, f"beat:{vol}:{ch}", res_b)
                 bp.save(ws, project_id)
+    except _GateHalt as g:
+        gate_halted = True
+        warnings.append(f"审核闸门暂停（待处置：{g.modules}）——approve 后可 roll/resume 续跑")
     except KeyboardInterrupt:
         interrupted = True
         warnings.append("SIGINT：当前节点后落盘退出")
     finally:
         # ---- 幂等追加新卷 after_days → worldstate.pending（不覆盖 time/characters）----
         _append_roll_pending(ws, project_id, bp, vol)
+        # G1：调用数入 ForgeState 账（原先局部计数丢弃，跨阶段总量失真）
+        state.calls_used = int(state.calls_used or 0) + calls_used
         state.touch_stage(ws, project_id, state.stage or "built")
         append_transcript(ws, project_id, "roll.end", vol=vol, calls_used=calls_used,
                           chapters_written=chapters_written,
                           budget_exhausted=budget_exhausted, interrupted=interrupted,
+                          gate_halted=gate_halted,
                           warnings=warnings[:10])
         # 结果快照（F5e diff 基线 / 默认 rollback 点）
         from .snapshot import take_snapshot
@@ -784,10 +888,12 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
         take_snapshot(ws, project_id, label=f"roll-ok-v{vol}")
 
     return RollResult(
-        ok=not interrupted and not budget_exhausted and chapters_written > 0,
+        ok=not interrupted and not budget_exhausted and (chapters_written > 0 or gate_halted),
         project_id=project_id, vol=vol, calls_used=calls_used,
         chapters_written=chapters_written, arcs_written=arcs_written,
         budget_exhausted=budget_exhausted, budget_limit=max_calls,
+        gate_halted=gate_halted,
+        pending_review=sorted(pending_modules(ws, project_id)) if gate_halted else [],
         warnings=warnings,
     )
 

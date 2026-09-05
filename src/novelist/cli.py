@@ -182,13 +182,18 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="世界观滚动补充：事件新名词补 settings 条目（第七批第 5 条·递归分层 B）")
 @click.option("--no-jit", is_flag=True, default=False,
               help="关闭人物 JIT 补卡（默认开启，第七批第 5 条·递归分层 A）")
+@click.option("--seam-review/--no-seam-review", default=True,
+              help="事件接缝 LLM 复述审查（批次三方案2；G3 修复：原先默认关且 CLI 无法打开）")
+@click.option("--volume-facts/--no-volume-facts", default=True,
+              help="卷末章自动产'本卷事实清单'并注入下卷（批次三方案3）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
             policy: str | None, gen_tokens: int | None, content_tokens: int | None,
             max_events: int | None, min_event_words: int,
             polish: bool, no_bible: bool,
             event_loop: bool, screenplay: bool, readback: bool, event_polish: bool,
-            supplement_settings: bool, no_jit: bool) -> None:
+            supplement_settings: bool, no_jit: bool,
+            seam_review: bool, volume_facts: bool) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
@@ -233,7 +238,8 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                           inject_bible=not no_bible, memories=memories or None, polish=polish,
                           event_loop=event_loop, screenplay=screenplay,
                           readback=readback, event_polish=event_polish,
-                          supplement_settings=supplement_settings, jit_characters=not no_jit)
+                          supplement_settings=supplement_settings, jit_characters=not no_jit,
+                          seam_review=seam_review, volume_facts=volume_facts)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "
@@ -260,6 +266,8 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
         p = res.polish
         click.echo(f"polish: {'applied' if p.changed else 'kept original'} "
                    f"AI味 {p.before.score} -> {p.after.score} ({p.delta:+.2f}) {p.note}")
+    if res.soft_failures:  # H1：增强层失败显式可见，不与"检查通过"混淆
+        click.echo("soft failures: " + "; ".join(res.soft_failures))
 
 
 def _compose_goal(ws, project_id: str, vol: int, ch: int, embedding=None) -> str:
@@ -856,9 +864,11 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
 @click.argument("directory", required=False, default=None)
 @click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai")
 @click.option("--max-calls", type=int, default=40, help="roll 每卷分阶段配额（docs/10 §7.3）")
+@click.option("--gate/--no-gate", default=True,
+              help="审核闸门（ADR-024，G1 修复：roll 原先完全绕过闸门）")
 @click.pass_context
 def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: str,
-               max_calls: int) -> None:
+               max_calls: int, gate: bool) -> None:
     """滚动生成第 N 卷细纲（需前卷已有正文）：注入前卷事实四块上下文（docs/10 §7.7）。"""
     from novelist.forge import Blueprint, roll
 
@@ -870,7 +880,7 @@ def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: st
         raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
     try:
         res = roll(ws, project_id, provider=_make_cli_provider(provider),
-                   vol=vol, max_calls=max_calls)
+                   vol=vol, max_calls=max_calls, gate=gate)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
     for w in res.warnings:

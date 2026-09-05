@@ -183,9 +183,13 @@ def save_timeline(ws, project_id: str, entries: list[dict]) -> None:
     p.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def append_timeline(ws, project_id: str, *, event: str, t: int, vol: int, ch: int) -> dict:
+def append_timeline(ws, project_id: str, *, event: str, t: int, vol: int, ch: int,
+                    dt: int = 0) -> dict:
     """登记一个历史时点。id 形如 `tl:12`（按已有最大序号 +1）。每次读盘——
     时间线是小文件，正确性优先于省一次 IO（批量写会让旧条目被覆盖）。
+
+    `dt`：本时点由 advance() 推进的天数（0=登记不推进/旧数据无此字段）。
+    留痕目的：`rollback_chapter` 按章回退时据此逆推 `now`（2026-09-05 幂等修复）。
     """
     data = load_timeline(ws, project_id)
     max_n = 0
@@ -199,6 +203,8 @@ def append_timeline(ws, project_id: str, *, event: str, t: int, vol: int, ch: in
         "at": {"t": int(t), "vol": int(vol), "ch": int(ch)},
         "in_chapters": [{"vol": int(vol), "ch": int(ch)}],
     }
+    if dt:
+        entry["dt"] = int(dt)
     data.append(entry)
     save_timeline(ws, project_id, data)
     return entry
@@ -219,8 +225,36 @@ def advance(ws, project_id: str, dt: int, *, vol: int, ch: int, event: str = "")
     _save(ws, project_id, state)
     append_timeline(ws, project_id,
                     event=event or (f"时间推进 {dt} 日" if dt else "同日内推进"),
-                    t=new_now, vol=vol, ch=ch)
+                    t=new_now, vol=vol, ch=ch, dt=int(dt) if dt > 0 else 0)
     return new_now
+
+
+def rollback_chapter(ws, project_id: str, vol: int, ch: int) -> dict:
+    """按章回退时间轴（章节重写前置清理，2026-09-05 幂等修复）。
+
+    删除该章登记的全部 timeline 条目，并按条目 `dt` 逆推 `worldstate.time.now`
+    （旧数据无 dt 字段则只删条目不回拨——宁保守不猜）。返回 `{"removed": n,
+    "rewound": dt}`。
+    """
+    data = load_timeline(ws, project_id)
+    kept, removed, rewound = [], 0, 0
+    for e in data:
+        at = e.get("at") if isinstance(e, dict) else None
+        if (isinstance(at, dict) and int(at.get("vol", -1)) == vol
+                and int(at.get("ch", -1)) == ch):
+            removed += 1
+            try:
+                rewound += int(e.get("dt") or 0)
+            except (TypeError, ValueError):
+                pass
+            continue
+        kept.append(e)
+    if removed:
+        save_timeline(ws, project_id, kept)
+        state = _load(ws, project_id)
+        state["time"]["now"] = max(0, now_of(state) - rewound)
+        _save(ws, project_id, state)
+    return {"removed": removed, "rewound": rewound}
 
 
 def resolve_who(what: str, name_to_id: dict[str, str]) -> str:
@@ -417,6 +451,15 @@ def tick(ws, project_id: str, *, vol: int, ch: int, chapter_text: str = ""
             continue
         if rep.now < due:
             continue
+        # 幂等护栏（2026-09-05）：同一章重跑不得重复递增 overdue——
+        # 否则重跑一次多吃一章宽限，把本还有余量的日程提前打成软 block。
+        ch_key = f"{int(vol)}-{int(ch)}"
+        counted = p.setdefault("overdue_by", [])
+        if not isinstance(counted, list):
+            counted = p["overdue_by"] = []
+        if ch_key in counted:
+            continue
+        counted.append(ch_key)
         od = int(p.get("overdue") or 0) + 1
         p["overdue"] = od
         changed = True

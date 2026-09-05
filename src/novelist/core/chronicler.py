@@ -98,6 +98,20 @@ PERSPECTIVE_PROMPT = """你是记忆编纂员。下面是刚写完的一段正�
 """
 
 
+def _chapter_window(text: str, max_chars: int, *, head_chars: int = 800) -> str:
+    """章级抽取输入窗口：头 + 尾（H2 修复，2026-09-05）。
+
+    原 tail-only 截断（`text[-max_chars:]`）会漏掉章头的事件/状态/**时间行**——
+    时间行是 worldstate.time 推进的唯一来源，漏抽即本章时间静默停走。
+    头部固定保留前 head_chars 字（开篇事件与时间锚点密度最高），其余预算给尾部。
+    """
+    if len(text) <= max_chars:
+        return text
+    head = min(head_chars, max(0, max_chars // 3))
+    tail = max(max_chars - head, 1)
+    return text[:head] + "\n……（中段略）……\n" + text[-tail:]
+
+
 @dataclass
 class ExtractedEvent:
     summary: str
@@ -208,7 +222,7 @@ class Chronicler:
             LLMRequest(
                 messages=[LLMMessage(role="user",
                                      content=EXTRACT_PROMPT.format(max_events=max_events)
-                                     + chapter_text[-max_chars:])],
+                                     + _chapter_window(chapter_text, max_chars))],
                 max_tokens_out=450,
                 temperature=0.3,
             )

@@ -157,7 +157,11 @@ def test_detect_gaps_role_pseudo_path_resolves():
 
 def test_group_slots_rounds():
     rounds = group_slots(slots_for_genre(load_pack("修仙男频")))
-    assert [name for name, _ in rounds] == ["书级必填", "世界与规则", "文风与叙事", "人物与伏笔"]
+    names = [name for name, _ in rounds]
+    # H4 修复（2026-09-05）：超出 per_round 的槽位顺延"（续）"轮，不再静默丢弃
+    base = [n for n in names if not n.endswith("（续）")]
+    assert base == ["书级必填", "世界与规则", "文风与叙事", "人物与伏笔"]
+    assert any(n.endswith("（续）") for n in names)  # 溢出槽位有续轮
     for _, items in rounds:
         assert len(items) <= 4
 

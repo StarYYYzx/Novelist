@@ -191,7 +191,9 @@ def _is_filled(value: Any) -> bool:
 def group_slots(slots: list[Slot], per_round: int = 4) -> list[tuple[str, list[Slot]]]:
     """按 slot.group 分组；无显式 group 的按 required 优先补进前组。
 
-    返回 [(组名, [Slot…])]，每组 ≤ per_round 问。
+    返回 [(组名, [Slot…])]，每组 ≤ per_round 问。超出一轮的槽位**顺延到
+    下一轮**（H4 修复，2026-09-05：原先 items[:per_round] 静默丢弃第 5 个槽位，
+    protagonist.core_traits 因此从未被问过）。
     """
     grouped: dict[int, list[Slot]] = {}
     for s in slots:
@@ -203,5 +205,8 @@ def group_slots(slots: list[Slot], per_round: int = 4) -> list[tuple[str, list[S
     rounds: list[tuple[str, list[Slot]]] = []
     for g in sorted(grouped):
         items = grouped[g]
-        rounds.append((GROUP_LABELS.get(g, f"第 {g} 轮"), items[:per_round]))
+        label = GROUP_LABELS.get(g, f"第 {g} 轮")
+        for i in range(0, len(items), per_round):
+            chunk = items[i:i + per_round]
+            rounds.append((label if i == 0 else f"{label}（续）", chunk))
     return rounds

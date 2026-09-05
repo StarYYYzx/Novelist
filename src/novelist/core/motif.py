@@ -76,15 +76,50 @@ class MotifLedger:
             pass
 
     # ---- 记账 / 查询 ----
+    def remove_chapter(self, ch: int) -> int:
+        """清掉某章的母题记账（重跑幂等，2026-09-05）。
+
+        同章重生成时以最新正文为准：先清该章旧账再入新账，防 count 翻倍、
+        禁令虚增触发。legacy 条目（无 by_ch）按"每章记 1 次"归一 count——
+        顺带治愈历史重跑造成的 count 虚高。返回受影响条目数。
+        """
+        touched = 0
+        for e in self.entries:
+            chs = e.get("chapters")
+            by = e.get("by_ch")
+            if not (isinstance(chs, list) and ch in chs) and not (isinstance(by, dict) and str(ch) in by):
+                continue
+            touched += 1
+            if isinstance(chs, list):
+                e["chapters"] = [c for c in chs if c != ch]
+            if isinstance(e.get("by_ch"), dict) and e["by_ch"]:
+                e["by_ch"].pop(str(ch), None)
+                e["count"] = sum(int(v) for v in e["by_ch"].values())
+            elif isinstance(e.get("chapters"), list):
+                e["count"] = len(e["chapters"])
+        if touched:
+            self.entries = [e for e in self.entries if int(e.get("count") or 0) > 0]
+        return touched
+
     def add_text(self, text: str, ch: int) -> int:
-        """从正文抽取母题并入账。返回新增（含合并）条数。"""
+        """从正文抽取母题并入账。返回新增（含合并）条数。
+
+        累计语义：同一章多次调用会累计（历史行为，测试与外部调用依赖）。
+        **章节重跑幂等由调用方保证**：orchestrator 在 add_text 前先调
+        `remove_chapter(ch)` 清旧账（I2 修复，2026-09-05）——这样单章内
+        多段入账仍能累计，重跑又不会翻倍。
+        """
         added = 0
         for m in extract_motifs(text):
             key = _norm(m)
             ent = next((e for e in self.entries if e.get("motif") == key), None)
             if ent is None:
-                self.entries.append({"motif": key, "count": 1, "chapters": [ch]})
+                self.entries.append({"motif": key, "count": 1, "chapters": [ch],
+                                     "by_ch": {str(ch): 1}})
             else:
+                by = ent.setdefault("by_ch", {})
+                if isinstance(by, dict):
+                    by[str(ch)] = int(by.get(str(ch), 0)) + 1
                 ent["count"] = int(ent.get("count") or 0) + 1
                 if ch not in (ent.get("chapters") or []):
                     ent.setdefault("chapters", []).append(ch)

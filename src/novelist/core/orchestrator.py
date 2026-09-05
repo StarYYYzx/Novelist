@@ -20,9 +20,21 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from .llm import LLMMessage, LLMRequest
+
+
+def _env_int(name: str, default: int) -> int:
+    """读整型环境变量（H10：prompt 预算等无 CLI 通路的开关）。非法值回退默认。"""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
 
@@ -42,7 +54,8 @@ class ProductionResult:
                  pending_tick: dict | None = None,
                  chapter_title: str = "", directions_built: int = 0,
                  perspectives_written: int = 0, broadcasts_built: int = 0,
-                 rel_pairs: int = 0, rel_proposals: int = 0):
+                 rel_pairs: int = 0, rel_proposals: int = 0,
+                 soft_failures: list[str] | None = None):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -75,6 +88,9 @@ class ProductionResult:
         self.broadcasts_built = broadcasts_built  # 本轮广播成功次数（ADR-021 选角推理）
         self.rel_pairs = rel_pairs        # 章末实然关系账本 pair 数（ADR-023）
         self.rel_proposals = rel_proposals  # 阈值触发的翻转提案数（入 enrich pending）
+        # H1 修复（2026-09-05）：增强层"静默吞异常"的可观测出口——接缝审查/回写/
+        # 润色等失败与"检查通过"在结果上不可区分，这里显式留痕供 CLI/审计展示。
+        self.soft_failures = soft_failures or []
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -282,7 +298,10 @@ _SEAM_CHARS = 300  # 事件间接缝：取上一事件末尾若干字，让模�
 # 窗口>接缝部分承担"让模型看见前文发生了什么"的反重演职责；预算默认关（0），
 # 本地 9B 思考 token 两头夹击时建议 9000~12000，云端/DeepSeek 可放开或不设。
 _PROSE_WINDOW_CHARS = 1200
-_PROMPT_CHAR_BUDGET = 0
+# H10 修复（2026-09-05）：支持环境变量覆盖（原先硬编码 0 且无外部通路，M3t 预算器
+# 是死代码——ch7 OOM 场景实际无防护）。NOVELIST_PROMPT_CHAR_BUDGET=9000~12000
+# 供本地 9B 思考 token 两头夹击时启用；云端/DeepSeek 不设（0=关闭）。
+_PROMPT_CHAR_BUDGET = _env_int("NOVELIST_PROMPT_CHAR_BUDGET", 0)
 
 _SCRIPT_INSTRUCTION = ("""
 
@@ -450,8 +469,14 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
     return text
 
 
-def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> list[str]:
-    """事件级先忆（检索是本地操作，不花 LLM 调用）。失败静默返回空。"""
+def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4,
+                exclude_src: tuple[int, int] | None = None) -> list[str]:
+    """事件级先忆（检索是本地操作，不花 LLM 调用）。失败静默返回空。
+
+    `exclude_src`：排除本章 (vol, ch) 的碎片——回写即增量更新 RAG（H12 修复，
+    2026-09-05），事件 i 的检索结果天然包含事件 i-1 的摘要，注入【相关前情】
+    等于引导模型复述刚写过的内容。
+    """
     try:
         from .memory import MemoryIndex, MemoryQuery, MemoryRetriever
 
@@ -462,8 +487,16 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> l
             return []
         hits = MemoryRetriever(idx, embedding=embedding).query(
             MemoryQuery(query=query, top_k=top_k))
-        return [f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}"
-                for h in hits if h.score > 0]
+        out = []
+        for h in hits:
+            if h.score <= 0:
+                continue
+            if exclude_src is not None \
+                    and (h.source or {}).get("vol") == exclude_src[0] \
+                    and (h.source or {}).get("ch") == exclude_src[1]:
+                continue
+            out.append(f"- [{h.kind} @ {h.source.get('vol')}:{h.source.get('ch')}] {h.text}")
+        return out
     except Exception:  # noqa: BLE001
         return []
 
@@ -471,6 +504,7 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> l
 def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: int = 3) -> list[str]:
     """最近 1 章固定回退（讨论第 8 轮·用户拍板）：相关检索召回的是语义相似事件，
     未必是时间上最近的事件——长卷下模型容易忘了刚发生的事。直接带最近一章事件。
+    跨卷：卷首章回看前一卷末章（F3 修复，2026-09-05）。
     """
     try:
         import json as _json
@@ -481,15 +515,23 @@ def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: in
         events = _json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return []
-    prev = [(e, (e.get("at") or {}).get("ch", 0)) for e in events
-            if isinstance(e, dict) and int((e.get("at") or {}).get("vol", 0) or 0) == vol
-            and int((e.get("at") or {}).get("ch", 0) or 0) < ch]
+    loc = _prev_chapter_loc(ws, project_id, vol, ch)
+    if loc is None:
+        return []
+
+    def _k(e: dict) -> tuple[int, int]:
+        at = e.get("at") or {}
+        try:
+            return int(at.get("vol", 0) or 0), int(at.get("ch", 0) or 0)
+        except (TypeError, ValueError):
+            return 0, 0
+
+    prev = [e for e in events if isinstance(e, dict) and (0, 0) < _k(e) <= loc]
     if not prev:
         return []
-    latest_ch = max(c for _, c in prev)
-    out = [f"- [最近 {latest_ch} 章] {e.get('summary', '')}"
-           for e, c in prev if c == latest_ch]
-    return out[:max_items]
+    latest = max(_k(e) for e in prev)
+    return [f"- [最近 {latest[0]}:{latest[1]}] {e.get('summary', '')}"
+            for e in prev if _k(e) == latest][:max_items]
 
 
 # ---------------------------------------------------------------- 递归分层 B：世界观滚动补充
@@ -681,18 +723,41 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
         return None
 
 
+def _prev_chapter_loc(ws, project_id: str, vol: int, ch: int,
+                      *, max_scan: int = 200) -> tuple[int, int] | None:
+    """定位"上一章"的位置：同卷 ch-1；卷首回退到**前一卷末章**（跨卷接缝，F3 修复）。
+
+    返回 (vol, ch) 或 None（全书第一章）。按文件存在性从高章号向下扫。
+    """
+    if ch > 1:
+        return vol, ch - 1
+    pv = vol - 1
+    if pv < 1:
+        return None
+    for c in range(max_scan, 0, -1):
+        try:
+            if (ws.draft_path(project_id, pv, c).exists()
+                    or ws.chapter_path(project_id, pv, c).exists()):
+                return pv, c
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def _prior_chapter_text(ws, project_id: str, vol: int, ch: int, max_chars: int = 1200) -> str:
     """回读机制（第七批第 4 条·用户拍板）：取前 1 章正文**原文**尾部（非摘要）。
 
     记忆摘要会丢细节（"赵铁山被问话时手抖了一下"这类伏笔级细节），
     回读原文补上；与最近章记忆回退互补——原文给细节、摘要给跨章语义。
+    跨卷：卷首章回退到前一卷末章（F3 修复，2026-09-05）。
     """
     try:
-        prev_ch = ch - 1
-        if prev_ch < 1:
+        loc = _prev_chapter_loc(ws, project_id, vol, ch)
+        if loc is None:
             return ""
+        prev_vol, prev_ch = loc
         for base in (ws.chapter_path, ws.draft_path):
-            p = base(project_id, vol, prev_ch)
+            p = base(project_id, prev_vol, prev_ch)
             if not p.exists():
                 continue
             text = p.read_text(encoding="utf-8").strip()
@@ -1292,6 +1357,7 @@ def produce_chapter(
     # ---- 批次三（2026-09-05 用户拍板 1/2/3/4 全做）----
     seam_review: bool = False,     # 方案2：事件接缝 LLM 复述审查（strip_seam_overlap 的语义层）
     volume_facts: bool = False,    # 方案3：卷末章生成后自动产"本卷事实清单"（LLM 通读本卷）
+    reset_state: bool = True,      # 写章前按 (vol,ch) 清理上一轮回写（重跑幂等，F4/I1-I4）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -1310,6 +1376,24 @@ def produce_chapter(
     sess = session or SessionInfo(project_id=project_id, agent="orchestrator")
     # F7.1：整章 LLM 用量聚合（含嵌套函数与编纂），出口统一写审计
     provider = _UsageCounter(provider)
+
+    # ---- 0) 章节重写前置清理（2026-09-05 F4/I1-I4：重跑不再新旧并存）----
+    # 先快照受影响状态文件再按 (vol,ch) 回退记忆层+时间轴；生成失败则 restore，
+    # 避免"清了旧数据又没写进新数据"的中间态。母题/实体/tick 的按章幂等内置于各自模块。
+    _reset_snap = None
+    if reset_state:
+        try:
+            from .chapter_reset import ChapterSnapshot, prepare_rewrite, snapshot_report
+
+            _reset_snap = ChapterSnapshot(ws, project_id)
+            _reset_snap.capture()
+            _reset_stats = prepare_rewrite(ws, project_id, vol, ch, embedding=embedding)
+            _removed = (sum(int(v) for v in (_reset_stats.get("memory") or {}).values())
+                        + int((_reset_stats.get("timeline") or {}).get("removed") or 0))
+            if _removed:
+                print(f"[ch {vol}-{ch}] {snapshot_report(_reset_stats)}", flush=True)
+        except Exception:  # noqa: BLE001 - 前置清理失败不阻断写章（回退旧语义）
+            _reset_snap = None
 
     # ---- 1) 圣经注入（B-02）----
     bible_injected = False
@@ -1350,7 +1434,8 @@ def produce_chapter(
         try:
             # 历史教训不进 system prompt（第 8 轮 RAG 化后死参数已删，审计 §2.1）——
             # review_lessons.json 只走知识层检索路径
-            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories, genre=genre)
+            ctx = build_chapter_context(ws, project_id, vol, ch, memories=memories,
+                                        genre=genre, event_loop=event_loop)
             system_prompt, final_goal = ctx.system_prompt, ctx.user_goal
             bible_injected = True
         except Exception:  # noqa: BLE001 - 工作区不全时退回默认提示，不阻断写章
@@ -1445,6 +1530,7 @@ def produce_chapter(
     seam_repairs = 0        # 接缝复述重生成次数（≤ _SEAM_REPAIR_MAX）
     goal_bans: list[str] = []   # goal 注入的禁令（批次三·方案4 复用给润色）
     prev_facts_txt = ""         # 前卷事实清单（批次三·方案3/4 共用）
+    soft_failures: list[str] = []  # H1：增强层失败留痕（与"检查通过"区分）
     try:
         if prefer_direct:
             mode = "direct"
@@ -1534,7 +1620,8 @@ def produce_chapter(
                 entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
-                    memories_ev = _recall_for(ws, project_id, ev_text, embedding)
+                    memories_ev = _recall_for(ws, project_id, ev_text, embedding,
+                                              exclude_src=(vol, ch))
                     # 最近 1 章固定回退（讨论第 8 轮·用户拍板）
                     recent_ev = _recent_chapter_memory(ws, project_id, vol, ch)
                     if recent_ev:
@@ -1680,7 +1767,14 @@ def produce_chapter(
                                          extra_readback=extra_rb,
                                          appeared_notes=appeared_notes,
                                          prose_window=_prose_win,
-                                         char_budget=_PROMPT_CHAR_BUDGET)
+                                         char_budget=_PROMPT_CHAR_BUDGET,
+                                         # H9 修复（2026-09-05）：原先调用点漏传
+                                         # banned_names——"广播拒绝点名"禁令整体是
+                                         # 死代码。传入并与本场 cast 求差：若该人物
+                                         # 已被本场选角确认（细纲声明不可删），禁令
+                                         # 与人物卡同场矛盾，须剔除。
+                                         banned_names=[n for n in banned_names
+                                                       if n not in cast_names])
                     # D12 跨切片位置记忆：本场出场方式记入防重复记录
                     # （在 prompt 构建之后追加——本场记录只影响后续事件）
                     _sheet_map = {d.name: d.how for d in (sheet.characters if sheet else [])}
@@ -1889,9 +1983,16 @@ def produce_chapter(
             final = runner.run_loop(goal, max_rounds=max_rounds)
             attempts = 1
             # 工具模式：正文由 write_draft 落盘，完整性以草稿文件为准（不重试）
-            if validate and len(final) >= direct_words_floor:
+            # F2 修复（2026-09-05）：final 是 Agent 结束语（非正文），完整性判定
+            # 不得基于它——直接跳过，落到下方"以草稿文件为准"分支。
+            if validate and mode == "direct" and len(final) >= direct_words_floor:
                 comp = completeness(final)
     except Exception as e:  # noqa: BLE001 - 循环/生成异常统一收敛为失败
+        if _reset_snap is not None:
+            try:
+                _reset_snap.restore()  # 生成失败 → 还原前置清理，不留中间态
+            except Exception:  # noqa: BLE001
+                pass
         _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                 phase=getattr(phase, "value", phase),
                                 note=f"生成异常：{str(e)[:60]}")
@@ -1912,6 +2013,11 @@ def produce_chapter(
             draft.parent.mkdir(parents=True, exist_ok=True)
             ws.write_text(draft, final + "\n")
         except Exception:  # noqa: BLE001
+            if _reset_snap is not None:
+                try:
+                    _reset_snap.restore()
+                except Exception:  # noqa: BLE001
+                    pass
             _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                     phase=getattr(phase, "value", phase), note="草稿落盘失败")
             return ProductionResult(ok=False, result="cannot write draft", mode=mode,
@@ -1925,18 +2031,28 @@ def produce_chapter(
 
     # ---- 4) 文风润色（成章后额外一次 LLM 调用；tone 驱动，第七批第 2 条）----
     polish_res = None
+    # F2 修复（2026-09-05）：tool 模式 final 是 Agent 结束语而非正文——
+    # 润色与落盘一律以草稿文件内容为源，杜绝"结束语润色后覆盖整章"。
+    polish_src = final
+    if mode != "direct":
+        try:
+            if draft.exists():
+                polish_src = draft.read_text(encoding="utf-8").strip() or final
+        except OSError:
+            polish_src = final
     # 事件模式此前**不做章级润色**（只做事件级，max_tokens 1500）——ch7/ch8 实证
     # AI 味 38.98→38.7 几乎不动：事件级润色各自为政，拼起来的整章从未被统一润过。
     # 章级润色按 `polish` 开关（默认关）对两种模式一视同仁。
-    if polish and final:
+    if polish and polish_src:
         # ---- 批次三·方案4：润色全局化——从"逐句美化"升级为"带全局的通读顺稿" ----
         # 实证：AI 味分润色前后基本不动（8.74→8.74），根因之一是润色只有本章文本、
         # 没有任何全局视野。这里注入：章位置/前章收尾/全局禁令/前卷事实摘要。
         _polish_global_parts: list[str] = []
         try:
             _polish_global_parts.append(f"本章位置：第 {vol} 卷第 {ch} 章")
-            if ch > 1:
-                _prev_draft = ws.draft_path(project_id, vol, ch - 1)
+            _prev_loc = _prev_chapter_loc(ws, project_id, vol, ch)  # F3：跨卷也取前章收尾
+            if _prev_loc is not None:
+                _prev_draft = ws.draft_path(project_id, *_prev_loc)
                 if _prev_draft.exists():
                     _tail = _prev_draft.read_text(encoding="utf-8").strip()[-180:]
                     _polish_global_parts.append(f"前一章收尾：…{_tail}")
@@ -1952,7 +2068,7 @@ def produce_chapter(
         _polish_global = ("\n\n【全书视野（通读顺稿用，禁止写进正文）】\n" +
                           "\n\n".join(_polish_global_parts)) if _polish_global_parts else ""
         try:
-            polish_res = polish_chapter(final, provider, vol=vol, ch=ch,
+            polish_res = polish_chapter(polish_src, provider, vol=vol, ch=ch,
                                         tone=_style_tone(ws, project_id),
                                         is_chapter=True,
                                         system_prompt=system_prompt,
@@ -1965,6 +2081,7 @@ def produce_chapter(
                     polish_res = None
         except Exception:  # noqa: BLE001 - 润色失败不阻断，保留原稿
             polish_res = None
+            soft_failures.append("polish(润色失败，保留原稿)")
 
     # ---- 4.4) 篇幅硬上限已移除（用户 2026-09-05 拍板：取消一切字数相关需求）----
     # 实证：上限从未 binding（实际 1900-2600 字 vs 8000），截断只伤完整性。
@@ -1986,6 +2103,7 @@ def produce_chapter(
             from .motif import MotifLedger
 
             _led = MotifLedger.load(ws, project_id)
+            _led.remove_chapter(ch)  # I2：重跑幂等——先清本章旧账再入新账
             _led.add_text(final, ch)
             _led.save(ws, project_id)
         except Exception:  # noqa: BLE001 - 账本失败不影响成稿
@@ -2074,7 +2192,9 @@ def produce_chapter(
             text_for_chronicle = final if mode == "direct" else (
                 draft.read_text(encoding="utf-8") if draft.exists() else "")
             if text_for_chronicle:
-                if chronicler is None and inject_bible is not False:
+                # H3 修复（2026-09-05）：inject_bible 是"圣经注入"开关（对照实验用），
+                # 不得连坐章级事件回写——否则 --no-bible 实验组静默丢失全部回写。
+                if chronicler is None:
                     from .chronicler import Chronicler
 
                     chronicler = Chronicler(ws, project_id, llm=provider, embedding=embedding,
@@ -2085,6 +2205,7 @@ def produce_chapter(
                     events = chronicle.written
     except Exception:  # noqa: BLE001 - 编纂失败不影响草稿已落盘
         chronicle = None
+        soft_failures.append("chronicle(事件回写失败)")
 
     if commit_chapter_event is None:
         # 自动兜底：有真实情节事件就不写合成事件，避免内容为空的条目污染 plot_events
@@ -2151,4 +2272,5 @@ def produce_chapter(
                             chapter_title=chapter_title, directions_built=directions_built,
                             perspectives_written=perspectives_written,
                             broadcasts_built=broadcasts_built,
-                            rel_pairs=rel_pairs, rel_proposals=rel_proposals)
+                            rel_pairs=rel_pairs, rel_proposals=rel_proposals,
+                            soft_failures=soft_failures)

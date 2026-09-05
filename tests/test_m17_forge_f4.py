@@ -234,7 +234,8 @@ def test_roll_generates_vol2_with_context(ws_factory, capsys):
     provider = ScriptedProvider(_roll_script())
     ScriptedProvider.complete = spy_complete
     try:
-        r = roll(ws, pid, provider=provider, vol=2, max_calls=40)
+        # gate=False：本测试验证四块上下文注入与生成（闸门行为在 test_flow_fixes 覆盖）
+        r = roll(ws, pid, provider=provider, vol=2, max_calls=40, gate=False)
     finally:
         ScriptedProvider.complete = real_complete
     assert r.ok, r.warnings
@@ -291,7 +292,7 @@ def test_cli_roll(ws_factory, monkeypatch, tmp_path, capsys):
                         lambda p: ScriptedProvider(_roll_script()))
     monkeypatch.chdir(str(ws._abs("")))
     runner = CliRunner()
-    result = runner.invoke(cli, ["forge", "roll", "2", pid, "--provider", "fake"])
+    result = runner.invoke(cli, ["forge", "roll", "2", pid, "--provider", "fake", "--no-gate"])
     assert result.exit_code == 0, result.output
     assert "roll vol 2 done" in result.output
     assert ws.outline_chapter_path(pid, 2, 2).exists()

@@ -7,8 +7,10 @@ F1 最小树三个节点：
   `key_events:`/`出场人物:` 双通道——`parse_key_events`/`parse_cast_decl` 都是行内 regex）。
 
 节点协议（LLM 输出）：`{"artifact": {...}|null, "decide": "done|expand", "reason": "...",
-"children": [...], "open_questions": [...]}`。F1 树形由引擎确定性展开（expand/children
-仅记录到 reason/日志，arc/beat 层 F4 提供）。
+"children": [...], "open_questions": [...]}`。**decide=expand 由引擎驱动递归**：
+volume→arc、chapter→beat（F4b/F4c）、worldview/character_group→子层（F4 DFS）——
+叶节点（style/thread_set/arc/beat/character/setting_entry）的 prompt 不再要求
+decide/children（H11：要求了也被确定性丢弃，白耗 token）。
 
 落盘：
 - `sync_bible`：蓝图 → bible 文件**确定性全量重写**（剥离 role、补默认字段、主角引用），零 LLM；
@@ -194,6 +196,10 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
     }
     if anchors:
         fixed["硬性锚点（用户原话，一字不得改写，时间跨度/数值/年龄均以此为准）"] = anchors
+    # F5 修复（2026-09-05）：商讨轮 meta.endgame 此前无任何消费者（死数据流）——
+    # 用户拍板的结局走向必须进 book/volume prompt，卷规划才收敛于既定结局。
+    if meta.get("endgame"):
+        fixed["结局走向（用户拍板，volumes 规划须收敛于此）"] = meta.get("endgame")
     user = f"""你是网文立项设定师。为一部新书产出完整设定骨架。只输出 JSON，不要任何解释。
 
 【创意提炼 / 已确定项（不得改动，须原样保留）】
@@ -226,11 +232,20 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     anchors_block = _anchors_block(ctx)
     anchor_section = (f"\n\n【硬性锚点（用户原话，本卷主线不得与之矛盾或偷改数值）】\n{anchors_block}"
                       if anchors_block else "")
+    # F5：结局走向约束（末卷必须兑现；非末卷须朝它推进）
+    endgame = (bp.get("meta") or {}).get("endgame")
+    endgame_section = ""
+    if endgame:
+        is_final = vol >= int(scale.get("volumes", 1) or 1)
+        endgame_section = (f"\n\n【结局走向（用户拍板）：{endgame}】\n"
+                           + ("本卷为末卷——主线必须在本卷收敛到该结局，"
+                              "不得再开新主线钩子。" if is_final else
+                              "本卷主线须朝该结局实质推进，不得偏离。"))
     user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}{anchor_section}
+【流派卷弧提示】{arc}{anchor_section}{endgame_section}
 
 【输出 JSON】
 {{
@@ -381,6 +396,13 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     if recent_titles:
         title_rule = (f"\n8. 本章标题不得与近期标题（{'、'.join(recent_titles)}）"
                       "同句式，禁止套用同一标题模板（如『XX重构修仙』复读）。")
+    # G4 修复（2026-09-05）：连读审查 findings 注入**下一章细纲**——原先只进
+    # 正文侧（orchestrator goal），细纲层发现的母题重复照样固化进账本。
+    bans = [str(b) for b in ((ctx.extra or {}).get("coherence_bans") or []) if b]
+    bans_block = ""
+    if bans:
+        bans_block = ("\n\n【连读审查禁令（此前章细纲连读发现的问题，本章细纲必须规避）】\n"
+                      + "\n".join(f"- {b}" for b in bans[:8]))
     dedup_rule = ("7. key_events 严禁与【已规划事件账本】中任何条目重复或高度相似"
                   "（同主角+同动作+同对象即视为重复）；「与前一章衔接」指因果承接，"
                   "不是重复叙述同一事件。")
@@ -392,7 +414,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【前一章（因果连续，必须衔接）】
 {prev_block}
-{actual_block}{anchor_section}{ledger_block}{reject_block}
+{actual_block}{anchor_section}{ledger_block}{reject_block}{bans_block}
 【本章可用角色卡】
 {char_block}
 
@@ -406,8 +428,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 5. turns 1–3 条：本章转折/推进点。
 6. tension：一句话说清本章张力来源（主角的两难/威胁/悬念——每个事件都要服务于它，
    不是重复事件内容）。hook：章末钩子（最后一个事件以此收尾，拉住读者翻下一章）。
-{dedup_rule}{title_rule}
-{opening_rule}
+{opening_rule}{dedup_rule}{title_rule}
 
 【输出 JSON】
 {{
@@ -449,7 +470,17 @@ def _actual_events_block(ctx: NodeContext) -> str:
     return "\n".join(lines)
 
 
-def _protocol_block(fields: str) -> str:
+def _protocol_block(fields: str, *, leaf: bool = False) -> str:
+    """输出协议（H11 修复，2026-09-05）：叶节点（style/thread_set/arc/beat/
+    character/setting_entry）不再要求 decide/reason/children——引擎对叶节点的
+    decide/children 确定性丢弃，要求模型产出只是浪费输出 token，且若模型把
+    实质内容只写进 children 会静默丢失。
+    """
+    if leaf:
+        return f"""【输出 JSON】
+{{
+{fields}}}
+- 只输出 JSON。"""
     return f"""【输出 JSON】
 {{
 {fields}
@@ -518,7 +549,7 @@ def _setting_entry_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【要点】{json.dumps(child, ensure_ascii=False)}
 
-{_protocol_block('  "artifact": {"id": "set:xxx", "keywords": ["词1", "词2"], "text": "设定正文（一段话，含数值/边界等硬细节）"},')}"""
+{_protocol_block('  "artifact": {"id": "set:xxx", "keywords": ["词1", "词2"], "text": "设定正文（一段话，含数值/边界等硬细节）"},', leaf=True)}"""
     return "你是设定条目撰写者（Forge setting_entry 节点，docs/10 §7.1 L3）。", user
 
 
@@ -559,7 +590,7 @@ power（level+faction）/arc（人物弧线一句话）/first_appear{{vol,ch}}/r
 （[{{"target": "char:xxx", "type": "关系", "note": "一句话"}}]，target 必须是已有角色 id）/
 secret（人物秘密，可空字符串）。id 用原骨架的 id。
 
-{_protocol_block('  "artifact": { …完整人物卡… },')}"""
+{_protocol_block('  "artifact": { …完整人物卡… },', leaf=True)}"""
     return "你是人物卡撰写者（Forge character 节点，docs/10 §7.1 L2）。", user
 
 
@@ -577,7 +608,7 @@ def _style_prompt(ctx: NodeContext) -> tuple[str, str]:
 forbidden_words[]（禁用词，含现代词与陈词滥调）/glossary[{{term,note}}]（本书术语表）。
 不改 pov/tense（已与商讨答案对齐）。
 
-{_protocol_block('  "artifact": { …完整文风… },')}"""
+{_protocol_block('  "artifact": { …完整文风… },', leaf=True)}"""
     return "你是文风定稿师（Forge style 节点，docs/10 §7.1 L1）。", user
 
 
@@ -596,7 +627,7 @@ def _thread_set_prompt(ctx: NodeContext) -> tuple[str, str]:
 payoff_desc（回收方式一句话）；scope=volume 的必须有 target_vol；可新增 1–3 条卷级小伏笔（id pt:xxx）。
 伏笔要能被章节细纲的 threads_involved 引用。
 
-{_protocol_block('  "artifact": {"threads": [ …伏笔清单… ]},')}"""
+{_protocol_block('  "artifact": {"threads": [ …伏笔清单… ]},', leaf=True)}"""
     return "你是伏笔布局师（Forge thread_set 节点，docs/10 §7.1 L1）。", user
 
 
@@ -612,7 +643,7 @@ def _arc_prompt(ctx: NodeContext) -> tuple[str, str]:
 【要求】artifact = {{"title": "弧名", "brief": "弧线一句话", "focus": "冲突/势力/场景重点",
 "chapters_hint": "建议覆盖的章数与节奏，如'第 3–5 章：铺垫→交锋→反转'"}}。
 
-{_protocol_block('  "artifact": { …本弧产物… },')}"""
+{_protocol_block('  "artifact": { …本弧产物… },', leaf=True)}"""
     return "你是章段弧线师（Forge arc 节点，docs/10 §7.1 L2）。", user
 
 
@@ -629,7 +660,7 @@ def _beat_prompt(ctx: NodeContext) -> tuple[str, str]:
 【要求】artifact = {{"beats": ["拍1：场景/动作/情绪一句话", "拍2：…", …]}}；4–8 拍，
 按叙事顺序，每拍一句话，关键拍标注情绪强度（如"高"）。
 
-{_protocol_block('  "artifact": {"beats": ["…"]},')}"""
+{_protocol_block('  "artifact": {"beats": ["…"]},', leaf=True)}"""
     return "你是重场戏节拍师（Forge beat 节点，docs/10 §7.1 L4）。", user
 
 
@@ -1448,8 +1479,10 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
     merged = {}
     for sec in sections:
         if sec in new:
-            merged[sec] = new[sec]
-            bp.data[sec] = new[sec]
+            # G6 修复（2026-09-05）：整段替换改为**保护合并**——与正常落库路径
+            # _apply_items 同一契约（docs/10 §7.6 user 字段永不被模型产物覆盖）。
+            bp.data[sec] = _merge_protected_section(bp, sec, bp.data.get(sec), new[sec])
+            merged[sec] = bp.data[sec]  # diff 以实际合并结果为准（保护字段不算变更）
     if not merged:
         raise ValueError(f"revise reply missing section keys {sections}")
     bp.data["rev"] = int(bp.data.get("rev") or 1) + 1
@@ -1460,6 +1493,44 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
 
 
 # ---- 确定性落盘（零 LLM）----
+
+def _merge_protected_section(bp: Blueprint, sec: str, old, new):
+    """整段修订的保护合并（G6 修复，2026-09-05）。
+
+    - dict 段：逐键合并，`bp.is_protected(f"{sec}.{k}")` 的键保留旧值；
+    - list 段：按 id upsert 逐字段保护；新段未提及的旧条目**保留**（修订只动
+      建议相关条目，防误删——保守优先于灵活）；
+    - 结构不匹配/空旧值：退回直接替换（无从保护）。
+    """
+    if isinstance(old, dict) and isinstance(new, dict):
+        out = dict(old)
+        for k, v in new.items():
+            if bp.is_protected(f"{sec}.{k}"):
+                continue
+            out[k] = v
+        return out
+    if isinstance(old, list) and isinstance(new, list):
+        old_items = {x.get("id"): dict(x) for x in old
+                     if isinstance(x, dict) and x.get("id")}
+        out: list = []
+        for item in new:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            iid = item["id"]
+            if iid in old_items:
+                m = old_items[iid]
+                for k, v in item.items():
+                    if not bp.is_protected(f"{sec}[{iid}].{k}"):
+                        m[k] = v
+                out.append(m)
+            else:
+                out.append(dict(item))
+        for iid, x in old_items.items():
+            if all(it.get("id") != iid for it in out):
+                out.append(x)
+        return out
+    return new
+
 
 # 运行态字段白名单：这些字段由生成/回写组件维护（交代状态机 verify、编纂员伏笔流转、
 # worldstate 状态域），蓝图里没有真实值。sync_bible 可能晚于生成运行（蓝图修订重落盘），
@@ -1568,6 +1639,14 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
         row = dict(t)
         row.setdefault("status", "unplanned")
         row.setdefault("scope", "book")
+        # F6 修复（2026-09-05）：thread_set 产出的 plant_vol 此前被白名单丢弃、
+        # V6 伏笔密度检查读的 planted.vol 全链路无人写（恒空转）。这里映射为
+        # schema 的 planted={vol, ch:0}（ch 未知按 0，回收判定按卷粒度）。
+        if row.get("plant_vol") is not None and not row.get("planted"):
+            try:
+                row["planted"] = {"vol": int(row["plant_vol"]), "ch": 0}
+            except (TypeError, ValueError):
+                pass
         threads.append({k: v for k, v in row.items()
                         if k in ("id", "desc", "scope", "target_vol", "planted",
                                  "status", "report_deadline", "returned", "revision",

@@ -336,6 +336,22 @@ def _v4_smoke(ws: Workspace, project_id: str, res: ValidateResult) -> None:
         from ..providers.fake import FakeProvider
         from ..tools import build_registry
 
+        # G7 修复（2026-09-05）：冒烟会把 FakeProvider 产物写进真实项目
+        # （drafts/chapters/1-1.md + 记忆回写）——跑前备份受影响文件，跑后还原，
+        # 原先会静默覆盖真实草稿。备份失败则拒绝冒烟（宁缺勿错）。
+        _targets = [ws.draft_path(project_id, 1, 1)]
+        _backup: list[tuple[object, bytes | None]] = []
+        try:
+            for _p in _targets:
+                _backup.append((_p, _p.read_bytes() if _p.exists() else None))
+            _mem_events = ws._abs(f"{project_id}/memory/plot_events.json")  # noqa: SLF001
+            _backup.append((_mem_events, _mem_events.read_bytes() if _mem_events.exists() else None))
+            _wsp = ws.bible_path(project_id, "worldstate")
+            _backup.append((_wsp, _wsp.read_bytes() if _wsp.exists() else None))
+        except OSError as e:
+            res.add("V4", "warn", f"冒烟前备份失败，跳过冒烟: {e}")
+            return
+
         reg = build_registry(ws, gate=PermissionGate(), approvals=ApprovalQueue(),
                              decision_fn=lambda r: "allow")
         prod = produce_chapter(
@@ -356,6 +372,17 @@ def _v4_smoke(ws: Workspace, project_id: str, res: ValidateResult) -> None:
         res.smoke_ok = True
     except Exception as e:  # noqa: BLE001 - 冒烟任何异常都算不通过
         res.add("V4", "block", f"冒烟异常: {type(e).__name__}: {e}")
+    finally:
+        try:
+            for _p, _blob in _backup:
+                if _blob is None:
+                    if _p.exists():
+                        _p.unlink()
+                else:
+                    _p.parent.mkdir(parents=True, exist_ok=True)
+                    _p.write_bytes(_blob)
+        except OSError as e:  # pragma: no cover
+            res.add("V4", "warn", f"冒烟后还原失败（真实文件可能被冒烟产物覆盖）: {e}")
 
 
 # ---- V5：质量提示（warn）----

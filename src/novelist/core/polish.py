@@ -449,11 +449,18 @@ def polish_chapter(
     after = measure(new_text)
 
     # 保底：润色不得把章节弄坏（截断，或砍掉大半篇幅）
+    # G5 修复（2026-09-05）：原先只拦"结尾非句末标点"或"篇幅 <35%"——
+    # 输出在 60% 处被截且末字恰为句号时后 40% 被无声丢掉并覆盖草稿。
+    # 现补两道：finish_reason=length 一票否决；整章级文本（≥500 字）篇幅
+    # <70% 一票否决（润色只改文风不删情节）。事件级小片段仍用 35% 下限，
+    # 片段改写合法缩幅较大，不应误杀。
+    fr = str(getattr(res, "finish_reason", "") or "")
+    length_floor = 0.70 if len(text) >= 500 else 0.35
     comp = completeness(new_text)
-    if not comp["ends_properly"] or comp["chars"] < len(text) * 0.35:
+    if fr == "length" or not comp["ends_properly"] or comp["chars"] < len(text) * length_floor:
         return PolishResult(text=text, before=before, after=before, changed=False,
                             note=f"polish degraded the chapter (chars={comp['chars']}, "
-                                 f"ends={comp['ends_properly']}); kept original")
+                                 f"ends={comp['ends_properly']}, finish={fr or 'n/a'}); kept original")
     if after.score > before.score:
         return PolishResult(text=text, before=before, after=after, changed=False,
                             note=f"polish did not improve ({before.score} -> {after.score}); kept original")

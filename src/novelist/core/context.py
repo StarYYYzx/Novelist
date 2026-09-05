@@ -141,12 +141,14 @@ def _mark_protagonist(bible: dict) -> None:
 
 
 def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
-                        *, genre: str | None = None) -> str:
+                        *, genre: str | None = None,
+                        event_loop: bool = False) -> str:
     """装配 system prompt：世界观 + 文风 + 人物卡 + 输出纪律。
 
     历史教训（review_lessons.json）不在此注入：第 8 轮已 RAG 化改由知识层检索
     （knowledge.py），system prompt 级无条件注入会诱发"细纲未覆盖误报→提前补写
     后续事件"（prompt 作用审计 §2.1，lessons 死参数已删）。
+    `event_loop`：事件循环模式——输出格式改为"不写标题"（H8，与事件 discipline 一致）。
     """
     wv = bible.get("worldview") or {}
     st = bible.get("style") or {}
@@ -265,6 +267,13 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     L.append("")
     L.append("【输出格式】直接输出正文。第一行是章节标题，形如：## 第X章 标题。"
              "不要写卷名，不要写前言、后记、注释或任何说明文字。")
+    if event_loop:
+        # H8 修复（2026-09-05）：事件循环下每事件 discipline 要求"不要写章节标题"，
+        # system 却要求"第一行写标题"——同场矛盾指令是事件边界复读标题的成因之一。
+        # 事件模式：标题由整章拼完后统一拟（ADR-020 延迟拟题）。
+        L.pop()
+        L.append("【输出格式】直接输出正文片段。**不要写章节标题**、不要写「第X章」字样"
+                 "（标题在整章完成后统一拟写）。不要写前言、后记、注释或任何说明文字。")
     return "\n".join(L)
 
 
@@ -277,8 +286,9 @@ def build_chapter_context(
     gist_text: str | None = None,
     memories: list[str] | None = None,
     genre: str | None = None,
-    gist_max_chars: int = 1200,
+    gist_max_chars: int = 2400,  # H13（2026-09-05）：1200 会截掉超长细纲尾部要点
     max_cast: int = 16,
+    event_loop: bool = False,  # H8：事件循环模式 system 输出格式改"不写标题"
 ) -> ChapterContext:
     """装配一章的完整生成上下文（圣经注入的入口）。"""
     bible = load_bible(ws, project_id)
@@ -299,7 +309,8 @@ def build_chapter_context(
     if not cast and bible.get("characters"):
         cast = [c for c in bible["characters"] if isinstance(c, dict)][:1]
 
-    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre)
+    system_prompt = build_system_prompt(bible, cast, vol, ch, genre=genre,
+                                        event_loop=event_loop)
 
     goal: list[str] = [f"请撰写第 {vol} 卷第 {ch} 章正文。"]
     if gist_text:
@@ -313,6 +324,9 @@ def build_chapter_context(
             _g = _g.lstrip()
             _nl = _g.find("\n")
             _g = _g[_nl + 1:] if _nl >= 0 else ""
+        # H13 修复（2026-09-05）：上限 1200→2400——事件循环用完整细纲逐事件声明，
+        # 而 goal 里的【细纲】被 head-only 截断，超长细纲尾部要点模型看不见，
+        # "细纲未覆盖"类误报/漏写。2400 字仍守住 goal 钉死层预算。
         goal += ["", "【细纲】（必须逐条落实，不得遗漏要点）", _g.strip()[:gist_max_chars]]
     if memories:
         goal += ["", "【前情提要】（先忆：必须与以下已发生的事实保持连续）", *memories]

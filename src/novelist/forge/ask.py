@@ -54,6 +54,7 @@ class RoundQuestion:
 class RoundAnswer:
     values: dict[str, AnsweredValue]  # slot_key -> 采纳值
     quit: bool = False  # 用户 q 提前退出
+    note: str = ""  # 解析告警（H6：序号越界等，供调用方提示——静默丢弃即 bug）
 
 
 @dataclass
@@ -82,9 +83,16 @@ def parse_round_line(line: str, qs: list[RoundQuestion]) -> RoundAnswer:
     m = _ROUND_RE.match(line)
     if not m:
         # 无法识别：保守全取推荐值（不把整行当自由答案，避免误写）
-        return RoundAnswer({q.slot.key: _default_value(q) for q in qs})
+        return RoundAnswer({q.slot.key: _default_value(q) for q in qs},
+                           note=f"无法识别的输入「{line[:40]}」，已全取推荐值")
     n = int(m.group(1))
     rest = m.group(2).strip()
+    if not (1 <= n <= len(qs)):
+        # H6 修复（2026-09-05）：序号越界原先静默丢弃用户答案（全部槽位取推荐值
+        # 且无任何提示）。现在显式告警，其余槽位仍取推荐值。
+        return RoundAnswer({q.slot.key: _default_value(q) for q in qs},
+                           note=f"序号 {n} 超出本轮题数 {len(qs)}，"
+                                f"输入「{line[:40]}」未被采纳，已全取推荐值")
     values: dict[str, AnsweredValue] = {}
     for i, q in enumerate(qs, 1):
         if i == n:
@@ -276,9 +284,14 @@ def _apply_slot_value(bp: Blueprint, slot: Slot, value: str, src: str, conf: flo
                     bg = str(found.get("background") or "").strip()
                     found["background"] = (note + ("；" + bg if bg else ""))[:200]
             bp.set_provenance(f"characters[{cid}].name", src, conf)
+            # H5 修复（2026-09-05）：双写伪路径——detect_gaps 按槽位伪路径
+            # （characters[role:*].name）查 provenance，只写实 id 键恒查空，
+            # low_confidence 复问对全部人物槽位失效。
+            bp.set_provenance(key, src, conf)
             return f"characters[{cid}].name"
         found[sub] = _to_text_list(value) if sub == "core_traits" else value
         bp.set_provenance(f"characters[{cid}].{sub}", src, conf)
+        bp.set_provenance(key, src, conf)  # H5：伪路径双写（同上）
         return f"characters[{cid}].{sub}"
     if key == "threads":
         # 结构化：主线伏笔 → {id: pt:* , desc}
@@ -351,6 +364,9 @@ def run_consult(ws: Workspace, project_id: str, bp: Blueprint, *,
                 ans = parse_round_line(line, qs)
         else:
             ans = RoundAnswer({q.slot.key: _default_value(q) for q in qs})
+        if ans.note:  # H6：解析告警显式提示 + 留痕，不再静默
+            io.notify(f"[提示] {ans.note}")
+            warnings.append(ans.note)
         for key, av in ans.values.items():
             slot = next(s for s in todo if s.key == key)
             path = _apply_slot_value(bp, slot, av.value, av.src, 1.0 if av.explicit else 0.8)

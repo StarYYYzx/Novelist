@@ -87,7 +87,12 @@ def facts_path(ws, project_id: str, vol: int):
 
 
 def load_prev_facts(ws, project_id: str, vol: int, max_chars: int = 1200) -> str:
-    """生成侧读取：第 vol-1 卷的事实清单（下一卷每章注入 goal）。"""
+    """生成侧读取：第 vol-1 卷的事实清单（下一卷每章注入 goal）。
+
+    H7 修复（2026-09-05）：原 head-only 截断会把排在清单末尾的"未回收伏笔 /
+    未决冲突"两节整节切掉——恰是跨卷最要命的信息。改为**分节配额**：
+    四节均分预算，各节内部超长再截，保证每节都进 prompt。
+    """
     if vol <= 1:
         return ""
     try:
@@ -99,9 +104,29 @@ def load_prev_facts(ws, project_id: str, vol: int, max_chars: int = 1200) -> str
         return ""
     if not t:
         return ""
-    if len(t) > max_chars:
-        t = t[:max_chars] + "\n……（截断）"
-    return t
+    if len(t) <= max_chars:
+        return t
+    # 切四节（## 人物状态 / ## 时间线 / ## 未回收伏笔 / ## 未决冲突）
+    heads = [m.start() for m in re.finditer(r"^## ", t, re.M)]
+    prelude = t[:heads[0]].strip() if heads else ""
+    sections: list[str] = []
+    for i, h in enumerate(heads):
+        end = heads[i + 1] if i + 1 < len(heads) else len(t)
+        sections.append(t[h:end].strip())
+    per = max(max_chars // max(len(sections), 1), 200)
+    out: list[str] = []
+    used = len(prelude)
+    if prelude and used < max_chars // 3:
+        out.append(prelude)
+    for sec in sections:
+        if used >= max_chars:
+            break
+        if len(sec) > per:
+            sec = sec[:per] + "\n……（本节截断）"
+        out.append(sec)
+        used += len(sec) + 2
+    result = "\n\n".join(out)
+    return result[:max_chars] if len(result) > max_chars else result
 
 
 def compact_for_polish(ws, project_id: str, vol: int, max_chars: int = 500) -> str:
