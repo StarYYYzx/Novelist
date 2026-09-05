@@ -102,6 +102,7 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
         broadcast_casting=BROADCAST_CASTING,
+        seam_review=True, volume_facts=True,
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:300], "secs": round(time.time() - t0)}

@@ -25,6 +25,20 @@ from ..core.llm import LLMMessage, LLMRequest
 
 FINDINGS_REL = "workspace/forge/coherence-v{vol}.json"
 REPORT_REL = "reports/reviews/gist-coherence-v{vol}.md"
+BP_FINDINGS_REL = "workspace/forge/coherence-blueprint.json"
+BP_REPORT_REL = "reports/reviews/gist-coherence-blueprint.md"
+
+_BP_PROMPT = (
+    "你是长篇小说的蓝图审稿人。以下是这本书的蓝图（世界观 / 核心人物 / 卷规划 / "
+    "伏笔线索）。全书尚未展开任何正文——现在发现的自相矛盾会污染整个下游，"
+    "请以**全局视野**审查并只输出 JSON（不要多余文字）：\n"
+    '{"contradictions": [{"where": "世界观/人物/卷规划/伏笔", '
+    '"issue": "具体的自相矛盾或逻辑断裂", "severity": "high|mid|low"}],\n'
+    ' "character_conflicts": [{"who": "角色名", "issue": "撞型/动机冲突/关系矛盾"}],\n'
+    ' "structure_notes": "卷结构/节奏层面的问题，无则空串",\n'
+    ' "must_watch": ["给后续写作的具体注意事项（每条一句话，可执行）"]}\n'
+    "注意：只报**真问题**（设定互斥、人物撞型、时间线断裂），"
+    "不要把正常的设计张力当矛盾。must_watch 最多 6 条。\n\n")
 
 _PROMPT_HEAD = (
     "你是长篇小说的连读审稿人。以下是同一卷前 N 章的细纲（章题 + 关键事件 + "
@@ -163,3 +177,104 @@ def summarize_for_prompt(bans: list[str]) -> str:
         return ""
     return "【连读审查禁令】以下问题在细纲连读审查中被发现，本章生成必须遵守：\n" + \
         "\n".join(f"- {b}" for b in bans)
+
+
+# ---------------------------------------------------------------- 蓝图连读（批次三·方案1）
+
+def run_blueprint_review(ws, project_id: str, bp, provider) -> dict | None:
+    """蓝图完成后、卷展开前的 LLM 连读审查（批次三·方案1）。
+
+    蓝图一次产出全部核心设定与卷规划——这里的自相矛盾/人物撞型会污染整个下游，
+    是"交给 AI 顺一遍"价值最高的引入点。一次调用产出 findings 并落盘；
+    失败静默返回 None（增强层，不阻断 build）。
+    """
+    try:
+        wv = bp.section("worldview") or {}
+        chars = bp.section("characters") or []
+        vols = bp.section("volumes") or []
+        threads = bp.section("threads") or []
+    except Exception:  # noqa: BLE001
+        return None
+    if not (vols or chars):
+        return None  # 空蓝图无可审
+
+    def _seg(title: str, data) -> str:
+        return f"## {title}\n" + json.dumps(data, ensure_ascii=False, indent=1)[:3500] + "\n"
+
+    body = (_seg("世界观", wv) + _seg("核心人物", chars) +
+            _seg("卷规划", vols) + _seg("伏笔线索", threads))
+    prompt = _BP_PROMPT + body
+    try:
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="user", content=prompt)],
+            max_tokens_out=1500, temperature=0.3))
+        raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
+    except Exception:  # noqa: BLE001
+        return None
+    findings = _parse_bp_findings(raw)
+    if findings is None:
+        return None
+    findings["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _persist_blueprint(ws, project_id, findings)
+    return findings
+
+
+def _parse_bp_findings(raw: str) -> dict | None:
+    if not raw:
+        return None
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("contradictions", "character_conflicts", "must_watch"):
+        if not isinstance(data.get(key), list):
+            data[key] = []
+    data.setdefault("structure_notes", "")
+    return data
+
+
+def _persist_blueprint(ws, project_id: str, findings: dict) -> None:
+    try:
+        ws.write_json(ws._abs(project_id + "/" + BP_FINDINGS_REL),  # noqa: SLF001
+                      findings)
+        lines = [f"# 蓝图连读审查（{findings.get('at')}）", ""]
+        for c in findings.get("contradictions") or []:
+            lines.append(f"## 矛盾[{c.get('severity', '?')}]（{c.get('where')}）："
+                         f"{c.get('issue')}")
+        for c in findings.get("character_conflicts") or []:
+            lines.append(f"## 人物撞型（{c.get('who')}）：{c.get('issue')}")
+        if findings.get("structure_notes"):
+            lines.append(f"## 结构\n- {findings['structure_notes']}")
+        for w in findings.get("must_watch") or []:
+            lines.append(f"- [注意] {w}")
+        if len(lines) <= 2:
+            lines.append("（未发现问题）")
+        ws.write_text(ws._abs(project_id + "/" + BP_REPORT_REL),  # noqa: SLF001
+                      "\n".join(lines) + "\n")
+    except Exception:  # noqa: BLE001 - 落盘失败不阻断
+        pass
+
+
+def load_blueprint_bans(ws, project_id: str) -> list[str]:
+    """生成侧读取：蓝图审查的 must_watch + 高危矛盾 → 禁令/注意事项行。"""
+    try:
+        p = ws._abs(project_id + "/" + BP_FINDINGS_REL)  # noqa: SLF001
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for c in data.get("contradictions") or []:
+        if str(c.get("severity") or "").lower() == "high" and c.get("issue"):
+            out.append(f"[蓝图矛盾] {c['issue']}")
+    for c in data.get("character_conflicts") or []:
+        if c.get("who") and c.get("issue"):
+            out.append(f"[人物撞型-{c['who']}] {c['issue']}")
+    out += [str(w) for w in (data.get("must_watch") or []) if w]
+    return out[:8]

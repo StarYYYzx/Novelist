@@ -361,11 +361,14 @@ POLISH_RULES = """你要改写下面这一段的**文风**，让它读起来像�
 
 def build_polish_prompt(text: str, metrics: StyleMetrics | None = None,
                         tone: str | None = None,
-                        is_chapter: bool = False) -> str:
+                        is_chapter: bool = False,
+                        global_context: str | None = None) -> str:
     """装配润色 prompt：把本段实测到的 AI 味信号次数喂给模型，做定向改写。
 
     `tone`：style.json.tone 指定的风格（严谨冷肃/诙谐幽默/…），命中模板则追加风格段；
     `is_chapter=False`：事件级润色——不要求章节标题，输出指令相应调整。
+    `global_context`（批次三·方案4）：全书视野块（章位置/前章收尾/全局禁令/前卷事实），
+    置于原文之前——润色从"逐句美化"升级为"带全局的通读顺稿"。
     """
     m = metrics or measure(text)
     tone_block = ""
@@ -380,6 +383,10 @@ def build_polish_prompt(text: str, metrics: StyleMetrics | None = None,
             f"{dup['dup_sentences']} 处整句重复。这是生成期拼接时的复述残留，不是有意的反复：\n"
             "- 每一处只保留**一次**，其余整段/整句删除；\n"
             "- 删除后不要补写新内容顶替，也不要改写保留的那一份的措辞。\n")
+    if global_context:
+        tone_block += ("\n" + global_context.strip() + "\n"
+                       "（以上全书视野仅供通读顺稿时把握连续性与禁忌，"
+                       "其内容本身**不得**出现在改写后的正文里。）\n")
     heading_tail = "，第一行是章节标题" if is_chapter else "（不要加标题，直接给正文片段）"
     rules = POLISH_RULES.format(
         stdev=m.para_len_stdev,
@@ -400,6 +407,7 @@ def polish_chapter(
     tone: str | None = None,
     is_chapter: bool = False,
     system_prompt: str | None = None,
+    global_context: str | None = None,
 ) -> PolishResult:
     """在成章之后**额外追加一次** LLM 调用专门优化文风。
 
@@ -411,6 +419,8 @@ def polish_chapter(
     `system_prompt`（前两章归因 P0）：此前润色调用**不带 system message**，模型只看到
     user 里的改写规则，没有"你是谁、这是什么书"的锚定——实测会丢失人设与文风锚点。
     传入即作为 system message 透传；None 时退回一个通用润色角色设定。
+    `global_context`（批次三·方案4）：全书视野块，随 user prompt 注入（见
+    build_polish_prompt）。
     """
     before = measure(text)
     if llm is None:
@@ -425,7 +435,8 @@ def polish_chapter(
             messages=[LLMMessage(role="system", content=sys_msg),
                       LLMMessage(role="user",
                                  content=build_polish_prompt(text, before, tone=tone,
-                                                             is_chapter=is_chapter))],
+                                                             is_chapter=is_chapter,
+                                                             global_context=global_context))],
             max_tokens_out=max_tokens,
             temperature=0.6,
         )

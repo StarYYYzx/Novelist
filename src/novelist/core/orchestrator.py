@@ -37,6 +37,8 @@ class ProductionResult:
                  phase: str = "writing", phase_reason: str = "",
                  length_truncated: bool = False, events_capped: int = 0,
                  first_seen_patched: int = 0,
+                 volume_facts_built: bool = False,
+                 seam_hits: int = 0,
                  pending_tick: dict | None = None,
                  chapter_title: str = "", directions_built: int = 0,
                  perspectives_written: int = 0, broadcasts_built: int = 0,
@@ -64,6 +66,8 @@ class ProductionResult:
         self.length_truncated = length_truncated  # 遗留字段（机制已移除，恒 False）
         self.events_capped = events_capped        # 每章事件数超限截掉的事件数（第二批）
         self.first_seen_patched = first_seen_patched  # 首登场身份局部重写段数（方案 B）
+        self.volume_facts_built = volume_facts_built  # 卷末事实清单是否已产（批次三·3）
+        self.seam_hits = seam_hits                    # 接缝审查命中数（批次三·2）
         self.pending_tick = pending_tick or {}    # 定时事项记账（ADR-019，M3m T2）
         self.chapter_title = chapter_title        # 延迟拟定的章节标题（ADR-020 决策一）
         self.directions_built = directions_built  # 本轮生成的人物调度单数（ADR-020 决策三）
@@ -94,6 +98,17 @@ _REVISE_HINT = (
     "审校问题（block 级，必须逐条修正）：\n{problems}\n"
     "请重写本事件：逐条修正上述问题；保留未出问题的情节、人物与对白；"
     "结尾必须是完整的收束句。"
+)
+
+# 接缝审查（批次三·方案2）：确定性 strip_seam_overlap 挡"字面复述"，
+# 这里用 LLM 挡"换措辞重演同一情节"（ch1"母亲来电"写两遍的实证根因）。
+_SEAM_WINDOW = 350       # 送审窗口：前片段尾 / 新片段头各取多少字
+_SEAM_REPAIR_MAX = 2     # 每章最多修复次数（防预算风暴）
+_SEAM_REJECT = (
+    "\n\n【接缝复述，必须重写】\n上一片段刚写过：{what}\n"
+    "你的新片段开头在**换措辞重演**这段内容（同名情节已发生，读者已看过）。\n"
+    "要求：删除全部复述部分，直接从上一片段结束后的**新进展**起笔；"
+    "不得重复任何已发生的动作、对白、消息；保留新片段中真正的新情节。"
 )
 
 # 事件模式章末修复（2026-09-04）：事件循环里每个片段单独看过都合格，拼起来才会
@@ -303,6 +318,40 @@ def _ngram_sim(a: str, b: str, n: int = 3) -> float:
 def _strip_punct(s: str) -> str:
     """去掉所有标点与空白（用于"去标点包含"判定）。"""
     return re.sub(r"[\s\W_]+", "", s or "")
+
+
+def _seam_retell(provider, system_prompt: str, prev_tail: str, new_head: str) -> str:
+    """接缝审查（批次三·方案2）：LLM 判断新片段开头是否在换措辞重演前片段刚写过的情节。
+
+    返回复述描述（命中，用于 reject note 重生成）；空串 = 通过或审查失败（增强层，
+    失败按通过处理，不阻断生成）。
+    """
+    prompt = (
+        "你是小说连载的接缝审稿人。片段A是刚写完的上文结尾，片段B是新写的下一段开头。\n"
+        "判断：B 的开头是否在**换措辞重演 A 已经写过的同一情节**（同一动作/同一消息/"
+        "同一场景重新发生一遍）？正常的承接（呼应上文、反应上文）不算重演。\n"
+        '只输出 JSON：{"retell": true/false, "what": "若重演，一句话概括被重演的情节"}\n\n'
+        f"片段A（上文结尾）：\n…{prev_tail}\n\n"
+        f"片段B（新片段开头）：\n{new_head}")
+    try:
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="user", content=prompt)],
+            max_tokens_out=200, temperature=0.2))
+        raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return ""
+    try:
+        import json as _json
+
+        data = _json.loads(m.group(0))
+    except ValueError:
+        return ""
+    if isinstance(data, dict) and data.get("retell") is True:
+        return str(data.get("what") or "上一片段刚写过的情节")
+    return ""
 
 
 def strip_seam_overlap(prev: str, piece: str, window: int = 900,
@@ -1240,6 +1289,9 @@ def produce_chapter(
     # ---- ADR-021 世界广播选角（一致性栈第 0 层：先定"谁该在场"，N3 调度才有意义）----
     broadcast_casting: bool = False,   # 事件级选角 LLM 推理（v1 默认关；harness/CLI 显式开，
                                        # 真机验证稳定后转 True，与四件套同哲学）
+    # ---- 批次三（2026-09-05 用户拍板 1/2/3/4 全做）----
+    seam_review: bool = False,     # 方案2：事件接缝 LLM 复述审查（strip_seam_overlap 的语义层）
+    volume_facts: bool = False,    # 方案3：卷末章生成后自动产"本卷事实清单"（LLM 通读本卷）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -1389,14 +1441,18 @@ def produce_chapter(
     events_capped = 0       # 每章事件数超限截掉的事件数（第二批·人工审查）
     lessons_added = 0       # 本轮沉淀的历史教训数
     near_dup_removed = 0    # 章级近重复（事件重演/结尾段复制）删除的句数
+    seam_hits = 0           # 接缝审查命中数（批次三·方案2）
+    seam_repairs = 0        # 接缝复述重生成次数（≤ _SEAM_REPAIR_MAX）
+    goal_bans: list[str] = []   # goal 注入的禁令（批次三·方案4 复用给润色）
+    prev_facts_txt = ""         # 前卷事实清单（批次三·方案3/4 共用）
     try:
         if prefer_direct:
             mode = "direct"
             final = ""
 
-            # ---- 方案 A/D（2026-09-05）：全局重复禁令注入 goal ----
-            # 母题账本（D，行文机械闸）+ 细纲连读审查（A，语义闸）→ 追加进 goal
-            # （goal 块为 prompt 预算钉死层，事件/直出两条路径全覆盖）。
+            # ---- 方案 A/D（2026-09-05）+ 批次三：全局禁令与前卷事实注入 goal ----
+            # 母题账本（D，行文机械闸）+ 细纲连读审查（A，语义闸）+ 蓝图连读（批次三·1）
+            # → 追加进 goal（goal 块为 prompt 预算钉死层，事件/直出两条路径全覆盖）。
             _bans: list[str] = []
             try:
                 from .motif import MotifLedger
@@ -1405,15 +1461,31 @@ def produce_chapter(
             except Exception:  # noqa: BLE001
                 pass
             try:
-                from ..forge.coherence import load_coherence_bans
+                from ..forge.coherence import load_coherence_bans, load_blueprint_bans
 
                 _bans += load_coherence_bans(ws, project_id, vol, ch)
+                _bans += load_blueprint_bans(ws, project_id)
             except Exception:  # noqa: BLE001
                 pass
             if _bans:
                 goal = goal + ("\n\n【重复禁令】下列动作/意象母题或问题已被全局审查"
                                "标记为重复，本章**禁止**再出现，必须换全新写法：\n"
                                + "\n".join(f"- {b}" for b in _bans[:10]))
+
+            # ---- 批次三·方案3：前卷事实清单注入（跨卷状态/时间线/伏笔连续性）----
+            _prev_facts = ""
+            try:
+                from .volume_facts import load_prev_facts
+
+                _prev_facts = load_prev_facts(ws, project_id, vol)
+            except Exception:  # noqa: BLE001
+                pass
+            if _prev_facts:
+                goal = goal + ("\n\n【前卷事实清单】截至上一卷末的既成事实"
+                               "（人物状态/时间线/未回收伏笔）。本章必须与之保持连续，"
+                               "不得矛盾、不得让已完成的事再发生一遍：\n" + _prev_facts)
+            goal_bans = _bans          # 方案4：润色复用同一份全局视野
+            prev_facts_txt = _prev_facts
 
             if screenplay:
                 # 剧本草稿（第三批第 2 条·档 2）：先剧本体写对白交锋，再叙事化。
@@ -1651,6 +1723,24 @@ def produce_chapter(
                         raise RuntimeError(
                             f"event {idx}/{len(key_events)} too short ({len(piece)} chars)")
 
+                    # ---- 接缝审查（批次三·方案2）：LLM 挡"换措辞重演同一情节" ----
+                    # strip_seam_overlap 只能删字面重叠；ch1"母亲来电"写两遍、
+                    # 措辞完全不同——语义重演只能靠这里。命中 → 带 reject note 重生成一次。
+                    if seam_review and pieces and seam_repairs < _SEAM_REPAIR_MAX:
+                        _retell = _seam_retell(
+                            provider, system_prompt or "",
+                            pieces[-1][-_SEAM_WINDOW:], piece[:_SEAM_WINDOW])
+                        if _retell:
+                            seam_hits += 1
+                            revised = _generate_with_continuation(
+                                provider, system_prompt or "",
+                                prompt + _SEAM_REJECT.format(what=_retell),
+                                generation_tokens, max_continuations,
+                                content_tokens=content_tokens)
+                            if len(revised) >= event_floor:
+                                piece = revised
+                                seam_repairs += 1
+
                     # 每事件审校 + 修订（讨论第 7 轮）：block → 带建议重写 1 次。
                     # 审校只读产出工单，修订由编排层决定（docs/04 §5.4 双层门禁语义层）。
                     if event_review:
@@ -1839,11 +1929,34 @@ def produce_chapter(
     # AI 味 38.98→38.7 几乎不动：事件级润色各自为政，拼起来的整章从未被统一润过。
     # 章级润色按 `polish` 开关（默认关）对两种模式一视同仁。
     if polish and final:
+        # ---- 批次三·方案4：润色全局化——从"逐句美化"升级为"带全局的通读顺稿" ----
+        # 实证：AI 味分润色前后基本不动（8.74→8.74），根因之一是润色只有本章文本、
+        # 没有任何全局视野。这里注入：章位置/前章收尾/全局禁令/前卷事实摘要。
+        _polish_global_parts: list[str] = []
+        try:
+            _polish_global_parts.append(f"本章位置：第 {vol} 卷第 {ch} 章")
+            if ch > 1:
+                _prev_draft = ws.draft_path(project_id, vol, ch - 1)
+                if _prev_draft.exists():
+                    _tail = _prev_draft.read_text(encoding="utf-8").strip()[-180:]
+                    _polish_global_parts.append(f"前一章收尾：…{_tail}")
+            if goal_bans:
+                _polish_global_parts.append(
+                    "全局审查标记的问题（润色时顺带自查，发现残留即删除）：\n" +
+                    "\n".join(f"- {b}" for b in goal_bans[:6]))
+            if prev_facts_txt:
+                _polish_global_parts.append("前卷既成事实（人物状态/时间线必须连续）：\n"
+                                            + prev_facts_txt[:500])
+        except Exception:  # noqa: BLE001 - 全局块失败不影响润色本身
+            pass
+        _polish_global = ("\n\n【全书视野（通读顺稿用，禁止写进正文）】\n" +
+                          "\n\n".join(_polish_global_parts)) if _polish_global_parts else ""
         try:
             polish_res = polish_chapter(final, provider, vol=vol, ch=ch,
                                         tone=_style_tone(ws, project_id),
                                         is_chapter=True,
-                                        system_prompt=system_prompt)
+                                        system_prompt=system_prompt,
+                                        global_context=_polish_global)
             if polish_res.changed:
                 final = polish_res.text
                 try:
@@ -1877,6 +1990,29 @@ def produce_chapter(
             _led.save(ws, project_id)
         except Exception:  # noqa: BLE001 - 账本失败不影响成稿
             pass
+
+    # ---- 4.4b) 卷末事实清单（批次三·方案3，opt-in）：本卷最后一章生成后触发 ----
+    # 依据蓝图判定"本卷最后一章"（蓝图无该卷后续章）；LLM 通读本卷正文产出
+    # 人物状态/时间线/未回收伏笔/未决冲突，下一卷每章注入 goal。
+    volume_facts_built = False
+    if volume_facts and final:
+        try:
+            from ..forge.state import Blueprint
+
+            _bp = Blueprint.load(ws, project_id)
+            _later = []
+            for _g in (_bp.section("chapters") or []):
+                try:
+                    if int(_g.get("vol") or 0) == vol and int(_g.get("ch") or 0) > ch:
+                        _later.append(_g)
+                except (TypeError, ValueError):
+                    continue
+            if not _later:
+                from .volume_facts import build_volume_facts
+
+                volume_facts_built = build_volume_facts(ws, project_id, provider, vol)
+        except Exception:  # noqa: BLE001 - 事实清单是增强层，失败不影响成稿
+            volume_facts_built = False
 
     # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
     # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
@@ -2009,6 +2145,8 @@ def produce_chapter(
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
                             events_capped=events_capped,
                             first_seen_patched=first_seen_patched,
+                            volume_facts_built=volume_facts_built,
+                            seam_hits=seam_hits,
                             pending_tick=pending_tick,
                             chapter_title=chapter_title, directions_built=directions_built,
                             perspectives_written=perspectives_written,

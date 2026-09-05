@@ -314,6 +314,23 @@ def build(ws: Workspace, project_id: str, *, provider,
                 bp.save(ws, project_id)
                 sync_bible(ws, project_id, bp)
 
+        # ---- 蓝图连读审查（批次三·方案1，opt-in）：卷展开前全局顺一遍 ----
+        # book+旁支刚出齐、正文未动笔——此刻的自相矛盾/人物撞型污染整个下游，
+        # 是"交给 AI 顺一遍"价值最高的引入点。失败静默跳过，不阻断 build。
+        if coherence_review:
+            try:
+                from .coherence import run_blueprint_review, BP_FINDINGS_REL
+
+                if not ws._abs(f"{project_id}/{BP_FINDINGS_REL}").exists():  # noqa: SLF001
+                    fnd = run_blueprint_review(ws, project_id, bp, provider)
+                    if fnd:
+                        nc = len(fnd.get("contradictions") or [])
+                        nk = len(fnd.get("character_conflicts") or [])
+                        log(f"[coherence] 蓝图连读：矛盾{nc} 撞型{nk} "
+                            f"注意{len(fnd.get('must_watch') or [])}")
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"blueprint review: {type(e).__name__}: {e}"[:120])
+
         # ---- L1 volume（全部卷，卷主线一次出齐）----
         existing_vols = _load_json_list(ws, project_id, "outline/volumes.json")
         for vol in range(1, N + 1):

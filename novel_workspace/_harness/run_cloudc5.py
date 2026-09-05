@@ -104,6 +104,7 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
         broadcast_casting=BROADCAST_CASTING,
+        seam_review=True, volume_facts=True,
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:300], "secs": round(time.time() - t0)}
@@ -117,6 +118,8 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         "dup_sentences": res.completeness.get("dup_sentences"),
         "bible": res.bible_injected, "attempts": res.attempts,
         "first_seen_patched": getattr(res, "first_seen_patched", 0),
+        "seam_hits": getattr(res, "seam_hits", 0) if hasattr(res, "seam_hits") else 0,
+        "volume_facts_built": getattr(res, "volume_facts_built", False),
         "events": res.events_committed,
         "chapter_title": res.chapter_title,
         "directions_built": res.directions_built,
