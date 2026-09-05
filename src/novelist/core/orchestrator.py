@@ -36,6 +36,7 @@ class ProductionResult:
                  entity_new: int = 0, entity_alerts: list[str] | None = None,
                  phase: str = "writing", phase_reason: str = "",
                  length_truncated: bool = False, events_capped: int = 0,
+                 first_seen_patched: int = 0,
                  pending_tick: dict | None = None,
                  chapter_title: str = "", directions_built: int = 0,
                  perspectives_written: int = 0, broadcasts_built: int = 0,
@@ -60,8 +61,9 @@ class ProductionResult:
         self.entity_alerts = entity_alerts or []  # 本轮实体预算告警
         self.phase = phase                      # 本卷阶段：opening | writing | tail（第九批）
         self.phase_reason = phase_reason        # 阶段判定依据（确定性规则可解释）
-        self.length_truncated = length_truncated  # 篇幅硬上限截断（第七批）
+        self.length_truncated = length_truncated  # 遗留字段（机制已移除，恒 False）
         self.events_capped = events_capped        # 每章事件数超限截掉的事件数（第二批）
+        self.first_seen_patched = first_seen_patched  # 首登场身份局部重写段数（方案 B）
         self.pending_tick = pending_tick or {}    # 定时事项记账（ADR-019，M3m T2）
         self.chapter_title = chapter_title        # 延迟拟定的章节标题（ADR-020 决策一）
         self.directions_built = directions_built  # 本轮生成的人物调度单数（ADR-020 决策三）
@@ -144,8 +146,10 @@ def _completeness_problems(comp: dict) -> list[str]:
 # ---- 方案6.2（质量加固 2026-09-05）：首次出场身份线索检查 ----
 _IDENTITY_CUE_RE = re.compile(
     "学姐|学长|师兄|师姐|师弟|师妹|导师|教授|老师|同学|室友|队长|副队|长老|弟子|"
-    "掌门|馆主|医生|警察|学生|记者|老板|管家|侍女|仆人|少女|少年|青年|老者|"
-    "男子|女子|中年人|孩子|同事|上司|下属|修士|散修|客人|伙计|邻居|发小|闺蜜")
+    "掌门|馆主|医生|警察|记者|老板|管家|侍女|仆人|同事|上司|下属|修士|散修|"
+    "邻居|发小|闺蜜|司长|局长|组长|队员|搭档|助手|秘书|夫人|少爷|小姐|先生|女士")
+# 2026-09-05 收紧：剔除 孩子|学生|男子|女子|少年|少女|青年|中年人|老者 等泛词——
+# 真机实证（proj-cloudb5 ch1）：苏清婉首现句"别吓唬孩子了"靠"孩子"误命中放行。
 
 
 def _has_identity_cue(text: str, name: str, *, window: int = 260) -> bool:
@@ -186,6 +190,76 @@ def _first_appearance_problems(tracker, text: str) -> list[str]:
         return probs
     except Exception:  # noqa: BLE001 - 检查失败不影响成稿
         return []
+
+
+def _patch_first_appearances(ws, project_id: str, vol: int, ch: int, text: str,
+                             provider, tracker, *, max_patches: int = 2,
+                             min_reply_chars: int = 30) -> tuple[str, int]:
+    """首登场身份补写（用户 2026-09-05 提议落地）：检测 → 定位首现段落 → LLM 仅重写该段。
+
+    与"事后硬插一段简介"的区别：重写段落时要求把身份/关系交代**织入**原段的动作
+    或对白，不新增段落、不动其他内容。返回 (new_text, patched_count)；任何失败
+    静默返回原文（补写是增强，不是闸门）。
+    """
+    if tracker is None or not text:
+        return text, 0
+    try:
+        probs = _first_appearance_problems(tracker, text)
+        if not probs:
+            return text, 0
+        # 背景参考：bible/characters.json（sync 时已被 coerce 成干净短名）
+        cards: dict[str, dict] = {}
+        try:
+            import json as _json
+
+            p = ws._abs(f"{project_id}/bible/characters.json")  # noqa: SLF001
+            if p.exists():
+                for c in _json.loads(p.read_text(encoding="utf-8")):
+                    if isinstance(c, dict) and c.get("name"):
+                        cards[str(c["name"])] = c
+        except Exception:  # noqa: BLE001
+            cards = {}
+        paras = text.split("\n\n")
+        patched = 0
+        for prob in probs:
+            if patched >= max_patches:
+                break
+            m = re.search(r"「(.+?)」", prob)
+            name = m.group(1) if m else ""
+            if not name:
+                continue
+            idx = next((i for i, p_ in enumerate(paras) if name in p_), None)
+            if idx is None:
+                continue
+            card = cards.get(name) or next(
+                (c for n, c in cards.items() if n and (n in name or name in n)), {})
+            bg = str(card.get("background") or "")[:120]
+            before = paras[idx - 1][-80:] if idx > 0 else ""
+            para = paras[idx]
+            prompt = (
+                "你是小说正文局部修订器。只重写下面这一段，不输出其他内容。\n"
+                f"要求：把角色「{name}」的身份或与主角的关系交代自然织入本段"
+                "（通过动作、称谓或对白，一句即可；禁止人物简介式罗列、禁止新增段落）。\n"
+                f"角色背景参考：{bg or '（无，按上下文合理补写）'}\n"
+                f"上一段末尾（仅供衔接语气参考，不要复述）：{before or '（无）'}\n"
+                f"【原段】\n{para}\n"
+                "输出：仅输出重写后的这一段本身。")
+            try:
+                res = provider.complete(LLMRequest(
+                    messages=[LLMMessage(role="user", content=prompt)],
+                    max_tokens_out=500, temperature=0.7))
+            except Exception:  # noqa: BLE001
+                continue
+            new_para = (res.content or "").strip() if getattr(res, "ok", False) else ""
+            if len(new_para) < min_reply_chars or name not in new_para:
+                continue  # 回复过短/丢名 → 视为无效补写（fake provider 也会在此被挡）
+            paras[idx] = new_para
+            patched += 1
+        if not patched:
+            return text, 0
+        return "\n\n".join(paras), patched
+    except Exception:  # noqa: BLE001 - 补写失败不影响成稿
+        return text, 0
 
 
 _SEAM_CHARS = 300  # 事件间接缝：取上一事件末尾若干字，让模型自然续写
@@ -325,22 +399,6 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
         # 必须无缝拼接，不能加段落分隔——那是事件间 join（"\n\n".join(pieces)）的职责。
         text = text.rstrip() + strip_seam_overlap(text, piece).lstrip()
     return text
-
-
-def _truncate_to_boundary(text: str, cap: int) -> str:
-    """篇幅硬上限（第七批）：超限时截断到最近的段落/句子边界，不在句中腰斩。
-
-    优先级：空行（\\n\\n）> 行末（\\n）> 句末标点；按序取第一个满足的最近边界。
-    未超限原样返回；无合适边界（都在前半段）时硬切兜底。上限按字符计。
-    """
-    if cap is None or cap <= 0 or len(text) <= cap:
-        return text
-    head = text[:cap]
-    for marker in ("\n\n", "\n", "。", "！", "？", "…", "；", "，"):
-        pos = head.rfind(marker)
-        if pos > cap * 0.5:  # 边界至少要落在后半段，避免切在开头
-            return head[: pos + len(marker)]
-    return head  # 无合适边界 → 硬切兜底
 
 
 def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4) -> list[str]:
@@ -1148,7 +1206,8 @@ def produce_chapter(
     generation_tokens: int = 4000,
     # ---- 第二批·人工审查：预算分离与篇幅治理 ----
     content_tokens: int | None = None,   # 正文预算（期望正文量）；None = 不额外约束
-    length_cap_chars: int | None = None,  # 篇幅硬上限（字符）；None = 不截断
+    # length_cap_chars 已按用户指示移除（2026-09-05）：上限从未 binding（实际 1900-2600
+    # vs 8000），短章根因是切片生成+模型收束倾向，截上限只会破坏完整性不治短。
     max_events_per_chapter: int | None = None,  # 每章事件数上限；None = 不限制
     min_event_words: int | None = None,  # 单事件最小篇幅（字符，事件循环生效）；None = 沿用 direct_words_floor
     embedding=None,
@@ -1334,6 +1393,27 @@ def produce_chapter(
         if prefer_direct:
             mode = "direct"
             final = ""
+
+            # ---- 方案 A/D（2026-09-05）：全局重复禁令注入 goal ----
+            # 母题账本（D，行文机械闸）+ 细纲连读审查（A，语义闸）→ 追加进 goal
+            # （goal 块为 prompt 预算钉死层，事件/直出两条路径全覆盖）。
+            _bans: list[str] = []
+            try:
+                from .motif import MotifLedger
+
+                _bans += MotifLedger.load(ws, project_id).ban_lines()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from ..forge.coherence import load_coherence_bans
+
+                _bans += load_coherence_bans(ws, project_id, vol, ch)
+            except Exception:  # noqa: BLE001
+                pass
+            if _bans:
+                goal = goal + ("\n\n【重复禁令】下列动作/意象母题或问题已被全局审查"
+                               "标记为重复，本章**禁止**再出现，必须换全新写法：\n"
+                               + "\n".join(f"- {b}" for b in _bans[:10]))
 
             if screenplay:
                 # 剧本草稿（第三批第 2 条·档 2）：先剧本体写对白交锋，再叙事化。
@@ -1773,20 +1853,30 @@ def produce_chapter(
         except Exception:  # noqa: BLE001 - 润色失败不阻断，保留原稿
             polish_res = None
 
-    # ---- 4.4) 篇幅硬上限（第七批·用户拍板）----
-    # 超限截断到段落边界（不在句中腰斩），止损膨胀失控（v5 ch16 曾 7890 字）；
-    # 截断标记进 result，CLI 可见。截断在 polish 之后——润色可能加长。
-    length_truncated = False
-    if length_cap_chars and final and mode == "direct":
-        capped = _truncate_to_boundary(final, length_cap_chars)
-        if len(capped) < len(final):
-            length_truncated = True
-            final = capped
-            if mode == "direct":
-                try:
-                    ws.write_text(draft, final + "\n")
-                except OSError:  # pragma: no cover
-                    pass
+    # ---- 4.4) 篇幅硬上限已移除（用户 2026-09-05 拍板：取消一切字数相关需求）----
+    # 实证：上限从未 binding（实际 1900-2600 字 vs 8000），截断只伤完整性。
+
+    # ---- 4.4a) 首登场身份局部重写（方案 B）+ 母题记账（方案 D）----
+    # B：检测 → 定位首现段落 → LLM 仅重写该段（身份织入动作/对白，不插简介段）。
+    # D：成稿母题句入账本，供后续章生成时注入禁令。
+    first_seen_patched = 0
+    if final:
+        try:
+            trk = entity_tracker or _load_entity_tracker(ws, project_id)
+            final, first_seen_patched = _patch_first_appearances(
+                ws, project_id, vol, ch, final, provider, trk)
+            if first_seen_patched and mode == "direct" and draft.exists():
+                ws.write_text(draft, final + "\n")
+        except Exception:  # noqa: BLE001 - 补写是增强层，失败不影响成稿
+            first_seen_patched = 0
+        try:
+            from .motif import MotifLedger
+
+            _led = MotifLedger.load(ws, project_id)
+            _led.add_text(final, ch)
+            _led.save(ws, project_id)
+        except Exception:  # noqa: BLE001 - 账本失败不影响成稿
+            pass
 
     # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
     # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
@@ -1917,7 +2007,8 @@ def produce_chapter(
                             factory_added=factory_added,
                             entity_new=entity_new, entity_alerts=entity_alerts,
                             phase=getattr(phase, "value", phase), phase_reason=phase_reason,
-                            length_truncated=length_truncated, events_capped=events_capped,
+                            events_capped=events_capped,
+                            first_seen_patched=first_seen_patched,
                             pending_tick=pending_tick,
                             chapter_title=chapter_title, directions_built=directions_built,
                             perspectives_written=perspectives_written,

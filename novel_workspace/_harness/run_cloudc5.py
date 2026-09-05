@@ -34,7 +34,6 @@ from novelist.storage.workspace import Workspace  # noqa: E402
 VOL = 1
 CHAPTERS = [1, 2, 3]
 GEN_TOKENS = 6000        # ctx 16384：沿用 run_cloud5.py 实证值
-LENGTH_CAP_CHARS = 8000
 BROADCAST_CASTING = True
 LOG = Path(__file__).resolve().parent / "cloudc5_log.jsonl"
 MODEL = "qwen3.6-35b-a3b-fp8"
@@ -104,7 +103,6 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
         broadcast_casting=BROADCAST_CASTING,
     )
     if not res.ok:
@@ -114,11 +112,11 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         "ch": ch, "ok": True, "secs": round(time.time() - t0),
         "chars": res.completeness.get("chars"),
         "ends_properly": res.completeness.get("ends_properly"),
-        "length_truncated": res.length_truncated,
-        "meta": res.completeness.get("meta_narration") or [],
+                "meta": res.completeness.get("meta_narration") or [],
         "dup_paragraphs": res.completeness.get("dup_paragraphs"),
         "dup_sentences": res.completeness.get("dup_sentences"),
         "bible": res.bible_injected, "attempts": res.attempts,
+        "first_seen_patched": getattr(res, "first_seen_patched", 0),
         "events": res.events_committed,
         "chapter_title": res.chapter_title,
         "directions_built": res.directions_built,
@@ -177,8 +175,7 @@ def main() -> None:
         st = rec.get("state_updates") or {}
         print(f"[ch{ch}] {rec['secs']}s chars={rec['chars']} 完整={rec['ends_properly']}"
               f" 拟题=「{rec.get('chapter_title') or '-'}」"
-              + (" 截断!" if rec.get("length_truncated") else "")
-              + (f" 元叙事!{rec.get('meta')}" if rec.get("meta") else "")
+                            + (f" 元叙事!{rec.get('meta')}" if rec.get("meta") else "")
               + (f" 重复段{rec.get('dup_paragraphs')}" if rec.get("dup_paragraphs") else "")
               + f" | 事件{rec.get('events')} 编纂{rec.get('chronicle_written')} 状态{len(st)}人"
               + (f" 冲突{len(rec['chronicle_conflicts'])}" if rec.get("chronicle_conflicts") else "")

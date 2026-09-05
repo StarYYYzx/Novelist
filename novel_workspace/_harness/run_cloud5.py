@@ -33,7 +33,6 @@ from novelist.storage.workspace import Workspace  # noqa: E402
 VOL = 1
 CHAPTERS = [1, 2, 3, 4, 5]
 GEN_TOKENS = 6000        # FT none-effort：思考 0 token，预算即正文预算
-LENGTH_CAP_CHARS = 8000
 BROADCAST_CASTING = True
 LOG = Path(__file__).resolve().parent / "cloud5_log.jsonl"
 
@@ -102,7 +101,6 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
         broadcast_casting=BROADCAST_CASTING,
     )
     if not res.ok:

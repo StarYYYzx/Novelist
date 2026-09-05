@@ -223,8 +223,7 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
                 L.append(f"- {label}：{st[key]}")
         if st.get("tone"):
             L.append(f"- 笔调：{'、'.join(st['tone'])}")
-        if st.get("target_words_per_chapter"):
-            L.append(f"- 目标篇幅：约 {st['target_words_per_chapter']} 字")
+        # target_words_per_chapter 已按用户指示不注入 prompt（2026-09-05 移除字数需求）
         if banned:
             L.append(f"- 禁用词，出现即失败：{'、'.join(banned)}")
         if modern:

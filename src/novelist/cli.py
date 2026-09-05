@@ -162,8 +162,6 @@ def status(ctx: click.Context, directory: str | None) -> None:
                    "本地 9B 模型写满一章建议 1200–1500")
 @click.option("--content-tokens", type=int, default=None,
               help="正文预算（第二批）：期望正文量；总预算至少覆盖它。缺省取配置或 3000")
-@click.option("--length-cap", type=int, default=None,
-              help="篇幅硬上限（字符，第七批）：超限截断到段落边界；缺省不截断")
 @click.option("--max-events", type=int, default=None,
               help="每章事件数上限（第二批）：超限只取前 N 个；缺省不限制")
 @click.option("--min-event-words", type=int, default=120,
@@ -187,7 +185,7 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
             policy: str | None, gen_tokens: int | None, content_tokens: int | None,
-            length_cap: int | None, max_events: int | None, min_event_words: int,
+            max_events: int | None, min_event_words: int,
             polish: bool, no_bible: bool,
             event_loop: bool, screenplay: bool, readback: bool, event_polish: bool,
             supplement_settings: bool, no_jit: bool) -> None:
@@ -229,7 +227,7 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     memories = _recall_lines(ws, project_id, vol, ch, embedding=emb)
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
                           generation_tokens=gen_tokens, content_tokens=content_tokens,
-                          length_cap_chars=length_cap, max_events_per_chapter=max_events,
+                          max_events_per_chapter=max_events,
                           min_event_words=min_event_words,
                           embedding=emb,
                           inject_bible=not no_bible, memories=memories or None, polish=polish,

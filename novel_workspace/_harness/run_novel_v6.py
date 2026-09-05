@@ -52,7 +52,6 @@ PID = "proj-yelan2"
 CLOUD_BASE = "http://127.0.0.1:6006"          # 隧道本地端口（tunnel_autodl.py --server A）
 CLOUD_MODEL = "Qwen3.5-9B-Q8_0.gguf"
 GEN_TOKENS = 1200                              # 思考已关：预算即正文预算
-LENGTH_CAP_CHARS = 7000                        # Y-2 篇幅硬上限（第七批机制接线）：
                                                # 止损极端膨胀（v6 ch9 曾 12023 字），
                                                # 段落边界截断不腰斩；7000 只切失控章，
                                                # 不伤合理长章（v5 ch6 同章 8388 字）
@@ -94,7 +93,6 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,   # Y-2 篇幅硬上限（第七批机制接线）
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:200], "secs": round(time.time() - t0)}

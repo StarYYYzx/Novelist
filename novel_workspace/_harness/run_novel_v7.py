@@ -62,7 +62,6 @@ PID = "proj-yelan3"
 CLOUD_BASE = "http://127.0.0.1:18006"          # 隧道本地端口（tunnel_autodl.py --server C）
 CLOUD_MODEL = "qwen3.6-35b-a3b-fp8"
 GEN_TOKENS = 1200                              # reasoning_effort=none：预算即正文预算
-LENGTH_CAP_CHARS = 7000                        # Y-2 篇幅硬上限（与 v6 一致便于对比）
 LOG = Path(__file__).resolve().parent / "run_v7_log.jsonl"
 HEAVYWEIGHT_CHAPTERS: set[int] = set()        # 2026-09-03：ch7 重场戏(剧本两遍)把 12GB 显存 OOM
                                               # 打挂 backend（KV 8192 + 长上下文），测试书先全走事件循环
@@ -102,8 +101,6 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
-        # ADR-020 四件套：默认全开（defer_title/cast_injection/character_direction/perspective_memory）
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:200], "secs": round(time.time() - t0)}

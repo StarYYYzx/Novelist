@@ -38,7 +38,8 @@ def main() -> None:
     print("== build 续跑（闸门自动循环）==", flush=True)
     t0 = time.time()
     for attempt in range(20):
-        res = build(ws, pid, provider=provider, max_calls=60, resume=True, deepen=True)
+        res = build(ws, pid, provider=provider, max_calls=60, resume=True, deepen=True,
+                      coherence_review=True)
         for w in res.warnings:
             print(f"  [warn] {w}", flush=True)
         print(f"[round {attempt+1}] calls={res.calls_used} nodes={res.nodes_done} "

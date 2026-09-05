@@ -130,15 +130,29 @@ def build(ws: Workspace, project_id: str, *, provider,
           spec: Any = None, pack: dict | None = None,
           resume: bool = False, deepen: bool = True,
           gate: bool = True,
+          coherence_review: bool = False,
           log_fn: Callable[[str], None] | None = None) -> BuildResult:
     """全权构建：book → 旁支 DFS（deepen）→ volume(全卷) → arc?/chapter(仅 vol=1)/beat?，
     末尾 worldstate 确定性合成。
 
     `resume=True`：跳过已落盘节点（幂等续跑）。`deepen=False` 退化为 F1 最小树。
     `gate=False`：关闭审核闸门（ADR-024；单测/脚本直跑用，CLI 默认开）。
+    `coherence_review=True`：细纲连读审查（方案 A）——每章落盘后 ≥2 章触发一次
+    LLM 连读并落 findings。默认关：审查消耗 provider 调用（会计入调用预算，
+    且脚本化 fake 的测试对其调用序敏感），由 harness/CLI 显式开启。
     `log_fn` 缺省打印进度行 `[calls/max] <node> … ok (calls=N)`。
     """
+    warnings: list[str] = []
+    log = log_fn or (lambda line: print(line, flush=True))
     bp = Blueprint.load(ws, project_id)
+    # 存量污染名治愈（ask 槽位直写时代的遗留；textnorm 与 ask/nodes 共用规则）
+    from .textnorm import heal_blueprint_characters
+
+    for w in heal_blueprint_characters(bp):
+        warnings.append(w)
+        log(f"[heal] {w}")
+    if warnings:
+        bp.save(ws, project_id)
     meta = bp.get("meta") or {}
     scale = meta.get("scale")
     if not scale:
@@ -149,7 +163,6 @@ def build(ws: Workspace, project_id: str, *, provider,
     state = ForgeState.load(ws, project_id)
     state.stage = "build"
     calls_used = int(state.calls_used or 0)
-    log = log_fn or (lambda line: print(line, flush=True))
 
     # ---- 审核闸门（ADR-024）：有待审模块 → 不消耗任何调用，直接交还用户 ----
     pending_now = sorted(pending_modules(ws, project_id)) if gate else []
@@ -177,7 +190,6 @@ def build(ws: Workspace, project_id: str, *, provider,
     snap = take_snapshot(ws, project_id, label="build")
     log(f"[snapshot] {snap.name}")
 
-    warnings: list[str] = []
     nodes_done = 0
     chapters_written = 0
     volumes_written = 0
@@ -370,6 +382,19 @@ def build(ws: Workspace, project_id: str, *, provider,
                         mark_pending(ws, project_id, bp, gated_c, log_fn=log,
                                      vol=1, ch=ch)
                         raise _GateHalt(gated_c)
+                    # ---- 细纲连读审查（方案 A，用户 2026-09-05）：opt-in，≥2 章触发 ----
+                    # 失败/单章静默跳过；findings 落盘后由正文生成侧读取注入禁令。
+                    if coherence_review and ch >= 2:
+                        try:
+                            from .coherence import run_coherence_review
+
+                            fnd = run_coherence_review(ws, project_id, bp, provider, 1, ch)
+                            if fnd:
+                                nm = len(fnd.get("motif_repeats") or [])
+                                nc = len(fnd.get("causal_issues") or [])
+                                log(f"[coherence] 1-{ch} 连读审查：母题重复{nm} 因果{nc}")
+                        except Exception as e:  # noqa: BLE001
+                            warnings.append(f"coherence 1-{ch}: {type(e).__name__}: {e}"[:120])
                 bp.save(ws, project_id)
                 # F4b：chapter expand → beat 节点（重场戏拍级提示，每章至多 1 次）
                 if deepen and res_ch is not None and res_ch.ok \

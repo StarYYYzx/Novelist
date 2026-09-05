@@ -1,12 +1,13 @@
-"""预算分离 + 篇幅治理测试（第二批·人工审查 + 第七批，2026-09-01 落地）。
+"""预算分离测试（第二批·人工审查，2026-09-01 落地；篇幅上限 2026-09-05 移除）。
 
 覆盖：
-- _truncate_to_boundary：段落/句末边界截断、未超限原样、硬切兜底
 - content_tokens 正文预算透传（直出路径 → LLMRequest.max_content_tokens）
-- length_cap_chars 篇幅硬上限（超限截断到段落边界 + length_truncated 标记）
 - max_events_per_chapter 每章事件数上限（超限截断 + events_capped）
 - min_event_words 单事件最小篇幅（低于下限判失败）
 - 配置层：BudgetConfig.default_max_content_tokens 默认与 TOML 覆盖
+
+注：length_cap_chars / _truncate_to_boundary / 目标篇幅 prompt 行已按用户
+2026-09-05 拍板移除（上限从未 binding，短章根因在切片生成与收束倾向）。
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 
 from novelist.config import load_config
-from novelist.core.orchestrator import _truncate_to_boundary, produce_chapter
+from novelist.core.orchestrator import produce_chapter
 from novelist.core.session import SessionInfo
 from novelist.providers.fake import FakeProvider
 from novelist.storage.checkpoint import Checkpoint
@@ -41,33 +42,6 @@ def _project(tmp_path) -> tuple[Workspace, str]:
     return ws, pid
 
 
-# ---------------------------------------------------------------- _truncate_to_boundary
-
-def test_truncate_keeps_short_text():
-    assert _truncate_to_boundary("短文本", 500) == "短文本"
-
-
-def test_truncate_paragraph_boundary():
-    text = "第一段。\n\n第二段内容。\n\n第三段内容。"
-    out = _truncate_to_boundary(text, 18)
-    assert out == "第一段。\n\n第二段内容。\n\n"  # 截到最近的段落边界，不腰斩
-    assert len(out) < len(text)
-
-
-def test_truncate_sentence_boundary():
-    text = "这句话很长很长很长很长很长很长很长很长很长很长很长。下一句。"
-    out = _truncate_to_boundary(text, 30)
-    assert out.endswith("。")
-    assert len(out) <= 31  # 句子边界含标点
-
-
-def test_truncate_hard_cut_fallback():
-    """无句末标点/换行（纯长串）→ 硬切兜底。"""
-    text = "甲" * 100
-    out = _truncate_to_boundary(text, 40)
-    assert out == "甲" * 40
-
-
 # ---------------------------------------------------------------- content_tokens 透传
 
 def test_content_tokens_passthrough_direct(tmp_path):
@@ -78,32 +52,6 @@ def test_content_tokens_passthrough_direct(tmp_path):
                           jit_characters=False, validate=False)
     assert res.ok, res.result
     assert any(getattr(r, "max_content_tokens", None) == 1500 for r in prov.requests)
-
-
-# ---------------------------------------------------------------- 篇幅硬上限
-
-def test_length_cap_truncates(tmp_path):
-    ws, pid = _project(tmp_path)
-    long_text = ("段落甲的内容。" * 60) + "\n\n" + ("段落乙的内容。" * 60)
-    prov = RecordingProvider(reply=long_text)
-    res = produce_chapter(ws, pid, 1, 1, prov, prefer_direct=True,
-                          length_cap_chars=300, jit_characters=False,
-                          validate=False)
-    assert res.ok, res.result
-    assert res.length_truncated is True
-    assert len(res.result) <= 300
-    # 截断后必须落在边界（不腰斩）
-    assert res.result.endswith("。") or res.result.endswith("\n")
-
-
-def test_length_cap_keeps_short(tmp_path):
-    ws, pid = _project(tmp_path)
-    prov = RecordingProvider(reply="短正文。" * 5)
-    res = produce_chapter(ws, pid, 1, 1, prov, prefer_direct=True,
-                          length_cap_chars=300, jit_characters=False,
-                          validate=False)
-    assert res.ok
-    assert res.length_truncated is False
 
 
 # ---------------------------------------------------------------- 事件数上限

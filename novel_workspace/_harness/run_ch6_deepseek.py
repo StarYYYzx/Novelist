@@ -35,7 +35,6 @@ from novelist.storage.workspace import Workspace  # noqa: E402
 
 PID = "proj-yelan3"
 GEN_TOKENS = 4096       # deepseek-chat 非思考，预算即正文预算（v7 的 1200 是 qwen3.6 吞吐妥协）
-LENGTH_CAP_CHARS = 7000
 LOG = Path(__file__).resolve().parent / "run_ch6_ds_log.jsonl"
 
 
@@ -86,8 +85,6 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
-        # ADR-020 四件套默认全开（defer_title/cast_injection/character_direction/perspective_memory）
     )
     if not res.ok:
         return {"ch": ch, "ok": False, "error": res.result[:200], "secs": round(time.time() - t0)}

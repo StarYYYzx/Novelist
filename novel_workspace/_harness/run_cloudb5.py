@@ -34,7 +34,6 @@ from novelist.storage.workspace import Workspace  # noqa: E402
 VOL = 1
 CHAPTERS = [1, 2, 3, 4, 5]
 GEN_TOKENS = 4096        # ctx 8192：留足 prompt 空间（C 版 6000 会超）
-LENGTH_CAP_CHARS = 8000
 BROADCAST_CASTING = True
 LOG = Path(__file__).resolve().parent / "cloudb5_log.jsonl"
 MODEL = "/root/autodl-tmp/models/Qwen3.8-27B-UD-IQ3_S.gguf"
@@ -104,7 +103,6 @@ def run_chapter(pid: str, ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
         broadcast_casting=BROADCAST_CASTING,
     )
     if not res.ok:

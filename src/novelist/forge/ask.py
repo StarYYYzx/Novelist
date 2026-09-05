@@ -264,6 +264,19 @@ def _apply_slot_value(bp: Blueprint, slot: Slot, value: str, src: str, conf: flo
             found = {"id": cid, "name": value or "", "role": role, "status": "active"}
             bp.section("characters").append(found)
         # 伪路径不可走 bp.set（_split_key 会当顶层键），直接改 section 内对象
+        # 名字槽防污染归一（真机实证：商讨把整段设定写进 rival name → 广播/实体
+        # 按短名匹配失败、首登场检查静默跳过）：短名入 name，注记挪 background。
+        if sub == "name":
+            from .textnorm import coerce_character_name
+
+            clean, note = coerce_character_name(value)
+            if clean:
+                found["name"] = clean
+                if note:
+                    bg = str(found.get("background") or "").strip()
+                    found["background"] = (note + ("；" + bg if bg else ""))[:200]
+            bp.set_provenance(f"characters[{cid}].name", src, conf)
+            return f"characters[{cid}].name"
         found[sub] = _to_text_list(value) if sub == "core_traits" else value
         bp.set_provenance(f"characters[{cid}].{sub}", src, conf)
         return f"characters[{cid}].{sub}"

@@ -32,7 +32,6 @@ PID = "proj-20260903194907"
 VOL = 1
 CHAPTERS = [1, 2, 3, 4, 5]
 GEN_TOKENS = 4096       # deepseek-chat 非思考，预算即正文预算
-LENGTH_CAP_CHARS = 7000
 BROADCAST_CASTING = True   # ADR-021 事件级选角 LLM 推理（v1 对照验证开；失败自动降级不阻断）
 LOG = Path(__file__).resolve().parent / "firstbook5_log_v2.jsonl"  # v2：B/A/C/D 后真机回归，与 9/3 基线分档
 
@@ -97,7 +96,6 @@ def run_chapter(ch: int, provider, embedding) -> dict:
         knowledge_llm=True, event_review=True,
         event_polish=True, readback=True,
         jit_characters=True, supplement_settings=True,
-        length_cap_chars=LENGTH_CAP_CHARS,
         broadcast_casting=BROADCAST_CASTING,
     )
     if not res.ok:
