@@ -188,6 +188,7 @@ class Blueprint:
             "skills": [],
             "settings": [],
             "threads": [],
+            "lines": [],
             "style": {},
             "volumes": [],
             "chapters": [],

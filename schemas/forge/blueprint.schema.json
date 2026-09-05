@@ -185,6 +185,31 @@
         "additionalProperties": true
       }
     },
+    "lines": {
+      "type": "array",
+      "description": "线索账本骨架（ADR-025，应然中间态；sync_bible 导出 bible/lines.json 并合并运行态）。",
+      "items": {
+        "type": "object",
+        "required": ["id", "desc", "kind"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^ln:[A-Za-z0-9_-]+$" },
+          "desc": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["main", "subplot", "hidden"] },
+          "carrier": { "enum": ["object", "goal", "character", "emotion", "faction", "theme", ""] },
+          "scope": { "enum": ["volume", "book"] },
+          "members": { "type": "array", "items": { "type": "string" } },
+          "target": {
+            "type": "object",
+            "properties": {
+              "vol": { "type": "integer", "minimum": 1 },
+              "note": { "type": "string" }
+            }
+          },
+          "status": { "enum": ["dormant", "pending", "active", "suspended", "closed"] }
+        },
+        "additionalProperties": true
+      }
+    },
     "style": {
       "type": "object",
       "properties": {

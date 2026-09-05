@@ -147,6 +147,9 @@ _BOOK_OUTPUT_PROTOCOL = """{
   "items": [{"id": "item:xxx", "name": "物品名", "type": "consumable|equipment|artifact|material|currency|other", "desc": "描述"}],
   "style": {"tense": "过去|现在", "narration": "叙事风格说明", "glossary": [{"term": "术语", "note": "解释"}]},
   "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1}],
+  "lines": [{"id": "ln:xxx", "desc": "线索内容一句话", "kind": "main|subplot|hidden",
+             "carrier": "object|goal|character|emotion|faction|theme", "scope": "book|volume",
+             "members": ["char:xxx"], "target": {"vol": 1, "note": "远期落点一句话"}}],
   "volumes": [{"vol": 1, "title": "卷名", "summary": "本卷主线", "key_beats": ["关键转折"],
                "threads_to_payoff": ["pt:xxx"]}],
   "time_origin": "故事时间原点（t=0 锚点）"
@@ -211,14 +214,54 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
 1. 主角必给一张卡（role=protagonist）；原话没给主角名就按卖点拟一个合理的。
 2. volumes 恰好 {scale.get('volumes', 3)} 卷（vol=1..N），每卷给 title/summary/key_beats/threads_to_payoff。
 3. worldview.power_system.levels 沿用模板境界体系，可按本书微调。
-4. 所有 id 用前缀：char:/loc:/item:/pt:。
+4. 所有 id 用前缀：char:/loc:/item:/pt:/ln:。
 5. key_beats 每卷 3–6 条；threads 给 3–8 条主线伏笔。
 6. 世界观 rules（世界铁律）2–5 条，必须与力量机制自洽。
 7. hidden_level 只给"表面修为与实际战力不符"的人物（扮猪吃虎型主角等）；普通人卡省略该键。
+8. lines 线索骨架 2–6 条：**主线（kind=main）恰好 1 条**且必须给 target（远期落点）；
+   支线 subplot 1–4 条（跨章串联剧情的才算——1-2 章就完结的微线不要登记）；
+   暗线 hidden 0–2 条；每条给 carrier（载体类型）与 members（关联实体 id）。
 
 按以下 JSON 输出（键名严格一致，缺省用空对象/空数组）：
 {_BOOK_OUTPUT_PROTOCOL}"""
     return "你是网文立项设定师（Forge book 节点，docs/10 §7.2）。", user
+
+
+def _lines_ledger(ctx: NodeContext) -> list[dict]:
+    """线索账本读取（构建期）：bible/lines.json 优先（运行态真实），退回蓝图骨架段。"""
+    from ..core.lines import load_lines
+
+    try:
+        rows = load_lines(ctx.ws, ctx.project_id)
+    except Exception:  # noqa: BLE001 - 降级为现状行为（无账本）
+        rows = []
+    if rows:
+        return rows
+    return [r for r in ctx.bp.section("lines") if isinstance(r, dict) and r.get("id")]
+
+
+def _lines_block_for_volume(ctx: NodeContext, vol: int) -> str:
+    """卷纲注入块（四级视图之一）：dormant 骨架全集 + 前卷延续 active 线 + 前卷闭合线 yield。"""
+    rows = _lines_ledger(ctx)
+    if not rows:
+        return ""
+    parts: list[str] = []
+    dormant = [r for r in rows if r.get("status") in ("dormant", "pending")]
+    if dormant:
+        parts.append("待开线索骨架（登记未开，本卷可按计划开启）：")
+        parts.extend(f"- {r['id']}（{r.get('kind')}）：{str(r.get('desc') or '')[:40]}"
+                     for r in dormant[:8])
+    active = [r for r in rows if r.get("status") in ("active", "suspended")]
+    if active:
+        parts.append("前卷延续的在途线索（本卷必须继续推进或显式收束）：")
+        parts.extend(f"- {r['id']}（{r.get('kind')}，{r.get('status')}）：{str(r.get('desc') or '')[:40]}"
+                     for r in active[:6])
+    closed = [r for r in rows if (r.get("status") == "closed" or r.get("closed"))
+              and r.get("yield")]
+    if closed:
+        parts.append("已闭合线索的收获（支线 yield 回流主线的落点，本卷消费或呼应）：")
+        parts.extend(f"- {r['id']} → {str(r.get('yield'))[:60]}" for r in closed[:6])
+    return "\n".join(parts)
 
 
 def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -241,19 +284,25 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
                            + ("本卷为末卷——主线必须在本卷收敛到该结局，"
                               "不得再开新主线钩子。" if is_final else
                               "本卷主线须朝该结局实质推进，不得偏离。"))
+    lines_block = _lines_block_for_volume(ctx, vol)
+    lines_section = f"\n\n【线索账本视图（ADR-025，卷级）】\n{lines_block}\n" \
+                    "本卷 line_plan.open 只能从上列待开线索选 id，不得自造。" \
+        if lines_block else ""
     user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}{anchor_section}{endgame_section}
+【流派卷弧提示】{arc}{anchor_section}{endgame_section}{lines_section}
 
 【输出 JSON】
 {{
   "vol": {vol},
   "title": "卷名",
   "summary": "本卷主线一句话（每章生成时注入）",
-  "key_beats": ["3-6 个关键转折"],
+  "arc": {{"goal": "本卷主线节目标", "obstacle": "核心阻碍", "outcome": "达成或失败（允许受挫，不必全胜）", "cost": "结果与代价（赢了失去什么/输了保住什么）", "bridge": "衔接下一主线节"}},
+  "key_beats": ["3-6 个关键转折（含代价事件——胜利/失败都要留账）"],
   "threads_to_payoff": ["本卷须回收的伏笔 id，没有则空数组"],
+  "line_plan": {{"open": ["ln:xxx 本卷开启的线索"], "note": "开线计划一句话（活跃支线至多 3 条，超出请显式挂起最冷的线）"}},
   "chapter_notes": "本卷各章走向提示（供细纲师），两三句话"
 }}
 只输出 JSON。"""
@@ -375,6 +424,30 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     threads_bp = [t for t in bp.section("threads") if t.get("id")]
     threads_block = "；".join(
         f"{t['id']}（{str(t.get('desc') or '')[:24]}）" for t in threads_bp[:12]) or "（本书暂无伏笔）"
+    # ADR-025：章纲层线索视图（唯一决策层）——active 全量单行卡 + 冷却告警置顶 +
+    # closed 禁复活负清单；lines_present 动作由本节点产出并过人审（事实开启点）。
+    from ..core.lines import chapter_view
+    from ..core.phase import Phase, PhasePolicy, VolumeContext
+
+    lines_block = ""
+    lines_rule = ""
+    try:
+        _policy = PhasePolicy.load(ctx.ws, ctx.project_id)
+        _vctx = VolumeContext.load(ctx.ws, ctx.project_id, vol)
+        _phase, _why = _policy.judge(_vctx, ch)
+        ledger = _lines_ledger(ctx)
+        if ledger:
+            lines_block, _lwarns = chapter_view(
+                ledger, vol, ch, int(scale.get("chapters_per_volume", 20) or 20),
+                tail_phase=_phase is Phase.TAIL, opening_phase=_phase is Phase.OPENING)
+            if lines_block:
+                lines_rule = ("\n\n" + lines_block
+                              + "\n\n9. lines_present：为上列每条 active 线给一个本章动作"
+                                "（advance 推进 / flicker 露头（主线休眠章合法形态）/"
+                                "suspend 显式挂起）；dormant 线按计划 open；动作目标写在 note。"
+                                "已闭合线不得出现在 lines_present。")
+    except Exception:  # noqa: BLE001 - 线索视图任何异常降级为无注入
+        lines_block = ""
     anchors_block = _anchors_block(ctx)
     anchor_section = (f"\n\n【硬性锚点（用户原话，细纲不得与之矛盾或偷改数值/时间跨度）】\n{anchors_block}"
                       if anchors_block else "")
@@ -428,7 +501,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 5. turns 1–3 条：本章转折/推进点。
 6. tension：一句话说清本章张力来源（主角的两难/威胁/悬念——每个事件都要服务于它，
    不是重复事件内容）。hook：章末钩子（最后一个事件以此收尾，拉住读者翻下一章）。
-{opening_rule}{dedup_rule}{title_rule}
+{opening_rule}{dedup_rule}{title_rule}{lines_rule}
 
 【输出 JSON】
 {{
@@ -440,6 +513,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
   "hook": "章末钩子一句话",
   "characters": ["char:xxx"],
   "threads_involved": ["伏笔清单中的 pt:xxx"],
+  "lines_present": [{{"id": "ln:xxx", "action": "open|advance|suspend|flicker|close", "note": "本章这条线做什么（一句话）"}}],
   "after_days": 0
 }}
 只输出 JSON。"""
@@ -996,6 +1070,10 @@ def _apply_book(ctx: NodeContext, node: dict) -> list[str]:
     # threads
     _apply_threads(bp, art.get("threads") or [])
 
+    # lines 线索骨架（ADR-025）：dormant 登记进蓝图 lines 段（sync_bible 导出 bible/lines.json）；
+    # 主线唯一 = 硬校验（raise → 引擎重试），main 缺 target 自动补占位 + 告警。
+    warns.extend(_apply_lines_skeleton(bp, art.get("lines") or []))
+
     # style（保护 user 字段）
     if art.get("style"):
         _merge_style(bp, _dict_of(art.get("style")))
@@ -1018,6 +1096,63 @@ def _apply_book(ctx: NodeContext, node: dict) -> list[str]:
         vol_n = int(v["vol"])
         v.setdefault("chapter_range", [(vol_n - 1) * K + 1, vol_n * K])
         _upsert_volume_bp(bp, v)
+    return warns
+
+
+def _apply_lines_skeleton(bp: Blueprint, rows: list) -> list[str]:
+    """book 产物 lines 骨架登记（ADR-025 阶段2）。
+
+    蓝图 lines 段只存**应然骨架**（id/desc/kind/carrier/scope/members/target，
+    status 恒 dormant——实然由 sync_bible 合并盘上运行态）。硬校验：
+    - 主线不唯一 → ValueError（引擎重试，与事件去重闸同一模式）；
+    - main 缺 target → 自动补占位（末卷落点）+ 告警（不阻断）。
+    """
+    from ..core.lines import new_line, validate_lines
+
+    warns: list[str] = []
+    scale = bp.get("meta.scale") or {}
+    skeleton: list[dict] = []
+    for r in rows or []:
+        if not isinstance(r, dict) or not str(r.get("id") or "").strip() \
+                or not str(r.get("desc") or "").strip():
+            continue
+        lid = str(r["id"]).strip()
+        if not lid.startswith("ln:"):
+            tail = re.sub(r"^(ln|line)[:：]", "", lid).strip(":： ") or "line"
+            lid = f"ln:{tail}"
+        row = new_line(lid, str(r["desc"]),
+                       kind=str(r.get("kind") or "subplot"),
+                       carrier=str(r.get("carrier") or ""),
+                       scope=str(r.get("scope") or "book"),
+                       members=[str(m) for m in (r.get("members") or []) if m],
+                       target=r.get("target") if isinstance(r.get("target"), dict) else None)
+        skeleton.append(row)
+    mains = [x for x in skeleton if x["kind"] == "main"]
+    if len(mains) == 0 and skeleton:
+        warns.append("lines 骨架缺主线（kind=main 恰好 1 条），请人工补登")
+    for x in mains:
+        if not (isinstance(x.get("target"), dict) and x["target"].get("vol")):
+            x["target"] = {"vol": int(scale.get("volumes", 1) or 1),
+                           "note": "（book 节点未给远期落点，占位待人工修订）"}
+            warns.append(f"{x['id']}: main 缺 target，已按末卷占位")
+    for row in skeleton:
+        existing = bp.find_by_id("lines", row["id"])
+        if existing is None:
+            bp.upsert("lines", dict(row))
+            bp.set_provenance(f"lines[{row['id']}]", "llm", 0.8)
+        else:
+            merged = dict(existing)
+            for k, v in row.items():
+                if not bp.is_protected(f"lines[{row['id']}].{k}"):
+                    merged[k] = v
+            bp.upsert("lines", merged)
+    # 主线唯一硬校验作用在**合并后的账本**上（骨架 + 已有行）——重跑 build 追加
+    # 第二条主线同样要拦（引擎重试）。
+    merged_errs = validate_lines(bp.section("lines"))
+    hard = [e for e in merged_errs if "主线不唯一" in e]
+    if hard:
+        raise ValueError(f"{hard[0]}，拒绝落盘并重生成——主线唯一是硬约束")
+    warns.extend(e for e in merged_errs if "主线不唯一" not in e)
     return warns
 
 
@@ -1061,9 +1196,36 @@ def chapter_range_of(vol: int, chapters_per_volume: int) -> list[int]:
 def _apply_volume(ctx: NodeContext, node: dict) -> list[str]:
     art = node["artifact"] or {}
     bp = ctx.bp
+    warns: list[str] = []
     scale = bp.get("meta.scale") or {}
     K = int(scale.get("chapters_per_volume", 20))
     vol = ctx.vol
+    # 卷弧五元组（ADR-025 阶段2）：目标/阻碍/达成或失败/结果含代价/衔接——outcome 允许
+    # 受挫，治"每卷必全胜"的旧问题 C1。归一为 dict[str,str]，缺键留空。
+    arc_raw = art.get("arc") if isinstance(art.get("arc"), dict) else {}
+    arc = {k: str(arc_raw.get(k) or "").strip()[:120]
+           for k in ("goal", "obstacle", "outcome", "cost", "bridge")}
+    if any(arc.values()):
+        warns.append(f"卷 {vol}：五元组 outcome='{arc['outcome'][:30]}'"
+                     + ("" if arc["outcome"] else "（未给）")
+                     + "——允许受挫，key_beats 应含代价事件")
+    # 本卷开线计划（line_plan）：登记进卷行供细纲师消费；悬空 id 丢弃 + 告警
+    plan_raw = art.get("line_plan") if isinstance(art.get("line_plan"), dict) else {}
+    valid_ln = {str(r.get("id")) for r in _lines_ledger(ctx)}
+    open_ids = []
+    for x in _str_list(plan_raw.get("open")):
+        if x not in valid_ln:
+            warns.append(f"卷 {vol}：line_plan.open 悬空线索 {x!r} 丢弃")
+            continue
+        open_ids.append(x)
+    line_plan = {"open": open_ids, "note": str(plan_raw.get("note") or "")[:120]}
+    # 活跃支线预算（告警级）：账本 active 支线 > 3 → 提示挂起最冷线
+    from ..core.lines import active_lines
+
+    sub_active = [r for r in active_lines(_lines_ledger(ctx)) if r.get("kind") == "subplot"]
+    if len(sub_active) > 3:
+        warns.append(f"卷 {vol}：活跃支线 {len(sub_active)} 条 > 预算 3（{'、'.join(r['id'] for r in sub_active)}）"
+                     "——请显式挂起最冷的线")
     row = {
         "id": f"vol:{vol}",
         "vol": vol,
@@ -1075,6 +1237,10 @@ def _apply_volume(ctx: NodeContext, node: dict) -> list[str]:
         "threads_to_payoff": _str_list(art.get("threads_to_payoff")),
         "target_words": int(scale.get("target_words_per_chapter", 2400)) * K,
     }
+    if any(arc.values()):
+        row["arc"] = arc
+    if open_ids or line_plan["note"]:
+        row["line_plan"] = line_plan
     if art.get("chapter_notes"):
         row["chapter_notes"] = str(art["chapter_notes"])
     # outline/volumes.json upsert by vol
@@ -1121,6 +1287,8 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
         "hook": str(gist.get("hook") or ""),         # D1：章末钩子
         "characters": [str(c) for c in (gist.get("characters") or [])],
         "threads_involved": [str(t) for t in (gist.get("threads_involved") or [])],
+        "lines_present": [dict(x) for x in (gist.get("lines_present") or [])
+                          if isinstance(x, dict)],   # ADR-025：本章线索动作（事件层消费）
         "after_days": int(gist.get("after_days") or 0),
         "beats": [str(b) for b in (gist.get("beats") or [])],  # F4b：重场戏拍级提示
     }
@@ -1153,6 +1321,9 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
                      f"前面的事件只须让情节朝此方向发展，严禁提前写钩子内容）：{fm['hook']}")
     if fm["threads_involved"]:
         parts.append(f"- 伏笔：{'、'.join(fm['threads_involved'])}")
+    if fm["lines_present"]:
+        # ADR-025：行内 JSON（core/lines.parse_line_decl 解析，事件层命中注入的声明源）
+        parts.append(f"本章线索: {json.dumps(fm['lines_present'], ensure_ascii=False)}")
     if fm["beats"]:
         parts.append("- 节拍：" + " ｜ ".join(fm["beats"]))
     return "\n".join(parts) + "\n"
@@ -1229,11 +1400,43 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
         "threads_involved": threads,
         "after_days": int(art.get("after_days") or 0),
     }
+    # ADR-025 阶段2：lines_present 人审落定 → 账本动作（open/advance/suspend/flicker/close）
+    # + 确定性校验（悬空 id / 死线复活 / 收尾期禁 open / 开篇期 hidden 禁揭开 = 告警不阻断）。
+    # 声明先随 fm/细纲 md 落盘（事件层消费），再落账本；落账失败不影响细纲。
+    lp_warns: list[str] = []
+    acts: list[dict] = []
+    for x in art.get("lines_present") or []:
+        if isinstance(x, dict) and str(x.get("id") or "").startswith("ln:"):
+            acts.append({"id": str(x["id"]), "action": str(x.get("action") or "advance"),
+                         "note": str(x.get("note") or "")[:80]})
+    if acts:
+        gist["lines_present"] = acts
     md = render_gist_md(gist, vol, ch, names)
     p = ctx.ws.outline_chapter_path(ctx.project_id, vol, ch)
     p.parent.mkdir(parents=True, exist_ok=True)
     ctx.ws.write_text(p, md)
     _upsert_chapter_bp(bp, gist)
+
+    if acts:
+        try:
+            from ..core.lines import apply_chapter_actions
+            from ..core.phase import Phase, PhasePolicy, VolumeContext
+
+            _policy = PhasePolicy.load(ctx.ws, ctx.project_id)
+            _vctx = VolumeContext.load(ctx.ws, ctx.project_id, vol)
+            _phase, _ = _policy.judge(_vctx, ch)
+            ledger = _lines_ledger(ctx)
+            if not ledger:
+                lp_warns.append(f"chapter {vol}-{ch}: lines_present 有声明但账本为空，全部忽略")
+            else:
+                lp_warns.extend(apply_chapter_actions(
+                    ctx.ws, ctx.project_id, ledger, vol, ch, acts,
+                    tail_phase=_phase is Phase.TAIL,
+                    opening_phase=_phase is Phase.OPENING))
+        except Exception as e:  # noqa: BLE001 - 线索落账失败不阻断细纲（ADR-021 降级纪律）
+            lp_warns.append(f"chapter {vol}-{ch}: lines_present 落账失败"
+                            f"（{type(e).__name__}），细纲已正常落盘")
+    warns.extend(lp_warns)
     return warns
 
 
@@ -1581,6 +1784,10 @@ def _merge_protected_section(bp: Blueprint, sec: str, old, new):
 _RUNTIME_FIELDS: dict[str, tuple[tuple[str, ...], bool]] = {
     "bible/settings.json": (("revealed", "first_ch"), True),
     "bible/plot_threads.json": (("status", "planted", "returned"), False),
+    # 线索账本（ADR-025）：蓝图只持应然骨架（id/desc/kind/carrier/scope/members/target），
+    # 其余全是运行态；keep_extra=True 保留盘上独有行（生成期提名 pending、人工转正行）。
+    "bible/lines.json": (("status", "opened", "last_seen", "progress", "yield",
+                          "closed", "closing_candidate", "resume_hint"), True),
     "bible/items.json": (("state", "aliases"), False),
     "bible/skills.json": (("state", "aliases"), False),
     "bible/locations.json": (("status", "aliases"), True),
@@ -1695,6 +1902,22 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
     threads = _merge_bible_rows(ws, project_id, "bible/plot_threads.json", threads,
                                 *_RUNTIME_FIELDS["bible/plot_threads.json"])
     write("bible/plot_threads.json", threads)
+    # lines 线索账本（ADR-025）：应然骨架 + 运行态合并（同 threads 的非 mirror 语义）
+    lines_rows = []
+    for ln in bp.section("lines"):
+        if not isinstance(ln, dict) or not ln.get("id"):
+            continue
+        row = dict(ln)
+        row.setdefault("status", "dormant")
+        # 蓝图骨架行可能缺实然键（sync 早于任何回写）——补齐形状，schema 校验不炸
+        for k in ("opened", "last_seen", "progress", "yield", "closed",
+                  "closing_candidate"):
+            row.setdefault(k, None if k != "progress" else [])
+        lines_rows.append(row)
+    if lines_rows or ws._abs(f"{project_id}/bible/lines.json").exists():  # noqa: SLF001
+        lines_rows = _merge_bible_rows(ws, project_id, "bible/lines.json", lines_rows,
+                                       *_RUNTIME_FIELDS["bible/lines.json"])
+        write("bible/lines.json", lines_rows)
     # 有内容才写其余段（同样白名单过滤）
     for section, rel, keep in (("locations", "bible/locations.json",
                                 {"id", "name", "parent", "desc", "status", "revision", "aliases"}),

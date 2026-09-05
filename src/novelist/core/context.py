@@ -225,7 +225,8 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
                 L.append(f"- {label}：{st[key]}")
         if st.get("tone"):
             L.append(f"- 笔调：{'、'.join(st['tone'])}")
-        # target_words_per_chapter 已按用户指示不注入 prompt（2026-09-05 移除字数需求）
+        # target_words_per_chapter 不在 system prompt 注入目标值（2026-09-05 决定保留）；
+        # 2026-09-06 起字数**下限**（目标的 85%）注入 user_goal（见 build_chapter_context）。
         if banned:
             L.append(f"- 禁用词，出现即失败：{'、'.join(banned)}")
         if modern:
@@ -246,9 +247,8 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         if blk:
             L.append("")
             L.append(blk)
-        # 注：不在 prompt 注入字数目标——2026-09-05 用户决定移除字数注入
-        # （注入会诱发凑字）。chapter-rhythm 卡因此只规范节奏结构，
-        # 篇幅达标由生成后的统计/验收环节负责。
+        # 注：system prompt 不注入字数目标；下限注入走 user_goal（build_chapter_context，
+        # 2026-09-06 拍板），chapter-rhythm 卡只规范节奏结构与"不足补什么"。
 
     proto = st.get("protagonist") or {}
     if proto.get("name"):
@@ -346,7 +346,18 @@ def build_chapter_context(
         goal += ["", "【细纲】（必须逐条落实，不得遗漏要点）", _g.strip()[:gist_max_chars]]
     if memories:
         goal += ["", "【前情提要】（先忆：必须与以下已发生的事实保持连续）", *memories]
-    goal += ["", "要求：严格按细纲推进，写完本章全部要点，结尾必须是一个完整的收束句。"]
+    # 字数下限注入（2026-09-06 用户拍板，改"不注入字数"旧决定）：lingyu5 真机实证
+    # 各章达成率 48%-82%，系统性欠写。只给**下限**（目标的 85%）不给目标值——凑字
+    # 动机弱、欠写有托底；措辞明确"不注水"（补场面/细节，不补独白），与
+    # chapter-rhythm 工艺卡"不足补场面"条款配合。（源码级守卫见 test_batch2_adb。）
+    _tw = (bible.get("style") or {}).get("target_words_per_chapter")
+    try:
+        _floor = int(int(_tw) * 0.85)
+    except (TypeError, ValueError):
+        _floor = 0
+    _floor_txt = (f"，本章正文不少于 {_floor} 字（这是下限不是目标：不足靠补场面、"
+                  f"动作与细节达成，严禁注水独白）" if _floor > 0 else "")
+    goal += ["", f"要求：严格按细纲推进，写完本章全部要点{_floor_txt}，结尾必须是一个完整的收束句。"]
 
     return ChapterContext(
         system_prompt=system_prompt,

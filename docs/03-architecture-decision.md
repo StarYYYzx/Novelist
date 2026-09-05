@@ -472,6 +472,36 @@
     旧文风险，自动修订暂缓——按用户指示搁置）。
   - 测试 8 例（tests/test_review_gate.py）；存量 build/run_seed 测试补 `gate=False`。
 
+### ADR-025 线索（Line）子系统：一份账本四级视图（设计定稿 2026-09-06，**批1 已编码 2026-09-06**）
+
+> 来源：lingyu5 真机实证——宗门暗线 5 章 7654 字仅 3 次名词提及、零处暗线场景。
+> threads（plot_threads）语义是伏笔（何时收），从不回答"这条线这章在不在场"；
+> 章纲 threads_involved 填了但 core/ 零消费；人物有 ADR-020 调度层而线索没有。
+> 全量设计见 `docs/线索子系统设计与规划-2026-09-06.md`（含外部方法论吸收与拍板记录）。
+
+- **决策**：
+  1. **账本**：`bible/lines.json` 单一文件（ADR-016），字段按 ADR-011 分应然
+     （kind main/subplot/hidden、carrier、scope、target）与实然（status、opened、
+     last_seen、progress 只追加、yield、closed）。主线唯一 + main.target 必填 = 硬校验。
+  2. **起止三级落定**：蓝图 book 节点骨架登记（dormant）→ 卷纲 line_plan →
+     章纲 `lines_present` 过人审 = 事实开启点。生成期模型只有提名权：
+     Chronicler 记 pending → 下一章细纲审批人工转正。
+  3. **事件始、事件终**：Chronicler 线索行（`线索：ln:x | 推 | 一句话`）+ 确定性校验；
+     与 target 计划吻合 → 自动闭合留痕；计划外 → closing_candidate 章末人工确认；
+     closed 留档不删，死线复活确定性拦截。
+  4. **注入 = 一份账本四级视图**：卷纲（dormant 全集 + 前卷 yield 回流）/ 章纲
+     （active 全量单行卡 + 分档冷却告警 + closed 禁复活负清单，唯一决策层）/
+     事件生成（只给本场命中线卡 ≤3 条 + 交织标注，**钉死层 priority -1**，
+     不再依赖 RAG 命中）/ 润色（<50 字禁令）。不做 RAG 依赖注入。
+  5. **一硬多警**：主线唯一=硬；活跃支线≤3 / 收尾期禁开线 / 开篇期 hidden 禁揭开 /
+     冷却超阈（main 3、subplot 5、hidden 跨卷合法）= 告警。微线不入账。
+  6. **卷弧五元组**：卷纲 summary 升 goal/obstacle/outcome（允许受挫）/cost/bridge
+     ——治"每卷必全胜"（老问题 C1）。
+- **实施**：批1（阶段1-4 数据层/规划侧/生成注入/回写闭环）已编码，
+  `core/lines.py` + `schemas/bible/lines.schema.json` + forge book/volume/chapter
+  节点接入 + chronicler 回写 + 字数下限注入（目标 85%，2026-09-06 拍板）；
+  测试 +20（tests/test_lines.py），全量 765 passed。批2（卷中检查点/卷末审计/
+  revise 转正/真机验收）待做。
 
 ## 6. 与其他备选方案的对比小结
 

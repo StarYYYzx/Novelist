@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/bible/lines.schema.json",
+  "title": "lines",
+  "description": "线索账本（ADR-025，2026-09-06 设计定稿）。一份账本四级视图：卷纲/章纲/事件/润色。字段按 ADR-011 分应然（kind/carrier/scope/target）与实然（status/opened/last_seen/progress/yield/closed）。主线唯一（kind=main 恰好 1 条）是硬校验；closed 留档不删，死线复活在确定性校验拦截。threads（plot_threads）仍是伏笔语义，本账本是'这条线这章在不在场'的调度层。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "desc",
+      "kind",
+      "status"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^ln:[A-Za-z0-9_-]+$"
+      },
+      "desc": {
+        "type": "string",
+        "minLength": 1
+      },
+      "kind": {
+        "enum": ["main", "subplot", "hidden"],
+        "description": "main 主线（全书恰好 1 条，target 必填）/ subplot 支线 / hidden 暗线（即伏笔型静默合法）。"
+      },
+      "carrier": {
+        "enum": ["object", "goal", "character", "emotion", "faction", "theme", ""],
+        "description": "载体类型（可选）：物/行动/人/情感/组织/主题。"
+      },
+      "scope": {
+        "enum": ["book", "volume"],
+        "description": "book=跨卷；volume=卷内（闭合时 yield 必填——批2 审计）。"
+      },
+      "members": {
+        "type": "array",
+        "items": { "type": "string", "pattern": "^(char|faction|item|loc|pt|ln):" },
+        "description": "线索关联实体 id（事件层词元命中与 Chronicler 校验用）。"
+      },
+      "status": {
+        "enum": ["dormant", "pending", "active", "suspended", "closed"],
+        "description": "实然。dormant=骨架登记未开；pending=生成期提名待人工转正；active⇄suspended；closed 留档不删。"
+      },
+      "opened": {
+        "type": ["object", "null"],
+        "properties": {
+          "vol": { "type": "integer", "minimum": 1 },
+          "ch": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false,
+        "description": "事实开启点 = 章纲 lines_present 过人审落定。"
+      },
+      "last_seen": {
+        "type": ["object", "null"],
+        "properties": {
+          "vol": { "type": "integer", "minimum": 1 },
+          "ch": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false,
+        "description": "最近一次 advance/flicker/weave/reverse 的位置（冷却计算输入）。"
+      },
+      "progress": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "实然进度，只追加：'v-c [动作] 一句话'。"
+      },
+      "target": {
+        "type": ["object", "null"],
+        "properties": {
+          "vol": { "type": "integer", "minimum": 1 },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false,
+        "description": "应然远期落点；main 必填。闭合确定性校验：target.vol==当前卷 → 计划内自动闭合，否则 closing_candidate。"
+      },
+      "yield": {
+        "type": ["string", "null"],
+        "description": "闭合时登记：该线留给主线的收获（情报/能力/盟友/代价），注入下卷卷纲。"
+      },
+      "closed": {
+        "type": ["object", "null"],
+        "properties": {
+          "vol": { "type": "integer", "minimum": 1 },
+          "ch": { "type": "integer", "minimum": 0 },
+          "reason": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "closing_candidate": {
+        "type": ["object", "null"],
+        "properties": {
+          "vol": { "type": "integer", "minimum": 1 },
+          "ch": { "type": "integer", "minimum": 0 },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false,
+        "description": "计划外闭合候选：status 不变，章末汇总人工确认。"
+      },
+      "resume_hint": {
+        "type": "string",
+        "description": "挂起时的恢复提示（suspend 动作 note）。"
+      }
+    },
+    "additionalProperties": false
+  }
+}

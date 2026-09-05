@@ -820,6 +820,24 @@ M3r 验收后用户口径"做完继续讨论"的下一里程碑（人物一致�
 真机验证稳定后转 True）。开启后跑批需比对"广播名单 vs 细纲/文本兜底名单"的差异是否真的
 减少了"职能上该在场的人缺席"（前两章归因 A 类主因）。
 
+### M3t+ — 线索（Line）子系统批1（ADR-025，2026-09-06 拍板 / ✅ 代码+测试完成）
+
+lingyu5 真机归因的第三根主因链：线索在账上但生成时看不见（宗门暗线 5 章 3 次名词提及、
+零场景）。设计全档 `docs/线索子系统设计与规划-2026-09-06.md`，本批为阶段1-4 完整闭环。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 数据层 | `core/lines.py`（账本读写/确定性校验/分档冷却/四级视图/动作落账/提名转正/行解析）+ `schemas/bible/lines.schema.json`；缺文件=空账本降级 | ✅ |
+| 规划侧 | book 节点 lines 骨架登记（主线唯一=硬校验 raise 重试）；卷纲五元组 arc（outcome 允许受挫）+ line_plan + 活跃支线预算告警；章纲 lines_present 生成 + 细纲 md 行内携带（render_gist_md）+ 确定性告警（收尾禁 open/开篇 hidden 禁揭开/冷却/悬空/死线复活）；sync_bible 导出 bible/lines.json（运行态合并 keep_extra=True） | ✅ |
+| 生成注入 | prompt_budget 新增 `lines` 钉死层（-1）；事件层命中线卡（章纲声明优先+词元命中，≤3 条，≥2 条自动交织标注）——不再依赖 RAG 命中；润色 global_context 线索禁令（<50 字，账本空不加） | ✅ |
+| 回写闭环 | Chronicler 抽取 prompt 第四部分线索行（账本注入块，账本空则跳过，不加调用）；Extraction.line_rows 具名字段（不改签名）；apply_extracted_rows：开/推/闭/交织/反转 + 账本外 id 提名 pending + 计划外闭合 closing_candidate + 死线复活拦截 + progress 追加去重；ChroniclerReport 三字段回传 | ✅ |
+| 字数下限 | build_chapter_context 注入下限=目标 85%（"下限不是目标，严禁注水独白"——2026-09-06 用户拍板改 2026-09-05"不注入字数"决定；欠写 48-82% 实证托底）；system prompt 仍无目标值（源码级守卫保持） | ✅ |
+| 测试 | `tests/test_lines.py` 20 条：账本校验/冷却分档/单行卡/章纲视图/动作落账/死线复活/提名转正/事件视图命中与交织/Chronicler 行解析/规划侧硬闸/sync_bible 运行态合并/细纲 md 往返/钉死层/下限注入/schema 合法性 | ✅ 20 passed，全量 **765 passed / 3 skipped** |
+
+**遗留到批2（阶段5-6）**：卷中检查点（~50% 主线节自查）、卷末到期审计+篇幅比告警+yield
+校验落 reports、一致性引擎接死线复活拦截、revise 通道转正、真机验收（用户新需求 5 章
+按 7 项清单）。云服务器关闭期间本批未做任何依赖远程模型的验证（单测全走 fake provider）。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

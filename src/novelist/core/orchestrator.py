@@ -783,7 +783,8 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 prose_window: str = "",
                 char_budget: int = 0,
                 first_seen_lines: list[str] | None = None,
-                banned_names: list[str] | None = None) -> str:
+                banned_names: list[str] | None = None,
+                line_cards: list[str] | None = None) -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
@@ -811,6 +812,11 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
         blocks.append(("direction", "\n".join([
             "【本场人物表演指令】（逐人遵守，违反即人物崩坏；"
             "各人的语气与取舍必须彼此不同）：", *direction_lines])))
+    if line_cards:
+        # ADR-025：线索卡钉死层（priority -1）——命中的线索必须在本场**真实推进**
+        # （剧情动起来），不是复述账本；交织点两条线要互相作用，不是各写各的。
+        blocks.append(("lines", "\n".join([
+            "【本事件线索卡】（本场必须让下列线索的剧情向前走一步）：", *line_cards])))
     if cast_lines:
         blocks.append(("cast", "\n".join([
             "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
@@ -907,6 +913,16 @@ def _load_entity_tracker(ws, project_id: str):
         return EntityTracker.load(ws, project_id)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _lines_load_safe(ws, project_id: str) -> list[dict]:
+    """线索账本安全读取（ADR-025）：任何异常返回 []，调用方按空账本降级。"""
+    try:
+        from .lines import load_lines
+
+        return load_lines(ws, project_id)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _make_knowledge(ws, project_id: str, embedding):
@@ -1616,6 +1632,15 @@ def produce_chapter(
                 bible_chars = _director.load_characters(ws, project_id) if any(
                     (cast_injection, character_direction, perspective_memory)) else []
                 declared_cast = parse_cast_decl(gist_text_for_events)
+                # ADR-025：线索事件层注入的准备（每章一次）。账本缺失 = 空操作（降级）；
+                # 章纲 lines_present 声明随细纲 md 行内 JSON 带过来（render_gist_md 写入）。
+                from .lines import event_view as _lines_event_view
+                from .lines import load_lines as _lines_load
+                from .lines import parse_line_decl as _lines_parse_decl
+
+                chapter_line_decls = _lines_parse_decl(gist_text_for_events)
+                ledger_lines = _lines_load(ws, project_id)
+                _lines_K = vctx.total_chapters() if vctx is not None else 0
                 # 统一实体追踪（第八批：四阶段 + 别名消歧 + 松预算）
                 entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
@@ -1758,6 +1783,11 @@ def produce_chapter(
                     if pieces:
                         from .prompt_budget import prose_tail
                         _prose_win = prose_tail("\n\n".join(pieces), _PROSE_WINDOW_CHARS)
+                    # ADR-025：本场命中线卡（章纲声明优先 + 词元命中，≤3 条，交织自动标注）
+                    _line_cards = (_lines_event_view(
+                        ledger_lines, [d["id"] for d in chapter_line_decls],
+                        ev_text, vol, ch, _lines_K)
+                        if ledger_lines else [])
                     prompt = _event_goal(goal, ev_text, idx, len(key_events),
                                          pieces[-1] if pieces else "", seam,
                                          memories_ev, is_last, setting_lines, related,
@@ -1768,6 +1798,7 @@ def produce_chapter(
                                          appeared_notes=appeared_notes,
                                          prose_window=_prose_win,
                                          char_budget=_PROMPT_CHAR_BUDGET,
+                                         line_cards=_line_cards,
                                          # H9 修复（2026-09-05）：原先调用点漏传
                                          # banned_names——"广播拒绝点名"禁令整体是
                                          # 死代码。传入并与本场 cast 求差：若该人物
@@ -2063,6 +2094,12 @@ def produce_chapter(
             if prev_facts_txt:
                 _polish_global_parts.append("前卷既成事实（人物状态/时间线必须连续）：\n"
                                             + prev_facts_txt[:500])
+            # ADR-025：润色层线索禁令（<50 字；账本为空不加，行为与旧版一致）
+            _plines = _lines_load_safe(ws, project_id)
+            if _plines:
+                _plines_txt = "线索禁令：暗线只可推进不可点破真相；已闭合线索不得再当活线写。"
+                if len(_plines_txt) < 50:
+                    _polish_global_parts.append(_plines_txt)
         except Exception:  # noqa: BLE001 - 全局块失败不影响润色本身
             pass
         _polish_global = ("\n\n【全书视野（通读顺稿用，禁止写进正文）】\n" +

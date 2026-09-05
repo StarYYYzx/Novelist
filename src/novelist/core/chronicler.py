@@ -65,6 +65,16 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 
 时间行必须输出 1 条；约定行最多 1 条，没有就不写。
 
+第四部分——线索行（**仅当下方列出了【本书线索账本】时才输出**；账本为空则整个部分跳过）：
+线索：ln:xxx | 推 | 一句话
+- 只使用【本书线索账本】中列出的线索 id，**不得自造 id**
+- 动作只许：开（账本 dormant 线在本章正式启动）、推（active 线剧情推进）、
+  闭（该线在本章收束完结）、交织（两条线在同一事件互相作用）、反转（剧情转折）
+- 本章没碰任何线索就不输出；**宁缺勿滥，不要为了交差硬凑线索行**
+- 判断"这条线在本章动了没有"看剧情事实：宗门派人查探=推；主角得知内幕=推；
+  线索真相揭晓并完结=闭
+
+{lines_block}
 不要输出标题、序号、解释或空行。事件最多 {max_events} 条，宁少勿多。
 
 正文：
@@ -132,6 +142,7 @@ class Extraction:
     state_changes: list[tuple[str, dict]] = field(default_factory=list)
     time_lines: list[str] = field(default_factory=list)      # 「时间：+90日（| 备注）」原文
     pending_lines: list[str] = field(default_factory=list)   # 「约定：叶岚出关｜+90日」原文
+    line_rows: list[dict] = field(default_factory=list)      # ADR-025：「线索：ln:x | 推 | …」解析结果
 
 
 @dataclass
@@ -146,6 +157,10 @@ class ChroniclerReport:
     state_updates: dict[str, dict] = field(default_factory=dict)
     # 伏笔流转（暗线）：本轮 planted→active 的伏笔数
     threads_activated: int = 0
+    # ADR-025：线索账本回写摘要（变更/计划外闭合候选/新提名 pending）
+    lines_changed: list[str] = field(default_factory=list)
+    line_candidates: list[str] = field(default_factory=list)
+    lines_pending: list[str] = field(default_factory=list)
     # 时间轴（ADR-019）：本轮推进的天数（0 = 未推进/闪回）
     time_advanced: int = 0
     # 时间轴：本轮登记的定时事件 [(pending_id, what, due)]
@@ -208,20 +223,44 @@ class Chronicler:
                 ids.append(cid)
         return ids
 
+    def _build_lines_block(self) -> str:
+        """线索账本注入块（ADR-025）：账本为空/全闭合 → 空串（prompt 要求跳过线索行）。"""
+        from .lines import load_lines
+
+        try:
+            ledger = load_lines(self.ws, self.project_id)
+        except Exception:  # noqa: BLE001
+            return ""
+        live = [ln for ln in ledger
+                if ln.get("status") != "closed" and not ln.get("closed")]
+        if not live:
+            return ""
+        rev = {v: k for k, v in self._name_map.items()}
+        rows = []
+        for ln in live[:8]:
+            members = "、".join(rev.get(str(m), str(m))
+                                for m in (ln.get("members") or [])[:4] if m)
+            rows.append(f"- {ln.get('id')}（{ln.get('kind')}·{ln.get('status')}"
+                        + (f"；成员：{members}" if members else "")
+                        + f"）：{str(ln.get('desc') or '')[:40]}")
+        return "【本书线索账本】（线索行只准引用下列 id）：\n" + "\n".join(rows)
+
     # ---- 抽取 ----
     def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500
                 ) -> Extraction:
-        """LLM 从正文抽取事件、状态变化、时间推进与约定（ADR-019）。
+        """LLM 从正文抽取事件、状态变化、时间推进、约定与线索行（ADR-019 / ADR-025）。
 
-        无 LLM 时返回空 `Extraction`（不做假）。时间/约定行搭在同一次抽取调用里，
-        **不额外增加 LLM 调用**。
+        无 LLM 时返回空 `Extraction`（不做假）。时间/约定/线索行搭在同一次抽取调用里，
+        **不额外增加 LLM 调用**；账本为空时 prompt 不要求线索行（行为与旧版一致）。
         """
         if self.llm is None or not chapter_text.strip():
             return Extraction()
         res = self.llm.complete(
             LLMRequest(
                 messages=[LLMMessage(role="user",
-                                     content=EXTRACT_PROMPT.format(max_events=max_events)
+                                     content=EXTRACT_PROMPT.format(
+                                         max_events=max_events,
+                                         lines_block=self._build_lines_block())
                                      + _chapter_window(chapter_text, max_chars))],
                 max_tokens_out=450,
                 temperature=0.3,
@@ -233,12 +272,14 @@ class Chronicler:
 
     def _parse(self, content: str, max_events: int) -> Extraction:
         from . import worldstate
+        from .lines import parse_line_rows
         from .timeline import _PENDING_LINE_RE, _TIME_LINE_RE
 
-        # 状态/时间/约定行先摘出来，避免被当成事件行
+        # 状态/时间/约定/线索行先摘出来，避免被当成事件行
         state_changes = worldstate.parse_state_lines(content, self._name_map)
         time_lines: list[str] = []
         pending_lines: list[str] = []
+        line_rows = parse_line_rows(content)
         event_lines: list[str] = []
         for ln in content.splitlines():
             s = ln.strip()
@@ -250,6 +291,8 @@ class Chronicler:
                     pending_lines.append(s)
             elif s.startswith(("状态：", "状态:")):
                 continue
+            elif s.startswith(("线索：", "线索:")):
+                continue                     # 线索行由 parse_line_rows 统一解析
             else:
                 event_lines.append(ln)
 
@@ -277,7 +320,8 @@ class Chronicler:
             if len(out) >= max_events:
                 break
         return Extraction(events=out, state_changes=state_changes,
-                          time_lines=time_lines, pending_lines=pending_lines)
+                          time_lines=time_lines, pending_lines=pending_lines,
+                          line_rows=line_rows)
 
     # ---- 写入（含冲突双检）----
     def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int,
@@ -338,13 +382,16 @@ class Chronicler:
                state_changes: list[tuple[str, dict]] | None = None,
                tag: str = "c", payoff: bool = False,
                time_lines: list[str] | None = None,
-               pending_lines: list[str] | None = None) -> ChroniclerReport:
+               pending_lines: list[str] | None = None,
+               line_rows: list[dict] | None = None) -> ChroniclerReport:
         """逐条写入；冲突回退并记入 report，不静默入库（docs/06 §4.4）。
 
         `state_changes` 非空时同步更新世界状态（B-STATE），
         并把 delta 写进对应人物经历的 `state_delta` 字段（docs/06 §3.5 预留字段）。
         `payoff=True`（收尾期，第九批）：命中事件的 active 伏笔自动判 paid_off。
         `time_lines` / `pending_lines`（ADR-019）：推进故事时间、登记定时事件。
+        `line_rows`（ADR-025）：线索行回写账本（开/推/闭/交织/反转 + 计划外闭合
+        candidate + 账本外 id 提名 pending），确定性校验，任何失败降级不阻断。
         """
         report = ChroniclerReport(extracted=len(events), events=list(events))
         pid = project_id or self.project_id
@@ -369,6 +416,20 @@ class Chronicler:
 
         # 暗线：先做伏笔↔事件关联与状态流转，再写入（affected_threads 非空才有闭环）
         report.threads_activated = self._link_threads(events, vol, ch, payoff=payoff)
+
+        # 线索账本回写（ADR-025）：实时落账（ADR-013 事件落定即回写，不等章末）
+        if line_rows:
+            try:
+                from .lines import apply_extracted_rows, load_lines as _load_ledger
+
+                _res = apply_extracted_rows(self.ws, pid, _load_ledger(self.ws, pid),
+                                            line_rows, vol, ch)
+                report.lines_changed = _res.get("changed") or []
+                report.line_candidates = _res.get("candidates") or []
+                report.lines_pending = _res.get("pending") or []
+                report.warnings.extend(_res.get("warnings") or [])
+            except Exception as e:  # noqa: BLE001 - 账本回写失败降级，绝不阻断编纂
+                report.warnings.append(f"线索账本回写失败（{type(e).__name__}），已跳过")
 
         for i, ev in enumerate(events, 1):
             try:
@@ -711,4 +772,4 @@ class Chronicler:
         ex = self.extract(chapter_text, max_events=max_events)
         return self.commit(ex.events, vol, ch, state_changes=ex.state_changes, tag=tag,
                            payoff=payoff, time_lines=ex.time_lines,
-                           pending_lines=ex.pending_lines)
+                           pending_lines=ex.pending_lines, line_rows=ex.line_rows)
