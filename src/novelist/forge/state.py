@@ -147,7 +147,11 @@ def _coerce_src_deep(node: Any) -> None:
 
 
 def _coerce_int_or_none(v) -> int | None:
-    """数值字段防御归一（幂等）：'vol_1'/'第2卷'/'3' → int；解析失败 → None（schema 放行 null）。"""
+    """数值字段防御归一（幂等）：'vol_1'/'第2卷'/'3' → int；解析失败 → None。
+
+    注意：schema 对 target_vol/planted.vol/ch 的约束是 integer minimum 1，
+    **不允许 null**——调用方拿到 None 必须删键（可选字段缺省），不能保留。
+    """
     if v is None:
         return None
     if isinstance(v, bool):
@@ -221,14 +225,26 @@ class Blueprint:
                                                _THREAD_STATUS_ALIASES, "unplanned")
                     t["scope"] = _coerce_enum(t.get("scope"), _THREAD_SCOPE,
                                               _THREAD_SCOPE_ALIASES, "book")
-                    # 数值字段归一（真机：LLM 把 target_vol 写成 'vol_1' 字符串，schema 要 integer）
+                    # 数值字段归一（真机：LLM 把 target_vol 写成 'vol_1' 或 null——
+                    # 长篇不封顶的 book 线常无目标卷）。schema 要 integer≥1 且不容 null，
+                    # 归一失败/越界 → 删键（可选字段缺省，phase.py 对缺省有兜底）。
                     if "target_vol" in t:
-                        t["target_vol"] = _coerce_int_or_none(t.get("target_vol"))
+                        iv = _coerce_int_or_none(t.get("target_vol"))
+                        if iv is None or iv < 1:
+                            t.pop("target_vol", None)
+                        else:
+                            t["target_vol"] = iv
                     planted = t.get("planted")
                     if isinstance(planted, dict):
                         for k in ("vol", "ch"):
                             if k in planted:
-                                planted[k] = _coerce_int_or_none(planted.get(k))
+                                iv = _coerce_int_or_none(planted.get(k))
+                                if iv is None or iv < 1:
+                                    planted.pop(k, None)
+                                else:
+                                    planted[k] = iv
+                        if not planted:
+                            t.pop("planted", None)
         chars = self.data.get("characters")
         if isinstance(chars, list):
             for c in chars:

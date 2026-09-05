@@ -262,94 +262,79 @@ def test_bp_section_does_not_clobber_dict_section(tmp_path):
     assert bp.section("locations") == []
 
 
-def test_bp_section_does_not_clobber_dict_section(tmp_path):
-    """回归：section("worldview") 不得把 dict 段洗成 []（2026-09-05 真机事故，
-    run_blueprint_review 读 worldview 即触发，蓝图在内存中被毁，schema 崩）。"""
+def test_volume_facts_chunked_path(tmp_path, monkeypatch):
+    """超长卷走两段式：逐章摘要 + 合并，每段请求都小（12GB 显存 OOM 教训）。"""
+    import novelist.core.volume_facts as vf
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p1"
+    for ch in range(1, 4):
+        ws.draft_path(pid, 1, ch).parent.mkdir(parents=True, exist_ok=True)
+        ws.draft_path(pid, 1, ch).write_text("第" + str(ch) + "章正文" * 50, encoding="utf-8")
+
+    calls = {"n": 0}
+
+    class FakeProv:
+        def complete(self, req):
+            calls["n"] += 1
+            content = req.messages[0].content
+            if "第 1 卷第" in content:  # 逐章摘要段
+                return _Resp("- 陈讯：管理员权限+1")
+            # 合并段
+            assert content.count("### 第 1-") == 3
+            return _Resp("## 人物状态\n- 陈讯：权限+1\n## 时间线\n- 未明\n"
+                         "## 未回收伏笔\n- x\n## 未决冲突\n- y")
+
+    class _Resp:
+        def __init__(self, content):
+            self.content = content
+            self.ok = True
+
+    # 正文合计 >6000 → 触发分块路径；把阈值调低以免造 6000 字假数据
+    monkeypatch.setattr(vf, "_MAX_REQUEST_CHARS", 100)
+    ok = vf.build_volume_facts(ws, pid, FakeProv(), 1)
+    assert ok is True
+    assert calls["n"] == 4  # 3 章摘要 + 1 合并
+    out = (tmp_path / "p1" / "workspace/forge/volume-facts-v1.md").read_text(encoding="utf-8")
+    assert "## 人物状态" in out
+
+
+def test_thread_int_fields_drop_invalid(tmp_path):
+    """回归：LLM 把 target_vol 写成 null（长篇 book 线不封顶）或越界值时，
+    schema 要求 integer≥1 且不容 null → 归一必须删键而非保留 None/0。"""
     from novelist.forge.state import Blueprint
 
-    bp = Blueprint.blank()
-    bp.data["worldview"] = {"name": "深渊怪谈界", "rules": ["规则一"]}
-    wv = bp.section("worldview")  # 旧实现此处返回 [] 且毁掉原值
-    assert bp.data["worldview"] == {"name": "深渊怪谈界", "rules": ["规则一"]}
-    # list 段行为不变：缺省建空、可变
-    chars = bp.section("characters")
-    chars.append({"id": "char:x"})
-    assert bp.data["characters"] == [{"id": "char:x"}]
-    # 缺失段建空
-    assert bp.section("locations") == []
+    bp = Blueprint.blank(meta={"title": "t", "genre": "g", "logline": "l",
+                               "scale": {"volumes": 3, "chapters_per_volume": 8,
+                                         "target_words_per_chapter": 2400}})
+    bp.data["threads"] = [
+        {"id": "pt:a", "desc": "长线", "scope": "book", "target_vol": None},
+        {"id": "pt:b", "desc": "字符串", "scope": "volume", "target_vol": "vol_2"},
+        {"id": "pt:c", "desc": "越界", "scope": "volume", "target_vol": 0},
+        {"id": "pt:d", "desc": "合法", "scope": "volume", "target_vol": 2,
+         "planted": {"vol": "第1卷", "ch": 0}},
+        {"id": "pt:e", "desc": "planted 全废", "scope": "volume",
+         "planted": {"vol": None, "ch": None}},
+    ]
+    bp.validate()  # 旧实现：threads[0].target_vol=None → SchemaError 崩
+    ts = {t["id"]: t for t in bp.data["threads"]}
+    assert "target_vol" not in ts["pt:a"]
+    assert ts["pt:b"]["target_vol"] == 2
+    assert "target_vol" not in ts["pt:c"]
+    assert ts["pt:d"]["target_vol"] == 2 and ts["pt:d"]["planted"] == {"vol": 1}
+    assert "planted" not in ts["pt:e"]
 
 
-def test_volume_facts_chunked_path(tmp_path, monkeypatch):
-    """超长卷走两段式：逐章摘要 + 合并，每段请求都小（12GB 显存 OOM 教训）。"""
-    import novelist.core.volume_facts as vf
-    from novelist.storage.workspace import Workspace
+def test_book_node_out_tokens_scale():
+    """回归：book 节点输出预算随规划卷数放大（3 卷蓝图 2600 预算 JSON 残缺）。"""
+    from novelist.forge.nodes import _node_out_tokens
 
-    ws = Workspace(root=str(tmp_path))
-    pid = "p1"
-    for ch in range(1, 4):
-        ws.draft_path(pid, 1, ch).parent.mkdir(parents=True, exist_ok=True)
-        ws.draft_path(pid, 1, ch).write_text("第" + str(ch) + "章正文" * 50, encoding="utf-8")
+    class FakeBP:
+        def get(self, path):
+            assert path == "meta.scale"
+            return {"volumes": 3, "chapters_per_volume": 8}
 
-    calls = {"n": 0}
-
-    class FakeProv:
-        def complete(self, req):
-            calls["n"] += 1
-            content = req.messages[0].content
-            if "第 1 卷第" in content:  # 逐章摘要段
-                return _Resp("- 陈讯：管理员权限+1")
-            # 合并段
-            assert content.count("### 第 1-") == 3
-            return _Resp("## 人物状态\n- 陈讯：权限+1\n## 时间线\n- 未明\n"
-                         "## 未回收伏笔\n- x\n## 未决冲突\n- y")
-
-    class _Resp:
-        def __init__(self, content):
-            self.content = content
-            self.ok = True
-
-    # 正文合计 >6000 → 触发分块路径；把阈值调低以免造 6000 字假数据
-    monkeypatch.setattr(vf, "_MAX_REQUEST_CHARS", 100)
-    ok = vf.build_volume_facts(ws, pid, FakeProv(), 1)
-    assert ok is True
-    assert calls["n"] == 4  # 3 章摘要 + 1 合并
-    out = (tmp_path / "p1" / "workspace/forge/volume-facts-v1.md").read_text(encoding="utf-8")
-    assert "## 人物状态" in out
-
-
-def test_volume_facts_chunked_path(tmp_path, monkeypatch):
-    """超长卷走两段式：逐章摘要 + 合并，每段请求都小（12GB 显存 OOM 教训）。"""
-    import novelist.core.volume_facts as vf
-    from novelist.storage.workspace import Workspace
-
-    ws = Workspace(root=str(tmp_path))
-    pid = "p1"
-    for ch in range(1, 4):
-        ws.draft_path(pid, 1, ch).parent.mkdir(parents=True, exist_ok=True)
-        ws.draft_path(pid, 1, ch).write_text("第" + str(ch) + "章正文" * 50, encoding="utf-8")
-
-    calls = {"n": 0}
-
-    class FakeProv:
-        def complete(self, req):
-            calls["n"] += 1
-            content = req.messages[0].content
-            if "第 1 卷第" in content:  # 逐章摘要段
-                return _Resp("- 陈讯：管理员权限+1")
-            # 合并段
-            assert content.count("### 第 1-") == 3
-            return _Resp("## 人物状态\n- 陈讯：权限+1\n## 时间线\n- 未明\n"
-                         "## 未回收伏笔\n- x\n## 未决冲突\n- y")
-
-    class _Resp:
-        def __init__(self, content):
-            self.content = content
-            self.ok = True
-
-    # 正文合计 >6000 → 触发分块路径；把阈值调低以免造 6000 字假数据
-    monkeypatch.setattr(vf, "_MAX_REQUEST_CHARS", 100)
-    ok = vf.build_volume_facts(ws, pid, FakeProv(), 1)
-    assert ok is True
-    assert calls["n"] == 4  # 3 章摘要 + 1 合并
-    out = (tmp_path / "p1" / "workspace/forge/volume-facts-v1.md").read_text(encoding="utf-8")
-    assert "## 人物状态" in out
+    assert _node_out_tokens("book", FakeBP()) == 2600 + 900 * 2
+    assert _node_out_tokens("volume", FakeBP()) == 2600
+    assert _node_out_tokens("worldview", FakeBP()) == 2600

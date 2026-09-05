@@ -1396,6 +1396,23 @@ def _ensure_json_hint(system: str, user: str) -> tuple[str, str]:
     return system, user + hint
 
 
+def _node_out_tokens(kind: str, bp: Any) -> int:
+    """节点输出 token 预算。
+
+    book 节点的 artifact 含全部卷规划，随 meta.scale.volumes 线性放大——
+    3 卷蓝图在 2600 预算下 JSON 残缺（2026-09-05 真机：连续两次解析失败回退）。
+    其余节点输出规模与卷数无关，维持 2600。
+    """
+    base = 2600
+    if kind == "book":
+        try:
+            n = int(((bp.get("meta.scale") or {}).get("volumes")) or 1)
+        except Exception:  # noqa: BLE001
+            n = 1
+        return base + 900 * max(0, n - 1)
+    return base
+
+
 def run_node(ctx: NodeContext, kind: str) -> NodeResult:
     """执行一个节点：prompt → LLM → 解析（协议）→ apply。抛 ValueError = 解析失败（引擎重试）。"""
     if kind not in _PROMPTS:
@@ -1407,7 +1424,8 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
     res = ctx.provider.complete(LLMRequest(
         messages=[LLMMessage(role="system", content=system),
                   LLMMessage(role="user", content=user)],
-        temperature=0.5, max_tokens_out=2600, response_format="json_object"))
+        temperature=0.5, max_tokens_out=_node_out_tokens(kind, ctx.bp),
+        response_format="json_object"))
     if res.blocked:
         from ..core.llm import ModerationBlockedError
 
