@@ -1,5 +1,8 @@
 # AGENTS.md — Novelist 仓库指南
 
+> **接手必读**：`docs/13-ai-collab-guide.md`（开发要点——模型接入纪律、协作流程、待办优先级、已知坑）。
+> 2026-09-06 拍板：云端服务器与本地 LM-Studio 均已停用，一切生成调用走 DeepSeek API（deepseek-v4-flash）。
+
 Novelist 是多 Agent 长篇小说撰写系统。设计文档先行，当前处于**按 M0–M4 里程碑推进实现**阶段（M0–M2 已完成，M3 进行中）。
 
 > **进度以代码和 `docs/08-implementation-plan.md` 为准。** README/本文档的阶段自述可能滞后于真实实现——
