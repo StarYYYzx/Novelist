@@ -164,6 +164,44 @@ def _anchors_block(ctx: NodeContext) -> str:
     return "\n".join(f"- {a}" for a in anchors[:12])
 
 
+# ---- 2026-09-06 商讨轮扩展：pace/romance/opening 三维度（用户拍板进规划层）----
+_PACE_VOLUME_HINT = {
+    "平推爽文": "升级/碾压反馈密集，outcome 多为进取得胜；但每卷 cost 仍须真实代价，防无敌流审美疲劳。",
+    "苟住发育": "主角前期避战蓄力，前两卷 outcome 允许「守住既有成果即胜」（护住所 build 的东西），大胜与扬眉吐气留到后段。",
+    "先抑后扬": "每卷先压后扬：低谷放在本卷 30%-40% 处，outcome 呈「先失后得」结构。",
+    "稳健推进": "按剧情自然推进，outcome 允许得胜/受挫/惨胜，保持张力即可。",
+}
+_ROMANCE_RULE = {
+    "无CP": "全书不得生成感情戏、暧昧、婚约情节；女性角色出场仅按剧情职能。",
+    "单女主": "感情线集中于单一对象，不得新增暧昧对象；感情戏占比克制（每卷至多两三处点缀）。",
+    "多女主后宫": "多名女性角色并行发展，关系不提前收敛为单一对象；各线进度均衡，不得长期遗忘某一对象。",
+    "副线淡化": "感情内容仅作点缀，不得占据事件主线；无告白/婚约级推进。",
+}
+_OPENING_RULE = {
+    "开局即冲突": "前三章每章须有一个显性冲突/危机事件，交代信息借冲突带出，不安排纯铺垫章。",
+    "金手指速觉醒": "金手指须在第 3 章结束前觉醒并完成一次核心机制展示。",
+    "慢热铺垫": "前三章以世界观浸润与处境铺垫为主，允许无强冲突，但每章仍须有章末钩子。",
+}
+
+
+def _pace_section(meta: dict) -> str:
+    """卷纲注入：节奏模式 → 卷弧 outcome 语义提示（纯函数，无 IO）。"""
+    hint = _PACE_VOLUME_HINT.get(str(meta.get("pace") or ""))
+    return f"\n\n【节奏模式（用户拍板：{meta['pace']}）】{hint}" if hint else ""
+
+
+def _chapter_meta_rules(meta: dict, ch: int) -> str:
+    """细纲注入：开篇节奏（前三章）+ 感情线模式 cast 约束（纯函数，无 IO）。"""
+    out = ""
+    if ch <= 3 and _OPENING_RULE.get(str(meta.get("opening") or "")):
+        out += (f"\n开篇节奏（用户拍板：{meta['opening']}）："
+                f"{_OPENING_RULE[meta['opening']]}")
+    if _ROMANCE_RULE.get(str(meta.get("romance") or "")):
+        out += (f"\n感情线模式（用户拍板：{meta['romance']}，角色卡与事件生成都须遵守）："
+                f"{_ROMANCE_RULE[meta['romance']]}")
+    return out
+
+
 def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
     bp, pack = ctx.bp, ctx.pack
     meta = bp.get("meta") or {}
@@ -203,6 +241,14 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
     # 用户拍板的结局走向必须进 book/volume prompt，卷规划才收敛于既定结局。
     if meta.get("endgame"):
         fixed["结局走向（用户拍板，volumes 规划须收敛于此）"] = meta.get("endgame")
+    # 2026-09-06：商讨轮新增维度（pace/romance/opening）——同 endgame 死数据流教训，
+    # 用户拍板必须进 book prompt，骨架规划才有消费者。
+    if meta.get("pace"):
+        fixed["节奏模式（用户拍板，升级/打脸密度与卷弧 outcome 据此定）"] = meta["pace"]
+    if meta.get("romance"):
+        fixed["感情线模式（用户拍板，角色阵容与感情戏占比据此定）"] = meta["romance"]
+    if meta.get("opening"):
+        fixed["开篇节奏（用户拍板，前三章据此起笔）"] = meta["opening"]
     user = f"""你是网文立项设定师。为一部新书产出完整设定骨架。只输出 JSON，不要任何解释。
 
 【创意提炼 / 已确定项（不得改动，须原样保留）】
@@ -243,9 +289,24 @@ def _lines_ledger(ctx: NodeContext) -> list[dict]:
 def _lines_block_for_volume(ctx: NodeContext, vol: int) -> str:
     """卷纲注入块（四级视图之一）：dormant 骨架全集 + 前卷延续 active 线 + 前卷闭合线 yield。"""
     rows = _lines_ledger(ctx)
-    if not rows:
-        return ""
     parts: list[str] = []
+    # 2026-09-06 用户拍板：感情线模式联动线索账本——单女主/后宫时建议登记为一条
+    # subplot 线，纳入冷却/检查点管束（防感情线写到一半蒸发）。账本为空也提示。
+    romance = ""
+    try:
+        romance = str(ctx.bp.get("meta.romance") or "") if ctx.bp is not None else ""
+    except Exception:      # noqa: BLE001 - 蓝图缺 meta.romance（旧蓝图）→ 无建议
+        romance = ""
+    if romance in ("单女主", "多女主后宫"):
+        has_rom = any("romance" in str(r.get("id") or "")
+                      or "感情" in str(r.get("desc") or "") for r in rows)
+        if not has_rom:
+            parts.append("感情线登记建议（用户已拍板感情线模式：" + romance
+                         + "）：账本尚无感情线，建议 line_plan.open 登记 ln:romance"
+                         "（kind=subplot，desc 写明对象与关系走向），纳入冷却与"
+                         "检查点管束，防感情线中道蒸发。")
+    if not rows:
+        return "\n".join(parts)
     dormant = [r for r in rows if r.get("status") in ("dormant", "pending")]
     if dormant:
         parts.append("待开线索骨架（登记未开，本卷可按计划开启）：")
@@ -304,11 +365,12 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
                 + "\n".join(f"- {t['id']}：{str(t['due'])[:60]}" for t in _tdue[:6]))
     except Exception:  # noqa: BLE001 - 到期项读取失败降级为无强制项
         threads_due_section = ""
+    pace_section = _pace_section(meta)
     user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}{anchor_section}{endgame_section}{lines_section}{threads_due_section}
+【流派卷弧提示】{arc}{anchor_section}{endgame_section}{pace_section}{lines_section}{threads_due_section}
 
 【输出 JSON】
 {{
@@ -425,7 +487,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
         actual_block = "\n\n【已落定实情（memory 实然，非计划态；细纲不得与它冲突）】\n" + _actual
     cards = bp.section("characters")
     char_block = json.dumps([
-        {k: c.get(k) for k in ("id", "name", "role", "gender", "core_traits", "power") if c.get(k)}
+        {k: c.get(k) for k in ("id", "name", "role", "gender", "core_traits", "flaw", "power") if c.get(k)}
         for c in cards
     ], ensure_ascii=False, indent=2) or "（无角色卡——book 节点应先产出）"
     rhythm = (ctx.pack or {}).get("chapter_rhythm") or ["opening-hook", "setup", "conflict", "climax", "cliffhanger"]
@@ -495,6 +557,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     dedup_rule = ("7. key_events 严禁与【已规划事件账本】中任何条目重复或高度相似"
                   "（同主角+同动作+同对象即视为重复）；「与前一章衔接」指因果承接，"
                   "不是重复叙述同一事件。")
+    meta_rules = _chapter_meta_rules(meta, ch)
     user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。
 
 【本卷主线】{vol_block}
@@ -517,7 +580,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
 5. turns 1–3 条：本章转折/推进点。
 6. tension：一句话说清本章张力来源（主角的两难/威胁/悬念——每个事件都要服务于它，
    不是重复事件内容）。hook：章末钩子（最后一个事件以此收尾，拉住读者翻下一章）。
-{opening_rule}{dedup_rule}{title_rule}{lines_rule}
+{opening_rule}{dedup_rule}{title_rule}{meta_rules}{lines_rule}
 
 【输出 JSON】
 {{

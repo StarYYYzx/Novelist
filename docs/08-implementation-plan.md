@@ -853,6 +853,18 @@ lingyu5 真机归因的第三根主因链：线索在账上但生成时看不见
 | revise 通道转正 | replay_chapter_lines + CLI `forge lines-replay V C`：人工改细纲「本章线索:」后重放——旧声明本章痕迹确定性回滚（open→dormant/进度行删除/本章闭合撤销），新声明重新落账 | ✅ |
 | 测试 | tests/test_lines.py +8（回声/检查点写清 due/审计 due+提名+yield+篇幅比/replay 回滚重放/埋设提示/卷纲 due 注入/schema） | ✅ 28 passed，全量见提交说明 |
 
+### M3u — 商讨轮扩展：pace/romance/opening 三维度（2026-09-06 ✅ 代码+测试完成）
+
+用户提出"开场的询问讨论可以再详细一些"，拍板：① pace/romance 升 required；
+② 感情线模式联动线索账本。每个新维度绑定明确消费端（防 threads_involved 式死数据流）。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 新槽位 | `meta.pace`（required，轮1）/ `meta.romance`（required，轮4）/ `meta.opening`（recommended，轮4）/ `power_system.ceiling`+`worldview.map`（轮2）/ 主角 `flaw`（轮4）；反派 ask 文案加"动机一句话"；love_interest ask 提示"无CP 可跳过" | ✅ |
+| schema | 蓝图 meta 加 pace/romance/opening（enum，不 required——不破坏旧蓝图校验）；power_system.ceiling / worldview.map / characters.flaw | ✅ |
+| 消费端 | book prompt 注入三维度（endgame 同款死数据流防御）；volume prompt `_pace_section`（苟住发育→前两卷"守住即胜"等 outcome 语义）；chapter prompt `_chapter_meta_rules`（前三章开篇指令 + 感情线 cast 约束：无CP 禁感情戏/后宫多线并行不收敛）；`_lines_block_for_volume` 感情线登记建议（单女主/后宫 且账本无感情线 → 建议 line_plan.open 登记 ln:romance，纳入冷却/检查点管束）；chapter 人物卡补 flaw 字段 | ✅ |
+| 测试 | tests/test_pace_romance.py 9 条（schema 枚举/旧蓝图兼容/槽位层级/detect_gaps 覆盖/注入 helpers/感情线联动）；test_m12 缺口数 19→25 | ✅ |
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

@@ -68,6 +68,12 @@ def default_slots() -> list[Slot]:
              "一句话说清卖点与冲突？", "llm", [], "", 1, "驱动全部节点基调", 0.5),
         Slot("meta.scale", "规模", "required", "confirm",
              "规模：X 卷 × Y 章 × Z 字？", "template", [], "", 1, "预算与卷闸门", 0.5),
+        # 2026-09-06 用户拍板：节奏模式升 required——决定全书规划形态
+        # （卷弧 outcome 语义、升级/打脸密度），默认值猜错代价大于多问一题。
+        Slot("meta.pace", "节奏模式", "required", "choice",
+             "节奏模式偏哪种？（决定升级/打脸密度与卷弧走向）", "enum",
+             ["平推爽文", "苟住发育", "先抑后扬", "稳健推进"], "稳健推进", 1,
+             "meta.pace，注入 book/volume/chapter 三层规划 prompt", 0.6),
         # 轮 2：世界与规则
         Slot("worldview.power_system.levels", "境界体系", "required", "choice",
              "境界/等级体系？", "template", [], "", 2, "写入 worldview，驱动战力单调检查", 0.6),
@@ -77,6 +83,12 @@ def default_slots() -> list[Slot]:
              "有哪些势力？", "llm", [], "", 2, "factions[]，驱动阵营冲突", 0.6),
         Slot("worldview.rules", "世界铁律", "recommended", "free",
              "世界铁律（不可违背的规则）？", "llm", [], "", 2, "rules[]，一致性引擎消费", 0.6),
+        Slot("worldview.power_system.ceiling", "力量天花板", "recommended", "free",
+             "力量天花板？（这个世界最强能到什么程度，如：化神大圆满/仙人不可及）",
+             "llm", [], "", 2, "power_system.ceiling，升级空间规划上界", 0.6),
+        Slot("worldview.map", "地理范围", "recommended", "free",
+             "世界地理范围？（本卷写到哪，如：起点青山镇→青云宗→中州）",
+             "llm", [], "", 2, "worldview.map，卷与地图映射参照", 0.6),
         # 轮 3：文风与叙事
         Slot("style.tone", "文风基调", "required", "choice",
              "这本书的基调偏哪种？", "enum", ["热血激昂", "严谨冷肃", "诙谐幽默", "杀伐果断", "温柔细腻"],
@@ -101,10 +113,24 @@ def default_slots() -> list[Slot]:
              "enum", _craft_ids(), "", 3,
              "style.craft_cards，规范'怎么呈现'（如系统流的【】发言、单章节奏、伏笔分级）", 0.6),
         # 轮 4：人物与伏笔
+        # 2026-09-06 用户拍板：感情线先问模式再问对象（原槽位直接问"对象是谁"，
+        # 模式不选 → cast 节点自作主张加/不加感情戏）。
+        Slot("meta.romance", "感情线模式", "required", "choice",
+             "感情线模式？（决定角色阵容与感情戏占比）", "enum",
+             ["无CP", "单女主", "多女主后宫", "副线淡化"], "副线淡化", 4,
+             "meta.romance，cast 生成约束 + 卷纲感情线登记建议", 0.6),
         Slot(_char_slot("rival", "name"), "反派设定", "recommended", "free",
-             "主要反派/对手？", "llm", [], "", 4, "rival 角色卡", 0.6),
-        Slot(_char_slot("love_interest", "name"), "感情线", "recommended", "free",
-             "感情线对象？", "llm", [], "", 4, "love_interest 角色卡", 0.6),
+             "主要反派/对手？（建议含动机一句话：他为什么与主角对立）",
+             "llm", [], "", 4, "rival 角色卡（arc 字段消费动机）", 0.6),
+        Slot(_char_slot("protagonist", "flaw"), "主角缺陷", "recommended", "free",
+             "主角的性格缺陷/成长起点？（人物弧线从这里出发，如：傲慢/怯懦/不信任何人）",
+             "llm", [], "", 4, "characters[0].flaw，人物卡注入与弧线驱动", 0.6),
+        Slot("meta.opening", "开篇节奏", "recommended", "choice",
+             "开篇节奏？（前三章怎么起）", "enum",
+             ["开局即冲突", "金手指速觉醒", "慢热铺垫"], "金手指速觉醒", 4,
+             "meta.opening，前三章细纲开篇指令", 0.6),
+        Slot(_char_slot("love_interest", "name"), "感情线对象", "recommended", "free",
+             "感情线对象？（选'无CP'可跳过此题）", "llm", [], "", 4, "love_interest 角色卡", 0.6),
         Slot("meta.endgame", "结局走向", "recommended", "free",
              "结局大致走向？", "llm", [], "", 4, "翻译到 volumes 末卷 summary", 0.6),
         Slot("threads", "主线伏笔", "recommended", "free",

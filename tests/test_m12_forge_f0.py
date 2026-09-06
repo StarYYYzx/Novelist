@@ -98,7 +98,8 @@ def test_genre_pack_slot_overrides():
 def _full_bp():
     bp = Blueprint.blank({"title": "t", "genre": "修仙", "logline": "五五开系统",
                           "scale": {"volumes": 3, "chapters_per_volume": 20,
-                                    "target_words_per_chapter": 2400}})
+                                    "target_words_per_chapter": 2400},
+                          "pace": "稳健推进", "romance": "副线淡化"})
     bp.upsert("characters", {"id": "char:yelan", "name": "叶蓝", "gender": "male",
                              "role": "protagonist", "core_traits": ["坚韧", "狡猾", "厚脸皮"]})
     bp.set("worldview.power_system", {"levels": ["练气", "筑基"], "mechanic": "绑定他人共享修炼"})
@@ -244,8 +245,9 @@ def test_cli_forge_show(ws_factory, tmp_path):
     assert "== proj-test ==" in out
     assert "蓝图 rev=1" in out
     assert "测试书" in out and "修仙男频" in out
-    # 空蓝图 19 缺口（09-04 增补 style.narration 槽位；09-05 增补 style.craft_cards 槽位）
-    assert "缺口: 19 处" in out
+    # 空蓝图 25 缺口（09-04 增补 style.narration；09-05 增补 style.craft_cards；
+    # 09-06 增补 pace/romance/opening/ceiling/map/flaw 六槽位）
+    assert "缺口: 25 处" in out
     assert "来源: user=1" in out
 
 

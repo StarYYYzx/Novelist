@@ -42,7 +42,19 @@
         },
         "time_origin": { "type": "string", "description": "故事时间原点描述（ADR-019：worldstate.time.origin_text 来源）" },
         "brief": { "type": "string", "description": "用户原始输入（seed/ingest 的 brief）" },
-        "endgame": { "type": "string", "description": "结局走向（引擎翻译到 volumes 末卷 summary）" }
+        "endgame": { "type": "string", "description": "结局走向（引擎翻译到 volumes 末卷 summary）" },
+        "pace": {
+          "enum": ["平推爽文", "苟住发育", "先抑后扬", "稳健推进"],
+          "description": "节奏模式（用户拍板）：驱动卷弧 outcome 语义与升级/打脸密度注入"
+        },
+        "romance": {
+          "enum": ["无CP", "单女主", "多女主后宫", "副线淡化"],
+          "description": "感情线模式（用户拍板）：驱动 cast 生成约束与感情线线索账本登记建议"
+        },
+        "opening": {
+          "enum": ["开局即冲突", "金手指速觉醒", "慢热铺垫"],
+          "description": "开篇节奏（用户拍板）：前三章细纲的开篇指令"
+        }
       }
     },
     "worldview": {
@@ -53,9 +65,11 @@
           "type": "object",
           "properties": {
             "levels": { "type": "array", "items": { "type": "string" } },
-            "mechanic": { "type": "string" }
+            "mechanic": { "type": "string" },
+            "ceiling": { "type": "string", "description": "力量天花板（世界最强能到什么程度，升级空间规划的上界）" }
           }
         },
+        "map": { "type": "string", "description": "地理范围（世界地图尺度，卷与地图映射的参照）" },
         "rules": { "type": "array", "items": { "type": "string" }, "description": "世界铁律" },
         "civilizations": { "type": "array", "items": { "type": "string" } },
         "factions": { "type": "array", "items": { "type": "string" } }
@@ -74,6 +88,7 @@
           "age": { "type": ["integer", "null"], "minimum": 0 },
           "role": { "enum": ["protagonist", "mentor", "rival", "love_interest", "minor"], "description": "蓝图内部字段，落盘剥离（docs/10 §4.2 B3）" },
           "core_traits": { "type": "array", "items": { "type": "string" } },
+          "flaw": { "type": "string", "description": "性格缺陷/成长起点（人物弧线的起点）" },
           "power": {
             "type": "object",
             "properties": {
