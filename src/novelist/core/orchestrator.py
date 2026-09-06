@@ -473,9 +473,11 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4,
                 exclude_src: tuple[int, int] | None = None) -> list[str]:
     """事件级先忆（检索是本地操作，不花 LLM 调用）。失败静默返回空。
 
-    `exclude_src`：排除本章 (vol, ch) 的碎片——回写即增量更新 RAG（H12 修复，
-    2026-09-05），事件 i 的检索结果天然包含事件 i-1 的摘要，注入【相关前情】
-    等于引导模型复述刚写过的内容。
+    `exclude_src`：旧版排除本章 (vol, ch) 的碎片（H12，2026-09-05）——防止上一
+    事件摘要进【相关前情】诱导复述。**2026-09-06 用户拍板放开**（ADR-013 完全体）：
+    所有信息记忆实时更新，事件 i 必须能先忆到事件 i-1；复述防线改由
+    strip_seam_overlap（拼接去重）+ seam_review（复述检测重写）+【相关前情】的
+    「禁止复述」纪律共同承担。调用方不再传本章 exclude；参数保留供特殊场景。
     """
     try:
         from .memory import MemoryIndex, MemoryQuery, MemoryRetriever
@@ -499,6 +501,41 @@ def _recall_for(ws, project_id: str, query: str, embedding, top_k: int = 4,
         return out
     except Exception:  # noqa: BLE001
         return []
+
+
+def _live_state_block(ws, project_id: str, cast_names: list[str],
+                      bible_chars: list[dict] | None) -> str:
+    """事件级实然状态块（ADR-013 完全体·2026-09-06 用户拍板）。
+
+    worldstate 的事件级回写（apply_delta/_apply_time 逐事件落盘）早已存在，
+    但读取侧从未接入事件 prompt——fame5 实测修为穿帮（角色卡「炼气九层」与
+    细纲「炼气三层」两个静态计划态来源打架，各事件各选一边）。本 helper 在
+    每个事件 prompt 构建时**实时读盘**，输出本场 cast 的当前状态行，钉死层
+    注入（prompt_budget.PINNED）。worldstate 无记录的角色跳过（首个事件后
+    才建立状态行）；全场无记录 → 空串（不注入，行为与旧版一致）。
+    """
+    try:
+        from . import worldstate as _wsmod
+
+        name2id = {}
+        for c in bible_chars or []:
+            if isinstance(c, dict) and c.get("name") and c.get("id"):
+                name2id[str(c["name"])] = str(c["id"])
+        ids = [name2id[n] for n in cast_names or [] if n in name2id]
+        if not ids:
+            return ""
+        lines = _wsmod.snapshot_lines(_wsmod.load(ws, project_id), char_ids=ids)
+        if not lines:
+            return ""
+        return "\n".join([
+            "【实然状态（截至上一事件，事件级回写实时维护）】以下为这些人物"
+            "此刻的硬状态（修为/位置/持物/伤势）。正文**必须**与其一致："
+            "不得让已死亡者行动、不得倒退修为、不得凭空改变所在地；"
+            "角色卡与细纲中的状态若与此冲突，**以本块为准**（实然优先于计划态）：",
+            *lines,
+        ])
+    except Exception:  # noqa: BLE001 - 实然块失败不影响生成
+        return ""
 
 
 def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: int = 3) -> list[str]:
@@ -784,7 +821,8 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 char_budget: int = 0,
                 first_seen_lines: list[str] | None = None,
                 banned_names: list[str] | None = None,
-                line_cards: list[str] | None = None) -> str:
+                line_cards: list[str] | None = None,
+                live_state: str = "") -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
@@ -817,6 +855,10 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
         # （剧情动起来），不是复述账本；交织点两条线要互相作用，不是各写各的。
         blocks.append(("lines", "\n".join([
             "【本事件线索卡】（本场必须让下列线索的剧情向前走一步）：", *line_cards])))
+    if live_state:
+        # ADR-013 完全体（2026-09-06 用户拍板）：worldstate 实然状态行，钉死层。
+        # 事件级回写（写侧）与本块（读侧）合起来才是"事件落定→全文档实时更新"。
+        blocks.append(("live_state", live_state))
     if cast_lines:
         blocks.append(("cast", "\n".join([
             "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
@@ -853,7 +895,9 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
             "…" + prev_piece[-seam_chars:]])))
     if memories:
         blocks.append(("memories", "\n".join([
-            "【相关前情】（先忆，保持一致）：", *memories])))
+            "【相关前情】（先忆，保持一致）：", *memories,
+            "", "（注意：以上前情已写入正文，只作事实依据，"
+                "**禁止复述其情节与场景**，直接推进新内容。）"])))
     if setting_lines:
         blocks.append(("settings", "\n".join([
             "【本事件首次出现的设定】（以下设定此前未在正文交代过，"
@@ -1626,11 +1670,12 @@ def produce_chapter(
                 knowledge = _make_knowledge(ws, project_id, embedding)
                 readback_text = (_prior_chapter_text(ws, project_id, vol, ch)
                                  if readback else "")
-                # ADR-020：人物层三件套的一次性准备（圣经人物卡每章读一次；
-                # 细纲出场声明每章解析一次，事件循环内只做匹配）
+                # ADR-020：人物层三件套的一次性准备（细纲出场声明每章解析一次，
+                # 事件循环内只做匹配）。角色卡改**每事件重载**（ADR-013 完全体：
+                # 事件级回写会更新角色卡 power，下一事件必须读到新卡——本地 JSON
+                # 读取成本可忽略）。
                 from . import director as _director
-                bible_chars = _director.load_characters(ws, project_id) if any(
-                    (cast_injection, character_direction, perspective_memory)) else []
+                _need_chars = any((cast_injection, character_direction, perspective_memory))
                 declared_cast = parse_cast_decl(gist_text_for_events)
                 # ADR-025：线索事件层注入的准备（每章一次）。账本缺失 = 空操作（降级）；
                 # 章纲 lines_present 声明随细纲 md 行内 JSON 带过来（render_gist_md 写入）。
@@ -1645,8 +1690,12 @@ def produce_chapter(
                 entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
-                    memories_ev = _recall_for(ws, project_id, ev_text, embedding,
-                                              exclude_src=(vol, ch))
+                    # ADR-013 完全体：角色卡每事件重载（上一事件的回写已更新 power）
+                    bible_chars = (_director.load_characters(ws, project_id)
+                                   if _need_chars else [])
+                    # ADR-013 完全体：先忆不排除本章——事件 i
+                    # 检索含事件 i-1 摘要（回写即增量更新，复述由 seam 层防线兜底）
+                    memories_ev = _recall_for(ws, project_id, ev_text, embedding)
                     # 最近 1 章固定回退（讨论第 8 轮·用户拍板）
                     recent_ev = _recent_chapter_memory(ws, project_id, vol, ch)
                     if recent_ev:
@@ -1799,6 +1848,10 @@ def produce_chapter(
                                          prose_window=_prose_win,
                                          char_budget=_PROMPT_CHAR_BUDGET,
                                          line_cards=_line_cards,
+                                         # ADR-013 完全体：实然状态块（实时读盘，
+                                         # 钉死层注入——修为/位置/持物以 worldstate 为准）
+                                         live_state=_live_state_block(
+                                             ws, project_id, cast_names, bible_chars),
                                          # H9 修复（2026-09-05）：原先调用点漏传
                                          # banned_names——"广播拒绝点名"禁令整体是
                                          # 死代码。传入并与本场 cast 求差：若该人物

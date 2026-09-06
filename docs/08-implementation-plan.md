@@ -865,6 +865,26 @@ lingyu5 真机归因的第三根主因链：线索在账上但生成时看不见
 | 消费端 | book prompt 注入三维度（endgame 同款死数据流防御）；volume prompt `_pace_section`（苟住发育→前两卷"守住即胜"等 outcome 语义）；chapter prompt `_chapter_meta_rules`（前三章开篇指令 + 感情线 cast 约束：无CP 禁感情戏/后宫多线并行不收敛）；`_lines_block_for_volume` 感情线登记建议（单女主/后宫 且账本无感情线 → 建议 line_plan.open 登记 ln:romance，纳入冷却/检查点管束）；chapter 人物卡补 flaw 字段 | ✅ |
 | 测试 | tests/test_pace_romance.py 9 条（schema 枚举/旧蓝图兼容/槽位层级/detect_gaps 覆盖/注入 helpers/感情线联动）；test_m12 缺口数 19→25 | ✅ |
 
+### M3v — 事件级实然回写完全体（2026-09-06 ✅ 代码+测试完成，ADR-013 落地闭环）
+
+fame5 真机 10 章人审暴露修为/载体/数值三处穿帮，归因发现：worldstate 的事件级回写
+（apply_delta/_apply_time）早已存在，但**读取侧从未接入事件 prompt**，且事件间先忆被
+exclude_src 整章排除（H12 防复述的副作用）——下一事件只能看到冻结的角色卡+细纲两个
+互相矛盾的计划态来源。用户拍板：**不做平行状态卡，所有回写以事件为单位，全部信息实时更新**。
+
+| 件 | 实现 | 状态 |
+| --- | --- | --- |
+| 写侧·角色卡实然同步 | `worldstate.apply_delta` realm 变更时同步 characters.json 的 `power.level`（`_sync_card_realm`）；**仅合法推进才同步**（parse_realm 单调比较），倒退/体系外文本不动卡；无境界表放行 | ✅ |
+| 写侧·基线快照 | worldstate 新增 `baselines`（init_from_bible 首次快照，setdefault 防覆盖）；角色卡从此可被实然同步而不破坏 R-STATE | ✅ |
+| 检测锚迁移 | rules.py R-STATE 单调性基线：`baselines` 优先，旧项目 fallback 卡（向后兼容） | ✅ |
+| 读侧·实然状态块 | orchestrator `_live_state_block`：每事件 prompt 构建时实时读盘，复用 `worldstate.snapshot_lines` 输出本场 cast 的修为/位置/持物/伤势行，钉死层（prompt_budget `live_state: -1`）注入，附"实然优先于计划态"仲裁指令 | ✅ |
+| 读侧·先忆放开 | 事件级先忆 `exclude_src` 不再排除本章（事件 i 检索含事件 i-1 摘要）；复述防线=strip_seam_overlap+seam_review+【相关前情】"禁止复述"纪律 | ✅ |
+| 读侧·角色卡事件级重载 | bible_chars 从章级一次读取改为每事件重载（上一事件回写已更新 power） | ✅ |
+| 测试 | tests/test_event_sync.py 10 条（推进同步/倒退保卡/体系外拒同步/快照不可变/R-STATE 倒退+越级检测在卡同步后仍生效/实然块注入与空态）；全量 791 passed | ✅ |
+
+遗留：重场戏 beat 展开路径（`_generate_beats`）的 prompt 未传 live_state（fame5 细纲 beats 全空，
+低优先）；`_sync_card_realm` 只同步 power.level，location 等依赖实然块注入（卡上无此字段）。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

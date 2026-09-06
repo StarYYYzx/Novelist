@@ -138,6 +138,10 @@ def load(ws, project_id: str) -> dict:
     data = _read(ws._abs(f"{project_id}/{WORLDSTATE_REL}")) or {}
     if not isinstance(data.get("characters"), dict):
         data["characters"] = {}
+    if not isinstance(data.get("baselines"), dict):
+        # R-STATE 单调性基线（init_from_bible 时的初始修为快照）。ADR-013 完全体
+        # 之后角色卡被实然同步，不能再当比较起点——快照独立存此处。
+        data["baselines"] = {}
     ensure_axes(data)
     return data
 
@@ -168,6 +172,11 @@ def init_from_bible(ws, project_id: str) -> dict:
         cur.setdefault("name", c.get("name", ""))
         pw = c.get("power") or {}
         cur.setdefault("realm", pw.get("level", ""))
+        # R-STATE 单调性基线快照：记**首次 init** 的卡面修为（setdefault 保证后续
+        # re-init 不覆盖）。此后角色卡可被事件级实然同步（apply_delta），不再兼任基线。
+        if pw.get("level"):
+            state.setdefault("baselines", {}).setdefault(
+                str(c["id"]), str(pw.get("level")))
         cur.setdefault("location", "")
         cur.setdefault("items", [])
         cur.setdefault("injuries", [])
@@ -178,6 +187,46 @@ def init_from_bible(ws, project_id: str) -> dict:
                 cur["items"].append(pos)
     save(ws, project_id, state)
     return state
+
+
+def _realm_levels(ws, project_id: str) -> list[str]:
+    """读 worldview 境界表（apply_delta 单调性判断用；失败返回空 = 无从核对）。"""
+    try:
+        wv = json.loads(ws._abs(f"{project_id}/bible/worldview.json")
+                        .read_text(encoding="utf-8"))
+        return [str(x) for x in ((wv.get("power_system") or {}).get("levels") or [])]
+    except (ValueError, OSError, AttributeError):
+        return []
+
+
+def _sync_card_realm(ws, project_id: str, char_id: str, realm_text: str) -> None:
+    """事件级实然同步（ADR-013 完全体·用户拍板 2026-09-06）：境界变更实时写回角色卡。
+
+    角色卡 power.level 是生成链路引用频率最高的状态字段——若只在章末/永不更新，
+    下一事件读到的仍是建档时的计划态（fame5 实测：角色卡「炼气九层」vs 细纲
+    「炼气三层」两个静态来源打架，各事件各选一边）。失败静默（best-effort，
+    回写失败不影响 worldstate 本身——那边才是实然权威源）。
+    """
+    try:
+        import json as _json
+
+        p = ws._abs(f"{project_id}/bible/characters.json")
+        if not p.exists():
+            return
+        cards = _json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(cards, list):
+            return
+        for card in cards:
+            if isinstance(card, dict) and card.get("id") == char_id \
+                    and isinstance(card.get("power"), dict):
+                card["power"]["level"] = realm_text
+                break
+        else:
+            return  # 无卡或卡上无 power 结构（配角/工厂卡结构各异）→ 跳过
+        p.write_text(_json.dumps(cards, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+    except (ValueError, OSError, AttributeError):
+        pass
 
 
 def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None = None,
@@ -210,7 +259,19 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
             continue  # 占位词（无/无变化…）不是变更，跳过
         if field == "realm":
             if value and value != cur.get("realm"):
+                _prev_realm = str(cur.get("realm") or "")
                 cur["realm"], recorded["realm"] = value, value
+                # 事件级实然同步角色卡（ADR-013 完全体）——**仅合法推进才同步**：
+                # R-STATE 以卡上 power.level 为单调性基线（rules.py:504），倒退时
+                # 必须保留卡上高水位，否则卡被一起改低、倒退告警被静默抹掉。
+                _levels = _realm_levels(ws, project_id)
+                if not _levels:
+                    _sync_card_realm(ws, project_id, char_id, value)  # 无表 → 放行
+                else:
+                    _new = parse_realm(value, _levels)
+                    _old = parse_realm(_prev_realm, _levels) if _prev_realm else None
+                    if _new is not None and (_old is None or _new >= _old):
+                        _sync_card_realm(ws, project_id, char_id, value)
         elif field == "location":
             if value != cur.get("location"):
                 cur["location"], recorded["location"] = value, value

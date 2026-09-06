@@ -56,6 +56,7 @@ EVICT_PRIORITY: dict[str, int] = {
     "first_seen": -1,  # 方案6.1：首次出场硬约束（软提示失效实证后升级钉死）
     "banned": -1,      # 方案6.4：广播拒绝点名禁令（一致性行，宁超不丢）
     "lines": -1,       # ADR-025：线索卡（事件层唯一执行层）——RAG 未命中不再等于线索沉默
+    "live_state": -1,  # ADR-013 完全体：worldstate 实然状态行（事件级回写的读取侧）
 }
 
 PINNED = -1

@@ -501,12 +501,18 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
 
     chapters = {name: text for name, text in _iter_chapters(ws, project_id)}
 
-    # 基线：人物卡 power.level（init 前的初始状态，未进 history，须作为比较起点）
+    # 基线：init_from_bible 时的初始修为快照（worldstate.baselines）。
+    # ADR-013 完全体（2026-09-06）之后角色卡 power.level 会被事件级实然同步，
+    # 不再适合做单调性起点——旧项目无 baselines 时 fallback 人物卡（向后兼容）。
     card_realms: dict[str, str] = {}
     card_data = _read_json(ws._abs(f"{project_id}/bible/characters.json")) or []
     for c in card_data if isinstance(card_data, list) else []:
         if isinstance(c, dict) and c.get("id") and (c.get("power") or {}).get("level"):
             card_realms[c["id"]] = str(c["power"]["level"])
+    baselines: dict[str, str] = {}
+    if isinstance(st.get("baselines"), dict):
+        baselines = {str(k): str(v) for k, v in st["baselines"].items()
+                     if v}  # type: ignore[union-attr]
 
     for cid, cur in chars.items():
         if not isinstance(cur, dict):
@@ -518,10 +524,11 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
                if isinstance(h, dict) and isinstance(h.get("at"), dict)]
         seq.sort(key=lambda h: (int(h["at"].get("vol", 0) or 0), int(h["at"].get("ch", 0) or 0)))
 
-        # 初始修为（人物卡）作为单调性比较的基线
+        # 初始修为作为单调性比较的基线：baselines 快照优先，fallback 人物卡
+        _base_txt = baselines.get(cid) or card_realms.get(cid)
         prev: tuple[int, int] | None = None
-        if levels and card_realms.get(cid):
-            prev = parse_realm(card_realms[cid], [str(x) for x in levels])
+        if levels and _base_txt:
+            prev = parse_realm(_base_txt, [str(x) for x in levels])
         death_ch: tuple[int, int] | None = None
         for h in seq:
             delta = h.get("delta") or {}
