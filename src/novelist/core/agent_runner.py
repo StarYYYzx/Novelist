@@ -55,7 +55,8 @@ class AgentRunner:
         """默认经 LLM 决策（见 run_loop）；子类/测试可替换。"""
         self._messages.append(LLMMessage(role="user", content=context))
         result = self.provider.complete(
-            LLMRequest(messages=self._messages, max_tokens_out=self.budget.max_tokens_out)
+            LLMRequest(messages=self._messages, max_tokens_out=self.budget.max_tokens_out,
+                       thinking=False)  # 工具多轮 Agent 循环：显式关思考（DeepSeek 工具多轮开思考须回传 reasoning_content）
         )
         self._messages.append(LLMMessage(role="assistant", content=self._fmt_result(result)))
         return _parse_decision(result)

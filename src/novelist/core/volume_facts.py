@@ -65,7 +65,8 @@ def _complete_small(provider, prompt: str, max_tokens: int) -> str:
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=max_tokens, temperature=0.3))
+            max_tokens_out=max_tokens, temperature=0.3,
+            thinking=True))  # 判断类：卷事实抽取，开思考
         return (res.content or "").strip() if getattr(res, "ok", False) else ""
     except Exception:  # noqa: BLE001
         return ""

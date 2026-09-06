@@ -264,6 +264,7 @@ class Chronicler:
                                      + _chapter_window(chapter_text, max_chars))],
                 max_tokens_out=450,
                 temperature=0.3,
+                thinking=True,  # 判断类：事件/状态/时间/线索结构化抽取，开思考
             )
         )
         if res.blocked or not res.content:
@@ -697,6 +698,7 @@ class Chronicler:
                                          + text[-2500:])],
                     max_tokens_out=max_tokens,
                     temperature=0.4,
+                    thinking=True,  # 判断类：视角记忆结构化归纳，开思考
                 )
             )
         except Exception:  # noqa: BLE001 - 视角抽取失败不阻断生成
@@ -714,6 +716,18 @@ class Chronicler:
 
         pid = project_id or self.project_id
         written = 0
+        # dp-intent：随视角把人物当前欲望/计划双写入记忆（id→(intent,plan) 懒加载一次）。
+        # 卡上欲望是权威字段；此处按"此刻写视角时的卡现状"做快照，随事件演进留痕。
+        _want_map: dict[str, tuple[str, str]] = {}
+        try:
+            from . import director as _d
+            for _c in _d.load_characters(self.ws, self.project_id):
+                _i = _c.get("intent") or ""
+                _p = _c.get("plan") or ""
+                if _i or _p:
+                    _want_map[_c.get("id")] = (str(_i)[:160], str(_p)[:160])
+        except Exception:  # noqa: BLE001 - 欲望快照失败不影响视角写入
+            _want_map = {}
         for ln in (res.content or "").splitlines():
             s = ln.strip().lstrip("-•*").strip()
             s = re.sub(r"^\d+[.、)．]\s*", "", s)
@@ -752,6 +766,12 @@ class Chronicler:
                 # 加 [视角] 前缀，与事件摘要区分，也避免与 commit 写入的条目撞 sig。
                 "summary": f"[视角] {perspective[:160]}",
             }
+            if cid in _want_map:
+                _i, _p = _want_map[cid]
+                if _i:
+                    entry["intent"] = _i   # dp-intent：写视角时刻的人物欲望快照
+                if _p:
+                    entry["plan"] = _p     # dp-intent：写视角时刻的人物近段计划
             try:
                 self._writer.append_experience(cid, entry)
                 written += 1

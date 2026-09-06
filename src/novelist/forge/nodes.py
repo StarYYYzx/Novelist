@@ -1735,7 +1735,8 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
         messages=[LLMMessage(role="system", content=system),
                   LLMMessage(role="user", content=user)],
         temperature=0.5, max_tokens_out=_node_out_tokens(kind, ctx.bp),
-        response_format="json_object"))
+        response_format="json_object",
+        thinking=False))  # 生成类：蓝图节点生成，关思考
     if res.blocked:
         from ..core.llm import ModerationBlockedError
 
@@ -1795,15 +1796,26 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
 各键的值结构与「当前模块内容」完全一致。未涉及建议的部分尽量原样保留。"""
     system = "你是网文设定修订师。严格按用户建议修订设定，只输出 JSON。"
     system, user = _ensure_json_hint(system, user)
-    res = provider.complete(LLMRequest(
-        messages=[LLMMessage(role="system", content=system),
-                  LLMMessage(role="user", content=user)],
-        temperature=0.4, max_tokens_out=2600, response_format="json_object"))
-    if res.blocked:
-        from ..core.llm import ModerationBlockedError
+    new: dict = {}
+    from ..core.llm import ModerationBlockedError
 
-        raise ModerationBlockedError(res.block_reason, res.provider_note)
-    new = json.loads(res.content or "{}")
+    _REVISE_RETRIES = 2   # flash 生成抖动：偶发 content 空/畸形 JSON，重试收敛（经验同 broadcast B1）
+    for _ in range(_REVISE_RETRIES + 1):
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="system", content=system),
+                      LLMMessage(role="user", content=user)],
+            temperature=0.4, max_tokens_out=3200, response_format="json_object",
+            thinking=False))  # 生成类：单模块修订重生成，关思考
+        if res.blocked:
+            raise ModerationBlockedError(res.block_reason, res.provider_note)
+        try:
+            maybe = json.loads(res.content or "")
+        except (ValueError, TypeError):
+            maybe = {}
+        if isinstance(maybe, dict) and any(sec in maybe for sec in sections):
+            new = maybe
+            break
+        new = {}
     merged = {}
     for sec in sections:
         if sec in new:

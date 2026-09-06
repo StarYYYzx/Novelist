@@ -278,7 +278,8 @@ def _patch_first_appearances(ws, project_id: str, vol: int, ch: int, text: str,
             try:
                 res = provider.complete(LLMRequest(
                     messages=[LLMMessage(role="user", content=prompt)],
-                    max_tokens_out=500, temperature=0.7))
+                    max_tokens_out=500, temperature=0.7,
+                    thinking=False))  # 生成类：正文局部重写，关思考保预算
             except Exception:  # noqa: BLE001
                 continue
             new_para = (res.content or "").strip() if getattr(res, "ok", False) else ""
@@ -355,7 +356,8 @@ def _seam_retell(provider, system_prompt: str, prev_tail: str, new_head: str) ->
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=200, temperature=0.2))
+            max_tokens_out=200, temperature=0.2,
+            thinking=True))  # 判断类：接缝复述判定，开思考提 recall
         raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
     except Exception:  # noqa: BLE001
         return ""
@@ -371,6 +373,41 @@ def _seam_retell(provider, system_prompt: str, prev_tail: str, new_head: str) ->
     if isinstance(data, dict) and data.get("retell") is True:
         return str(data.get("what") or "上一片段刚写过的情节")
     return ""
+
+
+# dp-seam：事件接缝从"原文末尾"改"结束状态锚"。原文接缝逼模型紧贴上一个事件的
+# 措辞续写，与"禁复述"天然两难——而状态锚只给"事实"（此时谁在哪儿、处于什么状态、
+# 局势如何），模型自然衔接却不必复述场景，缓解假性两难、降前后矛盾。
+_END_STATE_PROMPT = (
+    "你是小说的接缝记录员。下面是刚刚写完的一个事件的正文片段。\n"
+    "请用**一句到两句、陈述式**的话，概括这一事件**结束时**的现场状态做锚点：\n"
+    "- 当前所在的地点/场景；\n"
+    "- 在场人物此刻各自的状态或动作（谁站着/负伤/正要离开/刚得知什么）；\n"
+    "- 此时悬而未决的局势或氛围（如果有）。\n"
+    "只写既成事实，不要抒情、不要推进剧情、不要写后续。直接输出状态，不要其他内容。\n\n"
+    "事件：{ev}\n正文片段：\n…{body}"
+)
+
+
+def _event_end_state(provider, system_prompt: str, ev_text: str, piece: str) -> str | None:
+    """为刚写完的事件产"结束状态锚"（dp-seam，开关 `orchestrator.seam_state`，默认关）。
+
+    供下一个事件的接缝使用：用状态（事实）代替原文末尾（措辞），让事件自然衔接而
+    不必复述上一个事件的场景。判断类调用，开思考。任一步失败返回 None → 调用方回退
+    原文接缝（开关默认关→完全保持现有产出）。
+    """
+    try:
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="system", content=system_prompt or ""),
+                      LLMMessage(role="user", content=_END_STATE_PROMPT.format(
+                          ev=_strip_expanded_tag(ev_text), body=piece[-800:]))],
+            max_tokens_out=120, temperature=0.3,
+            thinking=True))  # 判断类：接缝状态锚提取，开思考
+        if res.blocked or not (res.content or "").strip():
+            return None
+        return " ".join(res.content.strip().split())
+    except Exception:  # noqa: BLE001 - 增强层失败回退原文接缝，不阻断生成
+        return None
 
 
 def strip_seam_overlap(prev: str, piece: str, window: int = 900,
@@ -443,8 +480,8 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
     res = provider.complete(
         LLMRequest(messages=[LLMMessage(role="system", content=system_prompt),
                              LLMMessage(role="user", content=prompt)],
-                   max_tokens_out=budget, max_content_tokens=content_tokens)
-    )
+                   max_tokens_out=budget, max_content_tokens=content_tokens,
+                   thinking=False))  # 生成类：正文主体/续写，关思考保预算
     text = res.content or ""
     for _ in range(max(0, max_continuations)):
         if res.finish_reason != "length" or not text:
@@ -457,8 +494,8 @@ def _generate_with_continuation(provider, system_prompt: str, prompt: str,
                     "不要总结，直到写完一个完整的收束句为止。\n\n"
                     "已写部分：\n" + text[-1500:])),
             ],
-                max_tokens_out=budget, max_content_tokens=content_tokens)
-        )
+                max_tokens_out=budget, max_content_tokens=content_tokens,
+               thinking=False))  # 生成类：正文主体/续写，关思考保预算
         piece = (res.content or "").strip()
         if not piece:
             break
@@ -646,7 +683,8 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
         )
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=400, temperature=0.3, response_format="json_object"))
+            max_tokens_out=400, temperature=0.3, response_format="json_object",
+            thinking=True))  # 判断类：新设定抽取决策，开思考
         if res.blocked or not (res.content or "").strip():
             return 0
         data = _json.loads(res.content.strip())
@@ -713,7 +751,8 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="system", content=system_prompt or ""),
                       LLMMessage(role="user", content=plan_prompt)],
-            max_tokens_out=200, temperature=0.4))
+            max_tokens_out=200, temperature=0.4,
+            thinking=True))  # 判断类：重场戏拍级规划，开思考
         if res.blocked or not (res.content or "").strip():
             return None
         beats = []
@@ -756,6 +795,90 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                 piece = strip_seam_overlap(pieces[-1], piece)
             pieces.append(piece)
         return "\n\n".join(pieces), len(beats)  # 拍间空行（同 P0 段落边界修复）
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _generate_microbeats(provider, system_prompt: str, goal: str, ev_text: str,
+                         memories: list[str], setting_lines: list[str], related: dict,
+                         readback_text: str, generation_tokens: int,
+                         max_continuations: int, direct_words_floor: int,
+                         content_tokens: int | None = None) -> tuple[str, int] | None:
+    """事件微拍规划（dp-microbeat，开关 `orchestrator.microbeat`，默认关）。
+
+    在"重场戏专属拆拍"（`_generate_beats`）之上，提供**面向每个事件**的 2–4 拍规划，
+    拍节奏为 起(设局)→承(推进/交锋)→转(转折/揭示)→合(收束)，末拍可带【钩】——
+    收束同时向下一事件/章留一句悬念钩子，缓解"事件孤岛"（每章事件各卷各的、串不起来）。
+
+    任一拍失败返回 None → 调用方回退事件级/重场戏路径——配套了"开关默认不影响现有产出"。
+    各调用（拍级规划+逐拍生成）皆思考型透传，符合 dp-thinking-policy（规划属判断类）。
+    """
+    try:
+        base = _strip_expanded_tag(ev_text)
+        plan_prompt = (
+            f"{goal}\n\n【事件微拍规划】事件「{base}」需拆成 2–4 个连续拍(beat)写厚，"
+            f"覆盖节奏：起(设局/铺垫)→承(推进/交锋)→转(转折/揭示)→合(收束)；"
+            f"末拍可标【钩】——收束的同时向下一事件/下章留一句悬念钩子，避免事件孤岛。\n"
+            f"每拍一行「N. [阶段] 拍内容」，阶段取 起/承/转/合/钩 之一（15–40 字）。"
+            f"只输出拍清单，不要输出其他内容。"
+        )
+        res = provider.complete(LLMRequest(
+            messages=[LLMMessage(role="system", content=system_prompt or ""),
+                      LLMMessage(role="user", content=plan_prompt)],
+            max_tokens_out=200, temperature=0.4,
+            thinking=True))  # 判断类：事件微拍规划，开思考
+        if res.blocked or not (res.content or "").strip():
+            return None
+        beats = []
+        for ln in res.content.splitlines():
+            ln = ln.strip().lstrip("-•*").strip()
+            m = re.match(r"^(\d+)[.、)．]\s*(.*)$", ln)
+            if not m:
+                continue
+            body = m.group(2).strip()
+            m2 = re.match(r"^[\[【](起|承|转|合|钩)[\]】]\s*(.+)$", body)
+            stage = m2.group(1) if m2 else "承"
+            text = (m2.group(2) if m2 else body).strip()
+            if text:
+                beats.append((stage, text))
+        beats = [(s, t) for s, t in beats if len(t) <= 60][:4]
+        if len(beats) < 2:
+            return None  # 拆解失败 → 回退事件级
+
+        pieces: list[str] = []
+        total = len(beats)
+        for bi, (stage, btext) in enumerate(beats, 1):
+            parts = [f"{goal}", "", f"【事件微拍·{stage} {bi}/{total}】{btext}"]
+            if readback_text and bi == 1:
+                parts += ["", readback_text]
+            if pieces:
+                # 拍级上下文：上一拍**全文**（非截断接缝）——同一场景的连续动作
+                parts += ["", "【上一拍全文】（自然续写，不重复）：",
+                          "…" + pieces[-1][-1500:]]
+            if memories:
+                parts += ["", "【相关前情】：", *memories]
+            if setting_lines and bi == 1:
+                parts += ["", "【本事件首次出现的设定】（自然带出）：", *setting_lines]
+            if related:
+                for k, lines in related.items():
+                    if lines:
+                        parts += ["", f"【相关{k}】", *lines[:4]]
+            if bi == total:
+                tail = ("收束该事件，并自然带出向下一事件/章的钩子或余韵（如其真自然则做，不硬加）。"
+                        if stage in ("钩", "合") else
+                        "这是最后一个拍，须把该事件完整收束。")
+            else:
+                tail = "写到本拍结束即停，不要提前写下一拍内容。"
+            parts += ["", "篇幅约 150–300 字。" + tail]
+            piece = _generate_with_continuation(
+                provider, system_prompt or "", "\n".join(parts),
+                generation_tokens, max_continuations, content_tokens=content_tokens)
+            if len(piece) < direct_words_floor:
+                return None  # 单拍失败 → 回退事件级
+            if pieces:
+                piece = strip_seam_overlap(pieces[-1], piece)
+            pieces.append(piece)
+        return "\n\n".join(pieces), len(beats)  # 拍间空行
     except Exception:  # noqa: BLE001
         return None
 
@@ -822,7 +945,8 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 first_seen_lines: list[str] | None = None,
                 banned_names: list[str] | None = None,
                 line_cards: list[str] | None = None,
-                live_state: str = "") -> str:
+                live_state: str = "",
+                prev_state: str = "") -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
     `related`：知识层检索结果注入行（讨论第 8 轮 RAG）。
@@ -831,6 +955,8 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
     出场人物卡（无条件注入）、角色视角近况、人物调度单、久未出场角色的原文回读。
     `prose_window`：已写正文的最近片段（M3t 滑动窗口，反事件重演），段落边界切片。
     `char_budget`：prompt 总字符预算（M3t 预算器；0=不限，行为与旧版完全一致）。
+    `prev_state`：dp-seam 上一事件结束状态锚；非空时优先于原文接缝（见下方 seam 块），
+    缓解"接缝延续"与"禁复述"的假性两难。
     超预算时按 prompt_budget.EVICT_PRIORITY 从低价值层整段淘汰，钉死层不动。
     """
     from .prompt_budget import apply_prompt_budget
@@ -889,7 +1015,14 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
             "片段里已经发生过的事件、已用过的出场方式与对白严禁再写一遍；"
             "片段中已出场的人物若再度登场，方式必须不同：",
             prose_window])))
-    if prev_piece:
+    if prev_state:
+        # dp-seam：用"上一事件结束状态锚"（事实）承接，而非紧贴原文末尾（措辞）——
+        # 状态锚给自然衔接所需的事实，却不诱导模型复述上一事件的场景，解除"禁复述"两难。
+        blocks.append(("state_seam", "\n".join([
+            "【上一事件结束时的状态】以下为本事件开始前已发生的既成事实；"
+            "本事件须从这里自然衔接，**不要重新描写上一事件的经过或场景**：",
+            prev_state])))
+    elif prev_piece:
         blocks.append(("seam", "\n".join([
             "【上文接缝】（从下面这段的结尾自然续写，不要重复已有内容）：",
             "…" + prev_piece[-seam_chars:]])))
@@ -1304,6 +1437,7 @@ def _title_chapter(provider, text: str, vol: int, ch: int,
                           LLMMessage(role="user", content=TITLE_PROMPT + sample)],
                 max_tokens_out=64,
                 temperature=0.3,
+                thinking=False,  # 生成类：拟题，关思考
             )
         )
     except Exception:  # noqa: BLE001 - 拟题失败不阻断成稿
@@ -1412,12 +1546,18 @@ def produce_chapter(
     character_direction: bool = True,  # 决策三：人物调度层（细纲与正文之间的第 3 次细化）
     perspective_memory: bool = True,   # 决策四：角色视角记忆（事件末调用 + 无条件注入 + 双阈值回读）
     # ---- ADR-021 世界广播选角（一致性栈第 0 层：先定"谁该在场"，N3 调度才有意义）----
-    broadcast_casting: bool = False,   # 事件级选角 LLM 推理（v1 默认关；harness/CLI 显式开，
-                                       # 真机验证稳定后转 True，与四件套同哲学）
+    broadcast_casting: bool = True,    # 事件级选角 LLM 推理（v1 默认关；B1 验收已过→转 True：
+                                       # flash+16000 批跑 18 事件 degrade=0/miss=0/增益 21 全
+                                       # 合理，见 docs/问题总账 B1 与 ADR-021）
     # ---- 批次三（2026-09-05 用户拍板 1/2/3/4 全做）----
     seam_review: bool = False,     # 方案2：事件接缝 LLM 复述审查（strip_seam_overlap 的语义层）
     volume_facts: bool = False,    # 方案3：卷末章生成后自动产"本卷事实清单"（LLM 通读本卷）
     reset_state: bool = True,      # 写章前按 (vol,ch) 清理上一轮回写（重跑幂等，F4/I1-I4）
+    microbeat: bool = False,       # 事件微拍规划（dp-microbeat）：每事件 reasoner 先产
+                                   # 2–4 拍(起承转合/钩子)再逐拍生成；默认关→完全保持现有产出
+    seam_state: bool = False,      # 状态锚接缝（dp-seam）：事件接缝从"原文末尾"改
+                                   # "上一事件结束状态锚"（事实），缓解"续写与禁复述"两难；
+                                   # 默认关→回退原文接缝，完全保持现有产出
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -1641,6 +1781,7 @@ def produce_chapter(
                         messages=[LLMMessage(role="system", content=system_prompt or ""),
                                   LLMMessage(role="user", content=goal + _SCRIPT_INSTRUCTION)],
                         max_tokens_out=generation_tokens,
+                        thinking=False,  # 生成类：剧本体草稿，关思考
                     )
                 )
                 script_text = (script_res.content or "").strip()
@@ -1661,6 +1802,7 @@ def produce_chapter(
                 # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
                 pieces: list[str] = []
                 seam = max(200, min(400, _SEAM_CHARS))
+                prev_end_state = ""  # dp-seam：上一事件的结束状态锚（非空时事件接缝用它）
                 _prev_cast_names: list[str] = []  # ADR-021：上一事件出场者（广播"前情"输入）
                 banned_names: list[str] = []  # 方案6.4：本章被广播拒绝的点名（正文禁令）
                 settings_idx = (settings if settings is not None
@@ -1858,7 +2000,8 @@ def produce_chapter(
                                          # 已被本场选角确认（细纲声明不可删），禁令
                                          # 与人物卡同场矛盾，须剔除。
                                          banned_names=[n for n in banned_names
-                                                       if n not in cast_names])
+                                                       if n not in cast_names],
+                                         prev_state=prev_end_state)
                     # D12 跨切片位置记忆：本场出场方式记入防重复记录
                     # （在 prompt 构建之后追加——本场记录只影响后续事件）
                     _sheet_map = {d.name: d.how for d in (sheet.characters if sheet else [])}
@@ -1877,10 +2020,23 @@ def produce_chapter(
                         except Exception:  # noqa: BLE001
                             pass
 
+                    # 递归分层 C+（dp-microbeat，开关 orchestrator.microbeat，默认关）：
+                    # 面向**每个事件**的 2–4 拍(起/承/转/合+钩)逐拍生成，缓解事件孤岛；
+                    # 任一拍失败返回 None → 回退到下方重场戏拆拍 / 事件级路径（开关默认关
+                    # → 完全保持现有产出）。
+                    piece = None
+                    if microbeat:
+                        mb_res = _generate_microbeats(
+                            provider, system_prompt or "", goal, ev_text,
+                            memories_ev, setting_lines, related, readback_text,
+                            generation_tokens, max_continuations, direct_words_floor,
+                            content_tokens=content_tokens)
+                        if mb_res is not None:
+                            piece, _ = mb_res
+
                     # 递归分层 C（第七批第 5 条·用户拍板）：重场戏拍展开——
                     # 细纲事件标 [expanded] → 拆 ≤3 拍逐拍生成；任何拍失败回退事件级。
-                    beats_used = 0
-                    if is_expanded_event(ev_text):
+                    if piece is None and is_expanded_event(ev_text):
                         beat_res = _generate_beats(
                             provider, system_prompt or "", goal,
                             _strip_expanded_tag(ev_text),
@@ -1888,9 +2044,9 @@ def produce_chapter(
                             generation_tokens, max_continuations, direct_words_floor,
                             content_tokens=content_tokens)
                         if beat_res is not None:
-                            piece, beats_used = beat_res
+                            piece, _ = beat_res
 
-                    if not beats_used:
+                    if piece is None:
                         piece = _generate_with_continuation(
                             provider, system_prompt or "", prompt, generation_tokens,
                             max_continuations, content_tokens=content_tokens)
@@ -2000,6 +2156,12 @@ def produce_chapter(
                                     piece, cast_names, vol, ch, event_index=idx)
                             except Exception:  # noqa: BLE001 - 视角失败不阻断
                                 pass
+                    # dp-seam：为下一个事件产"结束状态锚"（非末事件；失败回退原文接缝）
+                    if seam_state and not is_last:
+                        _anchor = _event_end_state(provider, system_prompt or "",
+                                                   ev_text, piece)
+                        if _anchor:
+                            prev_end_state = _anchor
                 final = _dedupe_chapter_titles("\n\n".join(pieces))
                 # 章级近重复确定性修复（ch7/ch8 实证）：事件循环里每个片段单独看过
                 # 都没问题，拼起来才发现"同一收尾动作写了两遍"——片段级去重够不着，

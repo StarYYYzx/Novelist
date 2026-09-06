@@ -42,9 +42,12 @@ _CLOSED_WORDS = (
 
 @dataclass
 class CastMember:
-    name: str                    # bible 角色名（必须在可及池内）
+    name: str                    # bible 角色名（物理在场者必须在可及池内）
     reason_category: str = ""    # 四类之一：职能必需 / 关系牵引 / 伏笔相关 / 动机主动
     reason: str = ""
+    off_scene: bool = False      # F7：不在场点名（注册角色但不在可及池——跨场景点名的
+                                 # 合理引用，如扬名播报点名远在别处的宿敌/心上人）。
+                                 # 仅作引用留痕，不视为物理在场，不进 N3 调度。
 
 
 @dataclass
@@ -69,7 +72,13 @@ class CastDecision:
 
     @property
     def names(self) -> list[str]:
-        return [m.name for m in self.members]
+        """物理在场名单（F7：不含不在场点名——后者是引用，不进 N3 调度/正文 cast）。"""
+        return [m.name for m in self.members if not m.off_scene]
+
+    @property
+    def off_scene_names(self) -> list[str]:
+        """不在场点名（注册但有别处/闭关/未现身，仅作引用留痕）。"""
+        return [m.name for m in self.members if m.off_scene]
 
 
 def _norm_name(s: str) -> str:
@@ -162,6 +171,11 @@ def _one_line(c: dict, names: dict | None = None) -> str:
     traits = c.get("core_traits") or []
     if traits:
         bits.append("特质：" + "、".join(str(t) for t in traits[:3]))
+    # dp-intent：可及池带上人物欲望/计划的证据，让「动机主动」类选角理由有据可循
+    # （B2 同哲学：倾向理由须可溯源，不靠模型凭空推断）。
+    want = c.get("intent") or c.get("plan")
+    if want:
+        bits.append("动机：" + str(want)[:40])
     rels = c.get("relationships") or []
     if isinstance(rels, list):
         anchors = []
@@ -235,11 +249,16 @@ BROADCAST_PROMPT = """你是这部小说的选角导演。判断"这一场戏谁
 
 def parse_decision(content: str, pool_names: set[str], *,
                    alias_map: dict[str, str] | None = None,
-                   rejected_out: list[str] | None = None) -> tuple[list[CastMember], list[CastNeed], list[str]]:
-    """解析模型输出。造名（不在池）拒绝 + 告警，不崩。返回 (members, needs, alarms)。
+                   rejected_out: list[str] | None = None,
+                   registered: set[str] | None = None,
+                   ) -> tuple[list[CastMember], list[CastNeed], list[str]]:
+    """解析模型输出。防造名两级校验（F7）：不在池拒绝，但**注册角色**（bible 有卡）
+    按"不在场点名"保留（off_scene=True，仅引用不视物理在场）；真自造名（池+bible 双查无）
+    拒绝 + 告警，不崩。返回 (members, needs, alarms)。
 
     方案6.3：匹配顺序 = 精确 → 别名归一表（name 去括号注记/别名）→ 包含兜底（带告警）。
     `rejected_out`：被拒点名收集（调用方注入正文禁令，防“广播拒了正文照样写”）。
+    `registered`：bible 全量注册角色规范名（含不在池者）——仅在池内未命中时才用它兜底放行。
     """
     alarms: list[str] = []
     try:
@@ -257,6 +276,7 @@ def parse_decision(content: str, pool_names: set[str], *,
     if not isinstance(data, dict):
         return [], [], ["广播输出结构异常"]
 
+    reg = registered or set()
     members: list[CastMember] = []
     for p in (data.get("present") or []):
         if not isinstance(p, dict):
@@ -265,7 +285,8 @@ def parse_decision(content: str, pool_names: set[str], *,
         if not name:
             continue
         canon: str | None = None
-        if name in pool_names:
+        in_pool = name in pool_names
+        if in_pool:
             canon = name
         else:
             amap = alias_map or {}
@@ -283,6 +304,15 @@ def parse_decision(content: str, pool_names: set[str], *,
                         alarms.append(f"「{name}」经包含匹配归一为「{pool_name}」")
                         break
         if canon is None:
+            # F7 二级：池内未命中 → 看是否注册角色（跨场景点名合理引用）
+            nm = _norm_name(name)
+            if nm and (nm in reg or name in reg):
+                members.append(CastMember(
+                    name=name, reason_category="职能必需",
+                    reason="注册角色跨场景点名（不在可及池，作不在场引用）",
+                    off_scene=True))
+                alarms.append(f"「{name}」为注册角色但不在可及池，按【不在场点名】保留")
+                continue
             alarms.append(f"广播点名「{name}」不在可及池（自造名/不可出场），已拒绝")
             if rejected_out is not None:
                 rejected_out.append(name)
@@ -380,7 +410,7 @@ def save_casting(ws, project_id: str, vol: int, ch: int, idx: int,
         "vol": vol, "ch": ch, "event_index": idx,
         "closed_scene": closed,                       # B4：名单从严的判定留痕
         "present": [{"name": m.name, "reason_category": m.reason_category,
-                     "reason": m.reason} for m in decision.members],
+                     "reason": m.reason, "off_scene": m.off_scene} for m in decision.members],
         "needs": [n.__dict__ for n in decision.needs],
         "alarms": decision.alarms,
         "raw": decision.raw,
@@ -403,8 +433,14 @@ def broadcast_cast(
     pool: list[dict] | None = None,
     text_hits: list[str] | None = None,
     system_prompt: str | None = None,
-    max_tokens: int = 700,
+    max_tokens: int = 16000,  # 全局只用 flash（pro 禁用）→ 需给足思考容量。thinking 与 content 共享
+                              # 同一 max_tokens，budget_tokens 在 flash 上也不稳定(时灵时不灵)。实测
+                              # (_harness/broadcast_budget_probe.py)：flash 超大池思考离散 4-8K、偶发冲超
+                              # 被截断(finish=length,content 空)；1600 必空,8000 空率~25-50%,16000 留足
+                              # 余量(6 样本全 stop,content 稳)。max_tokens 只是上限：正常事件想完即
+                              # stop、不按满额计费,仅极端长思考才多用。(pro 时代 8000 已够,flash 需更高)
     closed: bool | None = None,
+    max_retries: int = 2,     # 思考模式输出不稳定：偶发返回空 cast；空结果重试收敛
 ) -> CastDecision | None:
     """一次广播：可及池 → prompt → LLM → 解析 → 校验 → 落盘 → needs 入队。
 
@@ -451,40 +487,57 @@ def broadcast_cast(
         declared="、".join(decl) if decl else "（无）",
         prev="、".join(prev_names) if prev_names else "（本章首个事件）",
         pool_block=build_pool_block(pool, names_map), cast_cap=cap)
-    try:
-        res = provider.complete(LLMRequest(
-            messages=[
-                LLMMessage(role="system",
-                           content=system_prompt or "你是小说的选角导演，只做事件选角推理。"),
-                LLMMessage(role="user", content=prompt)],
-            max_tokens_out=max_tokens,
-            temperature=0.2,
-            response_format="json_object",
-        ))
-    except Exception:  # noqa: BLE001 - 广播失败静默降级（与 ADR-020 同纪律）
-        return None
-    if res.blocked or not (res.content or "").strip():
-        return None
 
     # 方案6.3：别名归一表（name 污染卡“苏晚晴（…长注）”不再误杀点名）
     alias_map = build_alias_map(pool)
-    rejected: list[str] = []
-    members, needs, parse_alarms = parse_decision(res.content, pool_names,
-                                                  alias_map=alias_map,
-                                                  rejected_out=rejected)
-    if closed:
-        # B4：封闭场景只许"职能必需"提名——关系牵引/动机主动/伏笔相关的加戏一律拒绝
-        kept, dropped = [], []
-        for m in members:
-            (kept if m.reason_category == "职能必需" else dropped).append(m)
-        if dropped:
-            parse_alarms.append("封闭场景拒绝非职能必需加戏："
-                                + "、".join(m.name for m in dropped))
-        members = kept
-    if not members and not needs:
-        if rejected:  # 方案6.4：有被拒点名也要返回——正文禁令需要这份名单
-            return CastDecision(raw=res.content, alarms=parse_alarms, rejected=rejected)
-        return None  # 解析彻底失败 → 降级
+    # F7：bible 全量注册角色规范名（含不在池者）——跨场景点名据此放行为"不在场引用"，
+    # 与之对照的真自造名（池+bible 双查无）才被拒。
+    registered = {str(c.get("name") or "") for c in chars if c.get("name")}
+
+    # ---- 重试循环（思考模式抖动）：provider 异常 / blocked / content 空 / 空 cast → 重试 ----
+    good = None  # (members, needs, parse_alarms, raw_str, rejected)
+    for attempt in range(max_retries + 1):
+        try:
+            res = provider.complete(LLMRequest(
+                messages=[
+                    LLMMessage(role="system",
+                               content=system_prompt or "你是小说的选角导演，只做事件选角推理。"),
+                    LLMMessage(role="user", content=prompt)],
+                max_tokens_out=max_tokens,
+                temperature=0.2,
+                response_format="json_object",
+                thinking=True,  # 判断类：选角推理决策，开思考
+            ))
+        except Exception:  # noqa: BLE001 - 广播异常静默（先尝试重试，重试尽仍降级）
+            res = None
+        if res is not None and not res.blocked and (res.content or "").strip():
+            rejected: list[str] = []
+            members, needs, parse_alarms = parse_decision(res.content, pool_names,
+                                                          alias_map=alias_map,
+                                                          rejected_out=rejected,
+                                                          registered=registered)
+            # F7：不在场点名只作引用留痕，不参与物理在场名单的封闭/校验/上限
+            physical = [m for m in members if not m.off_scene]
+            off_scene = [m for m in members if m.off_scene]
+            if closed:
+                # B4：封闭场景只许"职能必需"提名——关系牵引/动机主动/伏笔相关的加戏一律拒绝
+                kept, dropped = [], []
+                for m in physical:
+                    (kept if m.reason_category == "职能必需" else dropped).append(m)
+                if dropped:
+                    parse_alarms.append("封闭场景拒绝非职能必需加戏："
+                                        + "、".join(m.name for m in dropped))
+                physical = kept
+            if physical or needs or rejected:
+                good = (physical, off_scene, needs, parse_alarms, res.content, rejected)
+                break  # 有内容 → 采用本次
+    # 循环未命中 good（重试尽仍无可用 cast）→ 调用方静默降级确定性选角。
+    # 注：rejected（正文禁令源）在 `physical or needs or rejected` 条件里已随 good 捕获，
+    # 全部尝试都无 rejected 时也无可返回的禁令——故此处不额外补调 provider。
+    if good is None:
+        return None
+
+    physical, off_scene, needs, parse_alarms, raw_content, rejected = good
 
     # 校验：名字层面（细纲/文本命中/上限 cap）；声明/命中先过别名归一（方案6.3）
     def _canon(n: str) -> str:
@@ -494,14 +547,14 @@ def broadcast_cast(
         return hit if (hit and hit in pool_names) else n
 
     final_names, val_alarms = validate_names(
-        [m.name for m in members],
+        [m.name for m in physical],
         declared=[c for c in (_canon(n) for n in decl) if c in pool_names],
         pool=list(pool_names),
         text_hits=[c for c in (_canon(h) for h in (text_hits or [])) if c in pool_names],
         cap=cap)
 
     # 成员按最终名单过滤并保留理由
-    by_name = {m.name: m for m in members}
+    by_name = {m.name: m for m in physical}
     kept_members = []
     for nm in final_names:
         m = by_name.get(nm)
@@ -510,12 +563,14 @@ def broadcast_cast(
                                            reason="确定性补回（细纲声明/文本命中）"))
         else:
             kept_members.append(m)
-    # 顺序稳定：先模型给出的、后补回的保持名单原有相对序
+    # 不在场点名追加在物理名单之后（顺序稳定：物理在场者在前，引用在后）
+    kept_members = kept_members + off_scene
+    # 顺序稳定：先模型给出的、后补回的保持名单原有相对序；不在场引用固定排最后
     order = {n: i for i, n in enumerate(final_names)}
-    kept_members.sort(key=lambda m: order.get(m.name, 0))
+    kept_members.sort(key=lambda m: order.get(m.name, 0) if not m.off_scene else 1 << 30)
 
     decision = CastDecision(members=kept_members, needs=needs,
-                            raw=res.content, alarms=parse_alarms + val_alarms)
+                            raw=raw_content, alarms=parse_alarms + val_alarms)
     try:
         save_casting(ws, project_id, vol, ch, idx, decision, closed=closed)
     except OSError:

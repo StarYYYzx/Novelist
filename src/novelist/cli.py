@@ -362,7 +362,7 @@ def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
     if provider == "deepseek":
         from novelist.providers.deepseek import DeepSeekProvider
 
-        return DeepSeekProvider(model="deepseek-chat")
+        return DeepSeekProvider()
     if provider in ("lmstudio", "local"):
         from novelist.providers.lmstudio import LMStudioProvider
 
@@ -582,7 +582,7 @@ def validate(ctx: click.Context, directory: str | None) -> None:
 
 @cli.group()
 def forge() -> None:
-    """构建层 Forge（docs/10）：seed/ingest/show/resume/build/roll/rollback/validate。"""
+    """构建层 Forge（docs/10）：seed/ingest/show/resume/build/roll/roll-window/rollback/validate。"""
 
 
 def _resolve_forge_target(ws: Workspace, directory: str | None) -> tuple[Workspace, str]:
@@ -676,6 +676,38 @@ def forge_show(ctx: click.Context, directory: str | None) -> None:
     click.echo(f"== {project_id} ==")
     for line in show_summary(bp, state):
         click.echo(line)
+
+
+@forge.command("covenant")
+@click.argument("directory", required=False, default=None)
+@click.pass_context
+def forge_covenant(ctx: click.Context, directory: str | None) -> None:
+    """查看承诺账本（恒定层边界，无 LLM）：恒不可径改的伏笔兑付/卷主线/核心人设。
+
+    承诺账本把"已承诺的走向"钉在蓝图 threads/volumes/characters 上；滚动细纲只允许
+    在未来窗口内改"实现手段"，凡触碰本账本的修订须经 ADR-024 人工审核闸门。
+    """
+    from novelist.forge import Blueprint
+    from novelist.forge.covenant import COVENANT_REL, load_covenant, summary_lines
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        bp = Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"{project_id}: 尚无蓝图（workspace/forge/blueprint.json）——先跑 `forge seed`"
+        ) from None
+    entries = load_covenant(ws, project_id, bp)
+    path = ws._abs(f"{project_id}/{COVENANT_REL}")  # noqa: SLF001
+    click.echo(f"== {project_id} 承诺账本 ==")
+    lines = summary_lines(entries)
+    if not lines:
+        click.echo("（当前蓝图无在途承诺——无伏笔兑付/卷主线声明/核心角色）")
+    else:
+        for line in lines:
+            click.echo(line)
+    click.echo(f"（快照：{path}）触碰均须人工审核，参见 `forge review`）")
 
 
 # ---- 审核闸门命令（ADR-024：分模块权限开关）----
@@ -956,6 +988,55 @@ def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: st
                f"弧={res.arcs_written}")
     if not res.ok:
         raise click.ClickException("滚动生成未完成，见上方 warnings")
+
+
+@forge.command("roll-window")
+@click.argument("vol", type=int)
+@click.argument("directory", required=False, default=None)
+@click.option("--from", "from_ch", type=int, default=None,
+              help="窗口起点章（缺省=卷内第一未写章）")
+@click.option("--width", type=int, default=3, help="未来窗口宽度（未来未写章数，缺省 3）")
+@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai")
+@click.option("--max-calls", type=int, default=None,
+              help="窗口重生成分阶段配额（缺省 width×2+2）")
+@click.option("--gate/--no-gate", default=True,
+              help="承诺账本门（ADR-024）：触及承诺→回滚+mark_pending，不静默改承诺")
+@click.pass_context
+def forge_roll_window(ctx: click.Context, vol: int, directory: str | None, from_ch: int | None,
+                      width: int, provider: str, max_calls: int | None, gate: bool) -> None:
+    """未来窗口滚动细纲：修订第 N 卷尚未成文的下 N 章 key_events（docs/10 §7.7）。
+
+    卷间纠偏入口：在任意未写章前运行，让细纲贴合已发生的事实。改动先过承诺账本——
+    未触及承诺自动落盘；触及（伏笔/卷主线/核心人设）则回滚并转入 `forge review` 人工闸门。
+    窗口越过卷尾钳制在卷内；整卷写完后提示用 `forge roll <vol+1>` 衔接下一卷。
+    """
+    from novelist.forge import Blueprint, roll_window
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
+    try:
+        res = roll_window(ws, project_id, provider=_make_cli_provider(provider),
+                          vol=vol, from_ch=from_ch, width=width,
+                          max_calls=max_calls, gate=gate)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from None
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    if res.gate_halted:
+        click.echo(f"roll-window vol {vol} 触承诺：{', '.join(res.touched)} → "
+                   f"已 mark_pending（{', '.join(res.pending_review)}），改动未落盘")
+        click.echo("请用 `forge review {m}` / `forge approve` 处置后再写下一章")
+        raise click.ClickException("触及承诺账本，转入人工审核闸门")
+    click.echo(f"roll-window vol {vol} done: calls={res.calls_used} "
+               f"章={res.width_applied}（窗口自第 {res.start_ch} 章起）")
+    for d in res.diffs:
+        click.echo(d)
+    if not res.ok:
+        raise click.ClickException("窗口滚动未完成，见上方 warnings")
 
 
 @forge.command("resume")

@@ -185,6 +185,7 @@ def test_event_mode_chapter_repair_loop(ws_factory, write_json):
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
         knowledge_llm=False, event_polish=False, supplement_settings=False,
+        broadcast_casting=False,
         session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
     # 修复调用确实发生，且带问题清单
@@ -221,6 +222,7 @@ def test_event_mode_no_repair_when_clean(ws_factory, write_json):
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
         knowledge_llm=False, event_polish=False, supplement_settings=False,
+        broadcast_casting=False,
         session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
     assert not any("【本章正文存在以下问题" in c for c in llm.calls)

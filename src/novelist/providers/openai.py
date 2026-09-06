@@ -26,6 +26,7 @@ from ..core.llm import (
     ToolCall,
     Usage,
 )
+from .secrets import redact_message
 
 
 class OpenAICompatibleProvider:
@@ -38,6 +39,7 @@ class OpenAICompatibleProvider:
         api_key: str | None = None,
         model: str = "gpt-4o-mini",
         timeout_s: float = 60.0,
+        supports_reasoning_roundtrip: bool = False,
     ) -> None:
         if httpx is None:
             raise ProviderError("httpx not installed (pip install novelist[providers])")
@@ -45,6 +47,9 @@ class OpenAICompatibleProvider:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.model = model
         self.timeout_s = timeout_s
+        # 思考型后端的工具多轮：需回传 assistant 的 reasoning_content。
+        # 仅对真正支持的后端（如 DeepSeek v4）开启，OpenAI 等不主动发，避免未知字段。
+        self.supports_reasoning_roundtrip = supports_reasoning_roundtrip
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -59,22 +64,9 @@ class OpenAICompatibleProvider:
     def complete(self, req: LLMRequest) -> LLMResult:
         if not self.api_key:
             raise ProviderError("no api key; set OPENAI_API_KEY or pass api_key")
-        payload: dict = {
-            "model": req.model or self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in req.messages],
-        }
-        if req.tools:
-            payload["tools"] = req.tools
-        if req.temperature is not None:
-            payload["temperature"] = req.temperature
-        if req.response_format == "json_object":
-            payload["response_format"] = {"type": "json_object"}
-        if req.max_tokens_out:
-            payload["max_tokens"] = req.max_tokens_out
-        # 正文预算（第二批·人工审查）：openai 兼容端点可能是思考型模型
-        # （如云端 Qwen3.5），max_tokens 是总预算，正文目标须纳入其中。
-        if req.max_content_tokens and req.max_content_tokens > (req.max_tokens_out or 0):
-            payload["max_tokens"] = req.max_content_tokens
+        payload = build_payload(
+            req, self.model, supports_reasoning_roundtrip=self.supports_reasoning_roundtrip
+        )
 
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
@@ -85,7 +77,9 @@ class OpenAICompatibleProvider:
                 timeout=self.timeout_s,
             )
         except httpx.HTTPError as e:  # type: ignore
-            raise ProviderError(f"openai request failed: {e}") from e
+            raise ProviderError(
+                f"openai request failed: {redact_message(str(e), [self.api_key])}"
+            ) from e
 
         if resp.status_code == 451:  # 法律/审核拦截
             return LLMResult(
@@ -97,11 +91,57 @@ class OpenAICompatibleProvider:
                 provider="openai",
             )
         if resp.status_code != 200:
-            body = resp.text[:200]
+            body = redact_message(resp.text[:200], [self.api_key])
             # OpenAI 错误体常含 "type"/"code"
             raise ProviderError(f"openai http {resp.status_code}: {body}")
 
         return parse_completion(resp.status_code, resp.json())
+
+
+def build_payload(
+    req: LLMRequest,
+    model: str,
+    *,
+    supports_reasoning_roundtrip: bool = False,
+) -> dict:
+    """组装 OpenAI / DeepSeek 兼容 chat/completions 请求体（纯函数，便于测试）。
+
+    - 思考（第二轮·DeepSeek v4）：`thinking` 顶层开关（enabled/disabled），
+      `reasoning_effort` 控制强度；官方在**思考启用时忽略 temperature**，
+      故 enabled 时不发 temperature。
+    - 工具多轮：`supports_reasoning_roundtrip` 且 assistant 消息带 reasoning_content
+      时回传，否则 400（DeepSeek 约束）。
+    - 正文预算：max_content_tokens 覆盖总预算（与思考型模型兼容，见 docs/人工审查第二批）。
+    """
+    messages: list[dict] = []
+    for m in req.messages:
+        d: dict = {"role": m.role, "content": m.content}
+        if supports_reasoning_roundtrip and m.role == "assistant" and m.reasoning_content:
+            d["reasoning_content"] = m.reasoning_content
+        messages.append(d)
+
+    payload: dict = {"model": req.model or model, "messages": messages}
+    if req.tools:
+        payload["tools"] = req.tools
+
+    thinking = req.thinking
+    if thinking is True:
+        payload["thinking"] = {"type": "enabled"}
+    elif thinking is False:
+        payload["thinking"] = {"type": "disabled"}
+    if req.reasoning_effort and thinking is not False:
+        payload["reasoning_effort"] = req.reasoning_effort
+    # 思考 enabled 时 DeepSeek 忽略 temperature；disabled/None 照常下发。
+    if req.temperature is not None and thinking is not True:
+        payload["temperature"] = req.temperature
+
+    if req.response_format == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+    if req.max_tokens_out:
+        payload["max_tokens"] = req.max_tokens_out
+    if req.max_content_tokens and req.max_content_tokens > (req.max_tokens_out or 0):
+        payload["max_tokens"] = req.max_content_tokens
+    return payload
 
 
 def parse_completion(status_code: int, data: dict) -> LLMResult:
@@ -132,6 +172,11 @@ def parse_completion(status_code: int, data: dict) -> LLMResult:
             args = {}
         tool_calls.append(ToolCall(id=tc["id"], name=tc["function"]["name"], arguments=args))
 
+    # 思考型模型（DeepSeek v4 / qwen3.5 等）：推理文本在 message.reasoning_content，
+    # 其 token 数在 usage.completion_tokens_details.reasoning_tokens（计入 max_tokens）。
+    details = (data.get("usage") or {}).get("completion_tokens_details") or {}
+    reasoning_text = message.get("reasoning_content") or message.get("reasoning") or ""
+
     return LLMResult(
         ok=True,
         content=message.get("content") or "",
@@ -142,4 +187,6 @@ def parse_completion(status_code: int, data: dict) -> LLMResult:
             tokens_in=data.get("usage", {}).get("prompt_tokens", 0),
             tokens_out=data.get("usage", {}).get("completion_tokens", 0),
         ),
+        reasoning=reasoning_text,
+        reasoning_tokens=details.get("reasoning_tokens"),
     )

@@ -473,6 +473,39 @@ L0 book（唯一根）── 主题/卖点/基调/规模
 3. **worldstate 现状**：当前 time.now、人物状态、未回收 pending（ADR-019：到点该引出的定时事件）；
 4. **收尾清单**：第 N 卷 `payoff_checklist`（`phase.py:173`）——本卷必须回收的伏笔。
 
+### 7.8 未来窗口滚动细纲 + 承诺账本门（`forge roll-window`，ADR-026 · 2026-09-06）
+
+**语义**：故事写到卷内某处后，"未来窗口"（尚未成文的下一个 `width` 章，缺省 3）允许在此刻度上
+修订 key_events 等执行层，让细纲贴合已发生的事实——这是**卷间/章节间的纠偏入口**，不必整卷重来。
+
+```bash
+novelist forge roll-window <vol> [DIR] \
+    [--from <ch>]       # 窗口起点章（缺省 = 卷内第一未写章，自动定位）
+    [--width 3]         # 未来窗口宽度（未写章数）
+    [--provider fake|lmstudio|deepseek|openai]
+    [--max-calls N]     # 分阶段配额（缺省 width×2+2）
+    [--gate | --no-gate]# 承诺门：缺省开（ADR-026），--no-gate 供脚本/测试直跑
+```
+
+**承诺账本门（恒定 vs 可变，ADR-026）**——整个修订先过确定性判定 `touched_entries`：
+
+| 修订是否触及承诺 | 行为 |
+| --- | --- |
+| 未触及（只动未来窗口 un-chapters 的 key_events 等执行层） | **自动落盘**：细纲 md + 蓝图 chapters 直接更新 |
+| 触及承诺（伏笔 status/target_vol、卷主线、核心人设的 guard 字段被改） | **回滚**窗口改动 + `mark_pending` 人工闸门（复用 ADR-024 分模块审核）；`gate_halted=True`，绝不静默改承诺 |
+
+**边界**：
+- 窗口越过卷尾 → 钳制在卷内；
+- 已写章（`chapters/<vol>-<ch>.md` 存在）→ 跳过不滚；
+- 整卷已写完 → 无未来窗口，提示 `forge roll <vol+1>` 衔接下一卷；
+- 每次滚动前自动打快照（F5 双快照基线），失败/触碰可回退。
+
+**承诺账本视图**：`novelist forge covenant [DIR]` 打印恒定层条目（伏笔/卷主线/核心人设）与
+guard 字段，纯确定性快照，供人工核对「哪些层不可静默改」。
+
+**测试**：`tests/test_covenant.py`（13 例）+ `tests/test_m21_roll_window.py`（7 例）——全 ScriptedProvider，
+绝不真调 LLM（docs/09 §2.1）；覆盖自动落盘/门不误触发/起点定位/已写章跳过/卷写完结提示/触碰守卫生效。
+
 ---
 
 ## 8. 类型包 Genre Pack（数据，非代码；2026-09-01 升级）

@@ -107,6 +107,11 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
 - **R8.2 预算语义**：`max_tokens_out`=总预算，`max_content_tokens`=期望正文量；适配层
   `budget = max(总预算, 正文预算)`。思考型模型（qwen3.5-9b）思考计入总预算——本地跑批经验见
   docs/09 与 AGENTS.md，**生成单位按事件不按整章**。
+  ⚠ **DeepSeek v4-pro 实测（2026-09-06）**：思考与正文共享同一个 `max_tokens`，`budget_tokens`
+  参数被忽略——`budget = max(...)` 并不能真正给 content 留硬头寸，thinking 会吃满总预算致
+  `finish=length`、content 空。对超大池判断任务（如广播），正确做法是**把总 `max_tokens` 放到能
+  容纳 thinking+content 的量级**（广播默认 1600→8000，见 `tests`/docs 问题总账 B1），代价是
+  成本/耗时约翻倍。
 - **R8.3 JSON 返回解析**：prompt 末尾加"只输出 JSON"约束；解析失败重试 1 次→回退父层产物并记 warn
   （Forge 引擎通用降级策略）。
 - **R8.4 抽取行协议**：编纂员/ingest 的 LLM 输出按"域：值"单行协议解析（§3 命名表），解析器集中

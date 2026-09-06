@@ -8,7 +8,8 @@ engine / nodes / validate / report。
 from __future__ import annotations
 
 from .ask import ConsultResult, run_consult
-from .engine import BuildResult, DiffPlan, RollResult, build, diff_affected, roll
+from .engine import (BuildResult, DiffPlan, RollResult, RollWindowResult, build,
+                     diff_affected, roll, roll_window)
 from .genres import load_pack, load_pack_for, list_packs
 from .ingest import IngestResult, run_ingest
 from .io_console import AnswerIO, ConsoleIO
@@ -40,6 +41,8 @@ __all__ = [
     "build",
     "RollResult",
     "roll",
+    "RollWindowResult",
+    "roll_window",
     "DiffPlan",
     "diff_affected",
     "IngestResult",

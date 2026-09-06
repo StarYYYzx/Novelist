@@ -35,6 +35,10 @@ class ProviderCapabilities:
 class LLMMessage:
     role: str  # system | user | assistant
     content: str
+    # 思考型模型（DeepSeek v4 / qwen3.5 等）的推理文本，随 assistant 消息保存。
+    # 工具多轮时必须回传（DeepSeek 官方：若最终一次回答前曾发生工具调用，
+    # 后续请求须携带上一 assistant 的 reasoning_content，否则返回 400）。
+    reasoning_content: str = ""
 
 
 @dataclass
@@ -60,10 +64,13 @@ class LLMRequest:
     # max_content_tokens 是**期望正文量**——适配层保证正文预算不被思考吃掉
     # （budget = max(总预算, 正文预算)），也供 reasoning_aware 判据使用。
     max_content_tokens: int | None = None
-    thinking: bool | None = None
     # 思考模式按请求控制（讨论：云端 llama.cpp 认 chat_template_kwargs.enable_thinking，
     # 判断类任务如审校开思考提 recall，生成类任务关思考保正文预算）：
     # None = 跟随 Provider 默认（enable_thinking 参数）；True/False 显式覆盖。
+    thinking: bool | None = None
+    # 思考强度（DeepSeek v4 官方支持 "high" / "max"；跟随 thinking 一并下发；
+    # thinking 显式 disabled 时不发）。其余后端忽略该字段。
+    reasoning_effort: str | None = None
 
 
 @dataclass

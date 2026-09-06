@@ -51,6 +51,14 @@ class MemoryHit:
     source: dict  # {vol, ch}
     refs: list[str]
     score: float
+    reason: str = ""  # rerank 走 LLM 侧选时：该条被优先的相关性理由（默认空=未 rerank）
+
+
+# reranker 回调契约（ADR-027，2026-09-06）：输入查询串 + 候选精简清单，
+# 返回按相关性**降序**的 (sig, reason) 列表；未入选者由调用方按原分回补。
+# 设计成注入回调而非内建 LLM——与 MemoryWriter.semantic_checker 同模式，
+# 编排层负责把它接到"判断类·thinking 路由"的 LLM 调用上（dp-thinking-policy）。
+Reranker = Callable[[str, list[dict]], list[tuple[str, str]]]
 
 
 @dataclass
@@ -59,6 +67,9 @@ class MemoryQuery:
     filters: dict | None = None  # char_id / chapter_scope / after / before / kinds
     top_k: int = 5
     min_score: float = 0.0
+    # ---- LLM 侧选 rerank（ADR-027，默认关闭=完全保持现状）----
+    reranker: Reranker | None = None
+    rerank_pool: int = 0  # >0 时 rerank 候选池大小；0=缺省 top_k×3（至少 6）实测再调
 
 
 @dataclass
@@ -458,7 +469,44 @@ class MemoryRetriever:
         floor = max(q.min_score, self.min_score)
         scored = [h for h in scored if h.score >= floor]
         scored.sort(key=lambda h: (-h.score, h.source.get("vol", 0), h.source.get("ch", 0), h.sig))
+        if q.reranker is not None and scored:
+            scored = self._rerank(q, scored)
         return scored[: q.top_k]
+
+    # ---- LLM 侧选 rerank（ADR-027）：在相似度打分之上再叠一层相关性精审 ----
+    def _rerank(self, q: MemoryQuery, scored: list[MemoryHit]) -> list[MemoryHit]:
+        """用注入的 reranker 从候选池里精筛最相关的 ≤top_k 条，并把池外其余按原分回补。
+
+        候选池放大（pool ≥ top_k×若干）是为了救回"字面不重合但语义相关"的碎片——
+        纯相似度召回（尤其关键词模式）会把这部分漏在前门之外，侧选就无从谈起。
+        """
+        pool_size = q.rerank_pool or max(3 * q.top_k, 6)
+        pool = scored[:pool_size]
+        if not pool:
+            return scored
+        by_sig = {h.sig: h for h in pool}
+        try:
+            chosen = q.reranker(q.query, [
+                {"sig": h.sig, "kind": h.kind, "text": h.text[:80]} for h in pool
+            ])
+        except Exception:  # noqa: BLE001  rerank 是增强层，失败回退到纯相似度，不拖垮检索
+            return scored
+        chosen = chosen or []
+        ordered: list[MemoryHit] = []
+        seen: set[str] = set()
+        for item in chosen:
+            if not isinstance(item, tuple) or len(item) < 1:
+                continue
+            sig = item[0]
+            reason = item[1] if len(item) > 1 else ""
+            if sig in by_sig and sig not in seen:
+                seen.add(sig)
+                hit = by_sig[sig]
+                hit.reason = reason
+                ordered.append(hit)
+        # 池内未入选 + 池外所有，按原相似度分回补（排在 LLM 精选之后）
+        rest = [h for h in scored if h.sig not in seen]
+        return ordered + rest
 
 
 def _ge(a: dict, b: dict) -> bool:

@@ -813,12 +813,21 @@ M3r 验收后用户口径"做完继续讨论"的下一里程碑（人物一致�
 | --- | --- | --- |
 | 广播模块 | `core/broadcast.py`：可及池（worldstate dead / unavailable_until>now / bible status dead·unknown 剔除，零调用）；prompt（事件+接缝+天数+细纲声明+上事件+池≤40）；解析纪律（防造名拒绝+告警、```json 围栏容错、非 JSON 不崩）；校验（细纲声明补回/池外剔除/文本命中补回/≤6 裁）；落盘 `memory/castings/v{vol}-c{ch}-e{idx}.json`；needs → 工厂队列（source=broadcast） | ✅ |
 | orchestrator 接线 | 事件循环注卡前 +1 次广播；`broadcast_casting: bool = False`（v1 默认关）；成功 → 名单驱动 cast、`ProductionResult.broadcasts_built` 回传；任何异常 → 静默回退确定性选角（与 ADR-020 同纪律） | ✅ |
-| 测试 | `tests/test_broadcast.py` 17 条：池过滤/解析纪律/校验四场景/落盘/needs 入队/失败纪律(挂·blocked·垃圾·None)/orchestrator 集成（开启广播名单驱动 + 垃圾降级不阻生成） | ✅ 17 passed |
+| 测试 | `tests/test_broadcast.py` 28 条：池过滤/解析纪律/校验四场景/落盘/needs 入队/失败纪律(挂·blocked·垃圾·None)/orchestrator 集成（开启广播名单驱动 + 垃圾降级不阻生成）+ **F7 不在场点名 4 条**（真自造名仍拒 / 注册角色放行不进物理 cast / 集成 / 池排除前置） | ✅ 28 passed（含 test_broadcast_alias_match） |
 | 文档 | ADR-021 状态改"已实施"；4 项拍板记录（细纲不可删 / 新人必经工厂 / 独立成次 / 落盘） | ✅ |
 
 **验收口径**：v1 默认关（与 ADR-020 四件套同哲学——先默认不改变产出，harness/CLI 显式开启，
 真机验证稳定后转 True）。开启后跑批需比对"广播名单 vs 细纲/文本兜底名单"的差异是否真的
 减少了"职能上该在场的人缺席"（前两章归因 A 类主因）。
+
+> **内部四件套 · 广播转正前置项（2026-09-06）**：F7 不在场点名已闭环（两级校验——
+> 注册角色不在池放行为 `off_scene` 引用、真自造名仍拒；`names` 只回物理在场者，不进 N3
+> 调度/正文 cast，见 `docs/问题总账` F7）。**广播转正已闭环（2026-09-06）**：用户规则
+> 全局禁用 pro、只用 flash（`deepseek.py` 默认 `deepseek-v4-flash`）；广播 `max_tokens`
+> 8000→16000 兜住 flash 更大思考离散（超大池 4-8K，偶发冲超被截断致 content 空）。以
+> flash+16000 重跑 `broadcast_batch_probe`（18 事件）**broadcast_fired 18/18、degrade=0、
+> miss=0、增益 21 全 plausible** → `broadcast_casting` 默认 False→True（详见 docs/问题总账 B1）。
+> 另三件套（dp-microbeat 微拍 / dp-seam 状态锚接缝 / dp-intent 欲望着色）见 ADR-028 后各里程碑。
 
 ### M3t+ — 线索（Line）子系统批1（ADR-025，2026-09-06 拍板 / ✅ 代码+测试完成）
 
@@ -889,6 +898,63 @@ exclude_src 整章排除（H12 防复述的副作用）——下一事件只能�
 10 份细纲双段污染（总账 F8）。`bible.normalize_gist_frontmatter`（保留第一份回填段，标准 `---`
 引导段与裸 JSON 段两种第二段均识别，正文保真）+ `normalize_all_gists` 产品化落地；
 fame5 10 份实测干净且幂等（fixed=0），tests/test_gist_normalize.py 5 条，全量 **796 passed**。
+
+### M3w — 承诺账本 + 未来窗口滚动细纲（ADR-026，2026-09-06 ✅ 代码+测试完成）
+
+> 设计：ADR-026 + docs/10 §7.8。把"恒定 vs 可变"边界做成确定性承诺账本，并为"写到卷内某处后
+> 纠偏未来 2-3 章细纲"提供 `forge roll-window` 入口——未触及承诺自动落盘，触及则回滚+人工闸门。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| W1 | `forge/covenant.py`：承诺账本（threads 在途伏笔 / volumes 卷主线 / characters 核心人设，guard 字段）+ `touched_entries` 确定性触碰判定 + `affected_modules` 映射 + `summary_lines` 摘要 + 账本快照 | ✅ |
+| W2 | `engine.roll_window`：窗口起点自动定位 / 宽度 / 越卷尾钳制 / 已写章跳过 / 承诺门（未触及自动落盘、触及回滚+`mark_pending`）/ 整卷写完提示衔接下一卷 / 滚动前快照 | ✅ |
+| W3 | CLI `forge roll-window`（`--from/--width/--max-calls/--gate`）+ `forge covenant` 视图 + 导出 `roll_window`/`RollWindowResult` | ✅ |
+
+**落地记录（2026-09-06）**：
+
+- `forge/covenant.py` 全确定性、零 LLM；`_threads_entries` 只收 `planted/pending_return`
+  在途伏笔（未承诺/已回收不构成承诺）。
+- `roll_window` 门控语义：改动先过 `touched_entries` → 未触及自动落盘（细纲 md + 蓝图 chapters）；
+  触及 → **回滚**窗口改动 + `mark_pending` 人工闸门（复用 ADR-024 分模块审核），绝不在窗口修订里
+  静默改承诺；`gate=False` 供脚本/测试直跑。
+- 边界：`--from` 缺省=卷内第一未写章；窗口越卷尾钳制在卷内；已写章跳过；整卷写完提示
+  `forge roll <vol+1>` 衔接下一卷；每次滚动前自动打快照（F5 双快照基线）。
+- 测试：`tests/test_covenant.py`（13 例）+ `tests/test_m21_roll_window.py`（7 例，全 ScriptedProvider）——
+  覆盖自动落盘/门不误触发/起点定位/已写章跳过/卷写完结提示/触碰守卫生效/CLI 注册，全量回归通过。
+
+### M3x — 记忆 LLM 侧选 rerank（ADR-027，2026-09-06 ✅ 核心已编码）
+
+> 借鉴 Claude Code s09：在 `MemoryRetriever` 相似度打分之上叠一层可开关的 LLM 相关性精审，
+> 补回"分词不重合但语义相关"的漏检碎片。核心机制落地，编排层 LLM 注入待真机验证阶段接线。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| R1 | `MemoryQuery.reranker/rerank_pool` + `MemoryRetriever._rerank` + `MemoryHit.reason`；候选池放大(top_k×3)救回漏检；异常回退纯相似度 | ✅ |
+| R2 | 测试 `test_m22_mem_rerank.py`：默认关闭零触发 / 语义相关救回 / reason 只写入选 / 异常回退 / pool 钳制 | ✅ |
+| R3 | 编排层 LLM-backed 注入（判断类·thinking 路由）+ CLI 实验开关 | ⏳ 待真机验证阶段 |
+
+**落地记录（2026-09-06）**：
+- `memory.py`：`MemoryQuery.reranker` 为 `Callable[[str,list[dict]],list[tuple[sig,reason]]]`
+  注入回调（默认 None=逐字节等价旧版）；`MemoryRetriever._rerank` 在打分排序后重排；
+  rerank 异常静默回退（增强层不拖垮检索）；候选池外按原相似度回补。
+- 设计取舍记 ADR-027；同 07 §7.1 检索说明已补。测试 5 例新 + memory 22 例回归全绿。
+
+### M3y — 任务级持久化 + 编排器指派 owner + can_start（ADR-028，2026-09-06 ✅ 核心已编码）
+
+> 借鉴 CC s12 Task System，适配 Novelist 中央编排：把卷→章落成细粒度任务 JSON，支持 owner
+> 指派、can_start 依赖就绪、崩溃后单任务恢复。核心层就绪；orchestrator 推进卷/章的接线
+> 与真机验证阶段结合做（避免在 docs/11 §13 的高风险整改区叠债务）。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| T1 | `core/tasks.py` `Task`+`TaskStore`：任务 JSON 落盘/装载、状态机、owner 指派防重入(`TaskBusyError`)、can_start 依赖就绪、recover(list/redo)、precheck 承诺门衔接 hook | ✅ |
+| T2 | 测试 `test_m23_tasks.py`：持久化往返 / owner 指派+幂等 / 异主防重入 / 依赖解锁 / recover list+redo / precheck blocked | ✅ |
+| T3 | orchestrator 卷/章推进接线 + 崩溃启动 recover + covenant precheck 注入 | ⏳ 与真机验证一起 |
+
+**落地记录（2026-09-06）**：
+- `core/tasks.py`：文件名做 Windows 安全替换（逻辑 id 保留 `:`）。`start` 编排器指派 owner；
+  `can_start` 只做依赖就绪（确定性）；`precheck` 注入承接 covenant gate（不内置 LLM）。
+- 测试 8 例全绿。ADR-028 见 docs/03；docs/06 §4.1 数据设计已补任务层。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。

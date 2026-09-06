@@ -239,7 +239,8 @@ class KnowledgeBase:
             res = provider.complete(LLMRequest(
                 messages=[LLMMessage(role="user",
                                      content=QUERY_PROMPT.format(ev_text=ev_text[:200]))],
-                max_tokens_out=120, temperature=0.2))
+                max_tokens_out=120, temperature=0.2,
+                thinking=True))  # 判断类：检索意图抽取，开思考
         except Exception:  # noqa: BLE001
             return [ev_text]
         if not res.content or res.blocked:

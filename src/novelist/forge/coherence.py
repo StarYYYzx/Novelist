@@ -92,7 +92,8 @@ def run_coherence_review(ws, project_id: str, bp, provider, vol: int,
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=1500, temperature=0.3))
+            max_tokens_out=1500, temperature=0.3,
+            thinking=True))  # 判断类：一致性/蓝图审查，开思考
         if count_hook is not None:
             try:
                 count_hook()
@@ -218,7 +219,8 @@ def run_blueprint_review(ws, project_id: str, bp, provider, *, count_hook=None) 
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=1500, temperature=0.3))
+            max_tokens_out=1500, temperature=0.3,
+            thinking=True))  # 判断类：一致性/蓝图审查，开思考
         if count_hook is not None:
             try:
                 count_hook()

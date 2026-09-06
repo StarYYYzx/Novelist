@@ -330,17 +330,27 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
 
     # 1) 种子提炼
     spec: SeedSpec | None = None
+    _SEED_RETRIES = 2   # 思考模式抖动（根因同 broadcast B1）：flash 偶发 thinking 吃满 → content 空，重试收敛
     try:
         pack_list = _genres.list_packs()
-        res = provider.complete(LLMRequest(
-            messages=[LLMMessage(role="system", content=SEED_SYSTEM),
-                      LLMMessage(role="user", content=_seed_user_prompt(brief, pack_list, genre_pack))],
-            temperature=0.4, max_tokens_out=900, response_format="json_object"))
-        if res.blocked:
-            raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")
-        if not (res.content or "").strip():
-            raise RuntimeError("seed 提炼返回空内容")
-        spec = _parse_seed_spec(res.content)
+        last_err = "seed 提炼返回空内容"
+        for _ in range(_SEED_RETRIES + 1):
+            try:
+                res = provider.complete(LLMRequest(
+                      messages=[LLMMessage(role="system", content=SEED_SYSTEM),
+                                LLMMessage(role="user", content=_seed_user_prompt(brief, pack_list, genre_pack))],
+                      temperature=0.4, max_tokens_out=4000, response_format="json_object",
+                      thinking=True))  # 判断类：种子结构化归纳，开思考
+                if res.blocked:
+                    raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")
+                if not (res.content or "").strip():
+                    raise RuntimeError("seed 提炼返回空内容")
+                spec = _parse_seed_spec(res.content)
+                break
+            except Exception as e:  # noqa: BLE001 - 单次尝试失败则重试，重试尽交给外层兜底
+                last_err = str(e)
+        if spec is None:
+            raise RuntimeError(last_err)
     except Exception as e:  # noqa: BLE001 - 提炼失败降级兜底（docs/10 §12）
         warnings.append(f"seed 提炼失败，使用确定性兜底: {e}")
         spec = _fallback_spec(brief, genre_pack, volumes, chapters_per_volume)

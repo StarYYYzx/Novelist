@@ -300,7 +300,8 @@ def produce(ws, project_id: str, need: CharacterNeed, provider, *,
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=800, temperature=0.5, response_format="json_object"))
+            max_tokens_out=800, temperature=0.5, response_format="json_object",
+            thinking=False))  # 生成类：草卡生成，关思考
         if res.blocked or not (res.content or "").strip():
             queue_need(ws, project_id, need)
             report.queued = True
@@ -422,7 +423,8 @@ def _judge_reuse(provider, need: CharacterNeed, cands: list[dict]) -> tuple[str,
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=200, temperature=0.2, response_format="json_object"))
+            max_tokens_out=200, temperature=0.2, response_format="json_object",
+            thinking=True))  # 判断类：复用人选从严判定，开思考
         import json as _json
 
         d = _json.loads(res.content or "{}")

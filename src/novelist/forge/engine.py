@@ -21,6 +21,7 @@ max_depth=4（book=0 … beat=4，超深强制 done）；max_width=4（children 
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from ..storage.workspace import Workspace
 from . import genres as _genres
 from .nodes import (CHILD_KIND, LEAF_KINDS, NodeContext, chapter_range_of, run_node,
                     sync_bible, synthesize_worldstate, _load_json_list)
+from .covenant import affected_modules, build_covenant, touched_entries
 from .review import (REVIEW_MODULES, load_review, mark_pending, pending_modules,
                      render_review_md, resolve_pending, stage_pending_for_revise)
 from .state import Blueprint, ForgeState, append_transcript
@@ -933,6 +935,236 @@ def _append_roll_pending(ws: Workspace, project_id: str, bp: Blueprint, vol: int
         added = True
     if added:
         ws.write_json(p, wdata)
+
+
+# ---- 未来窗口滚动细纲（承诺账本门控，docs/10 §7.7 补）----
+
+
+@dataclass
+class RollWindowResult:
+    """一次未来窗口滚动的结果（关键在 `gate_halted`：触及承诺需人工闸门）。"""
+
+    ok: bool
+    project_id: str
+    vol: int
+    start_ch: int          # 本次窗口起点（未来第一未写章）
+    width_applied: int = 0  # 实际重生成的章数
+    calls_used: int = 0
+    budget_limit: int = 8
+    budget_exhausted: bool = False
+    gate_halted: bool = False      # 触及承诺 → 已 mark_pending，改动未落盘
+    pending_review: list[str] = field(default_factory=list)
+    touched: list[str] = field(default_factory=list)   # 被触及的承诺条目 key
+    warnings: list[str] = field(default_factory=list)
+    diffs: list[str] = field(default_factory=list)     # 各章旧→新事件确定性 diff 行
+
+
+def _window_instruction(vol: int, ch: int, old_gist: dict) -> str:
+    """未来窗口滚动提醒：可变层修订 + 承诺边界禁令 + 旧 key_events 保留。"""
+    old_ke = "；".join(str(e) for e in (old_gist.get("key_events") or [])) or "（无）"
+    return (
+        f"这是第 {vol} 卷「未来 2-3 章窗口」内的滚动修订（可变层，docs/10 承诺账本）。\n\n"
+        f"故事已实际写到第 {vol} 卷第 {ch - 1} 章。本章尚未成文，允许在此刻度修订其"
+        f"执行层内容，以便与本章【已落定实情】衔接、让细纲跟上故事实际走向。\n\n"
+        f"【本章旧细纲的 key_events（以此为基础修订，勿整体推翻方向）】\n{old_ke}\n\n"
+        f"要求：\n"
+        f"1. 只调整执行层：title/key_events/turns/tension/hook/characters/after_days 等；"
+        f"key_events 可重排、可改写实现手段。\n"
+        f"2. 承诺边界（恒定层，严禁本节点改动）：任何伏笔的 status/target_vol、"
+        f"卷主线的 threads_to_payoff、上述模块 summary、任一核心角色（主角/宿敌/男主/女主/"
+        f"师尊等）的人设/弧线/结局/存活状态——它们由承诺账本锁定，只允许人工审核后修改。\n"
+        f"3. 若你的修订需要触碰上述承诺项：在本轮 reason 里明确写「需人工审核」，"
+        f"并保持承诺字段原样，交给审核闸门，不要在本节点直接改。\n"
+        f"4. key_events 仍须与【已规划事件账本】规避重复（沿用章节细纲协议纪律）。"
+    )
+
+
+def _rerun_chapter(ws, project_id, bp, provider, *, vol: int, ch: int,
+                   extra_instruction: str):
+    """重生成单章细纲（删旧 nodes 产物 → 带 extra 重跑 chapter 节点，retry=1）。
+
+    复用于 `revise_module` 的 chapter 分支同机制。返回 NodeResult（已 apply 落盘
+    bp.chapters + outline/chapters md；抛 ValueError 表示重试后仍解析失败）。
+    """
+    from ..core.bible import parse_gist
+
+    nodes_d = ws._abs(f"{project_id}/workspace/forge/nodes")  # noqa: SLF001
+    (nodes_d / f"chapter-{vol}-{ch}.json").unlink(missing_ok=True)
+    prev = parse_gist(ws, project_id, vol, ch - 1) if ch > 1 else None
+    arcs = [x for x in _load_json_list(ws, project_id, "outline/arcs.json")
+            if int(x.get("vol") or 0) == vol]
+    ctx = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
+                      pack=_pack_for_bp(bp), vol=vol, ch=ch, prev_gist=prev,
+                      arcs=arcs or None, extra_instruction=extra_instruction)
+    try:
+        return run_node(ctx, "chapter")
+    except ValueError as e:
+        ctx.extra_instruction = f"{ctx.extra_instruction}\n（上次输出解析失败：{e}，请修正格式）"
+        return run_node(ctx, "chapter")
+
+
+def _volume_chapter_range(bp: Blueprint, vol: int) -> int:
+    scale = bp.get("meta.scale") or {}
+    return int(scale.get("chapters_per_volume", 20))
+
+
+def roll_window(ws: Workspace, project_id: str, *, provider, vol: int,
+                from_ch: int | None = None, width: int = 3,
+                gate: bool = True, max_calls: int | None = None,
+                log_fn: Callable[[str], None] | None = None) -> RollWindowResult:
+    """未来 2-3 章窗口滚动细纲（docs/10 §7.7 可变层）。
+
+    **语义**：故事写到卷内某处后，"未来窗口"（尚未成文的下一个 `width` 章）允许在此
+    刻度上修订其 key_events 等执行层，好贴合已发生的事实。整个修订**先过承诺账本门**：
+    - 未触及任何承诺 → 自动落盘（细纲 md + 蓝图 chapters）；
+    - 触及承诺（伏笔/卷主线/核心人设）→ **回滚**窗口改动 + `mark_pending` 人工闸门
+      （ADR-024），绝不静默改承诺。
+
+    这是"卷末纠偏/章节间纠偏"的入口：在任何未写章前调用 `roll_window(vol, from_ch=下一章)`；
+    窗口越过卷尾时钳制在卷内；若整卷已写完（无未来窗口）则提示用 `forge roll <vol+1>` 衔接。
+
+    - `from_ch` 缺省 = 卷内第一未写章（自动定位）。
+    - `gate=False` 关承诺门（脚本/测试直跑用，CLI 默认开）。
+    - 返回 `RollWindowResult`；触及承诺时 `gate_halted=True` + `touched` 列出承诺 key。
+    """
+    log = log_fn or (lambda line: print(line, flush=True))
+    bp = Blueprint.load(ws, project_id)
+    K = _volume_chapter_range(bp, vol)
+    budget = int(max_calls or 0) or (width * 2 + 2)
+    written = {c for c in range(1, K + 1)
+               if ws.chapter_path(project_id, vol, c).exists()}
+    start = max(1, from_ch if from_ch is not None
+                else ((max(written) + 1) if written else 1))
+    if start > K:
+        return RollWindowResult(
+            ok=True, project_id=project_id, vol=vol, start_ch=K,
+            warnings=[f"第 {vol} 卷已无未来窗口（写到卷末）。下一卷细纲用 "
+                      f"`forge roll {vol + 1}` 衔接；本卷收尾如需纠偏，可检查 "
+                      f"`forge covenant` 承诺账本"]) 
+    window = [c for c in range(start, K + 1) if c not in written][:max(1, width)]
+    if not window:
+        return RollWindowResult(
+            ok=True, project_id=project_id, vol=vol, start_ch=start,
+            warnings=[f"第 {vol} 卷未来窗口为空：从起始章起均已有正文，无可滚动的未写章。"
+                      f"下一卷细纲用 `forge roll {vol + 1}` 衔接；卷内结构纠偏走 "
+                      f"`forge covenant` 承诺账本"])
+
+    # ---- 快照 + 前置账本（F5：rollback 基线；covenant 触发判定用）----
+    from .snapshot import take_snapshot
+
+    snap = take_snapshot(ws, project_id, label=f"roll-window-v{vol}-{start}")
+    log(f"[snapshot] {snap.name}")
+    bp_pre = copy.deepcopy(bp)
+    covenant = build_covenant(bp)
+    pre_mds = {c: (ws._abs(f"{project_id}/outline/chapters/{vol}-{c}.md")  # noqa: SLF001
+                   .read_text(encoding="utf-8") if ws._abs(f"{project_id}/outline/chapters/{vol}-{c}.md")  # noqa: SLF001
+                   .exists() else None) for c in window}
+    pre_nodes = {c: ws._abs(f"{project_id}/workspace/forge/nodes/"  # noqa: SLF001
+                            f"chapter-{vol}-{c}.json").exists() for c in window}
+
+    warnings: list[str] = []
+    diffs: list[str] = []
+    calls_used = 0
+    budget_exhausted = False
+
+    def _budget_check() -> bool:
+        nonlocal budget_exhausted
+        if calls_used >= budget:
+            budget_exhausted = True
+            return False
+        return True
+
+    for ch in window:
+        if budget_exhausted:
+            warnings.append(f"chapter {vol}-{ch}: 窗口预算耗尽，未滚动")
+            break
+        from ..core.bible import parse_gist
+
+        old = parse_gist(ws, project_id, vol, ch) or {"key_events": []}
+        prev_ke = list(old.get("key_events") or []) if isinstance(old, dict) else []
+        started = calls_used + 1
+        try:
+            res = _rerun_chapter(ws, project_id, bp, provider,
+                                 vol=vol, ch=ch,
+                                 extra_instruction=_window_instruction(vol, ch, old))
+            calls_used = started
+        except (ValueError, ModerationBlockedError) as e:  # noqa: BLE001
+            calls_used = started
+            warnings.append(f"chapter {vol}-{ch}: 滚动重生成失败（保留旧细纲）: {e}")
+            continue
+        except Exception as e:  # noqa: BLE001 - 节点异常不拖垮整个窗口
+            calls_used = started
+            warnings.append(f"chapter {vol}-{ch}: 滚动异常（保留旧细纲）: {e}")
+            continue
+        if res is None or not res.ok:
+            calls_used = started
+            warnings.append(f"chapter {vol}-{ch}: 节点未产出，保留旧细纲")
+            continue
+        new = parse_gist(ws, project_id, vol, ch) or {}
+        new_ke = list(new.get("key_events") or []) if isinstance(new, dict) else []
+        if str(prev_ke) != str(new_ke):
+            diffs.append(f"{vol}-{ch} key_events:\n  - {prev_ke}\n  + {new_ke}")
+        if res.warnings:
+            warnings.extend(f"chapter {vol}-{ch}: {w}" for w in res.warnings)
+        log(f"[{calls_used}/{budget}] window {vol}-{ch} 滚动 ok")
+        bp.save(ws, project_id)
+
+    if budget_exhausted:
+        warnings.append(f"窗口预算耗尽（{calls_used}/{budget}），剩余窗口未滚动")
+    sync_bible(ws, project_id, bp)
+
+    # ---- 承诺门：改动先过 touched_entries ----
+    touched = touched_entries(bp_pre, bp, covenant)
+    if touched:
+        # 回滚窗口改动（细纲 md + 蓝图 chapters + nodes 产物），保住"未落盘的承诺"
+        for c in window:
+            md = ws._abs(f"{project_id}/outline/chapters/{vol}-{c}.md")  # noqa: SLF001
+            pre = pre_mds.get(c)
+            if pre is None and md.exists():
+                md.unlink()
+            elif pre is not None:
+                md.parent.mkdir(parents=True, exist_ok=True)
+                md.write_text(pre, encoding="utf-8")
+            node_f = ws._abs(f"{project_id}/workspace/forge/nodes/"  # noqa: SLF001
+                             f"chapter-{vol}-{c}.json")
+            if not pre_nodes.get(c) and node_f.exists():
+                node_f.unlink()
+        bp.data["chapters"] = copy.deepcopy(bp_pre.data["chapters"])
+        bp.save(ws, project_id)
+        sync_bible(ws, project_id, bp)
+        modules = affected_modules(touched)
+        msg = "承诺账本触及，窗口改动**未落盘**转入人工审核"
+        if gate:
+            try:
+                mark_pending(ws, project_id, bp, modules, log_fn=log)
+                msg += f"（已 mark_pending: {modules}）"
+            except Exception as e:  # noqa: BLE001 - 审批落盘失败不强阻
+                warnings.append(f"mark_pending 失败: {e}")
+        warnings.append(msg + f" 触及承诺: {[str(e.key) for e in touched]}")
+        log(f"[gate] {msg}：{', '.join(str(e.key) for e in touched)}")
+        state = ForgeState.load(ws, project_id)
+        state.calls_used = int(state.calls_used or 0) + calls_used
+        state.save(ws, project_id)
+        append_transcript(ws, project_id, "roll_window.end", vol=vol, start_ch=start,
+                          calls_used=calls_used, gate_halted=True,
+                          touched=[str(e.key) for e in touched], warnings=warnings[:8])
+        return RollWindowResult(
+            ok=False, project_id=project_id, vol=vol, start_ch=start,
+            width_applied=0, calls_used=calls_used, budget_limit=budget,
+            gate_halted=True, pending_review=modules,
+            touched=[str(e.key) for e in touched], warnings=warnings, diffs=diffs)
+
+    # ---- 未触及承诺 → 自动落盘（窗口章节已随重生成落盘）----
+    state = ForgeState.load(ws, project_id)
+    state.calls_used = int(state.calls_used or 0) + calls_used
+    state.save(ws, project_id)
+    append_transcript(ws, project_id, "roll_window.end", vol=vol, start_ch=start,
+                      width_applied=len(window), calls_used=calls_used,
+                      gate_halted=False, warnings=warnings[:8])
+    return RollWindowResult(
+        ok=True, project_id=project_id, vol=vol, start_ch=start,
+        width_applied=len(window), calls_used=calls_used, budget_limit=budget,
+        budget_exhausted=budget_exhausted, warnings=warnings, diffs=diffs)
 
 
 def _upsert_volume_from_row(bp: Blueprint, row: dict) -> None:

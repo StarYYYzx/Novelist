@@ -47,6 +47,8 @@ novel_workspace/
     │   ├── alerts/
     │   └── stats/
     ├── logs/                         # 审计与事件日志
+    ├── tasks/                        # 任务板（ADR-028，细粒度任务持久化/崩溃单任务恢复）
+    │   └── ch_1-2.json …             # 每卷/章一任务 JSON（id/kind/status/owner/dependencies）
     └── .checksum.json                # 关键文件 hash 索引（用于一致性定位）
 ```
 
@@ -64,6 +66,8 @@ novel_workspace/
   "core_traits": ["谨慎", "外冷内热"],
   "power": {"level": "九阶", "faction": "青云宗"},
   "arc": "从弃徒到掌门",
+  "intent": "洗清冤屈，夺回苏家渊佩",   // dp-intent：此刻最执着的欲望（动机着色的权威源）
+  "plan": "先回青源坊查证当年卷宗再赴藏剑阁",  // dp-intent：近段计划
   "first_appear": {"vol": 1, "ch": 3},
   "status": "active",
   "relationships": [{"target": "char:wm2", "type": "mentor"}]
@@ -266,6 +270,7 @@ threads_involved: ["pt:V017"]
 - 每节点可被人工"暂停/编辑/续跑"，状态持久在 `project.json.pipeline_state`。
 - 伏笔逾期、人工跳步等事件会自动把部分工序拉回 `修订`。
 - **正文阶段严格串行逐章**（ADR-002 修订），不做批次并行；事件回写在正文编写过程中实时完成（见 04§4.2 / 05§5.4），无须独立的章末"记忆编纂"工序节点。
+- **任务明细（细粒度，ADR-028）**：`pipeline_state` 是阶段"总开关"，章下面的"哪一/几章正在写、被谁(owner)写、依赖是否就绪"落在 `tasks/` 任务板里（`TaskStore`），崩溃后可按任务粒度续/重做，而不是整卷回退。
 
 ### 4.2 章节正文状态（串行，事件实时回写）
 ```
@@ -315,6 +320,8 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
       "core_traits": {"type": "array", "items": {"type": "string"}},
       "background": {"type": "string"},
       "is_protagonist": {"type": "boolean", "default": false},
+      "intent": {"type": "string"},   // dp-intent：欲望/动机（动机着色的权威源）
+      "plan": {"type": "string"},     // dp-intent：近段计划（随视角快照入记忆）
       "status": {"enum": ["active", "dead", "away", "unknown"]}
     }
   }

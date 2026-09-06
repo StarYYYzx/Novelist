@@ -421,7 +421,8 @@ def _llm_extract(provider, text: str, max_chars: int) -> dict:
         messages=[LLMMessage(role="system", content=_EXTRACT_SYSTEM),
                   LLMMessage(role="user", content=_EXTRACT_PROMPT.format(
                       max_chars=max_chars, text=text[-max_chars:]))],
-        temperature=0.3, max_tokens_out=900, response_format="json_object"))
+        temperature=0.3, max_tokens_out=900, response_format="json_object",
+        thinking=True))  # 判断类：已有稿→蓝图结构化抽取，开思考
     if res.blocked:
         raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")
     if not (res.content or "").strip():

@@ -439,6 +439,7 @@ def polish_chapter(
                                                              global_context=global_context))],
             max_tokens_out=max_tokens,
             temperature=0.6,
+            thinking=False,  # 生成类：文字润色，关思考
         )
     )
     if res.blocked or not (res.content or "").strip():

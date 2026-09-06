@@ -447,7 +447,8 @@ def _propose_one(card: dict, provider, *, ws, project_id: str, world_name: str,
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=700, temperature=0.3, response_format="json_object"))
+            max_tokens_out=700, temperature=0.3, response_format="json_object",
+            thinking=False))  # 生成类：补料提案生成，关思考
         if res.blocked or not (res.content or "").strip():
             return {"card_id": cid, "name": card.get("name"), "ok": False,
                     "proposed": False, "reasons": ["LLM 空响应/blocked"]}

@@ -264,8 +264,9 @@
 > 来源：用户在 ADR-020 拍板时提出——"每个事件的选人阶段新增一次 LLM 调用，将事件简介、大致流程、
 > 时间地点等主要信息放出，然后由 AI 思考应当选哪些人加入这次事件"。ADR-020"后续议题"段收录。
 > **本 ADR 已实施（2026-09-02，M3r 之后）**：`core/broadcast.py` + orchestrator 事件循环接线
-> （`broadcast_casting` 开关）。v1 默认 **False**（produce_chapter 显式开启），真机验证稳定后转 True，
-> 与 ADR-020 四件套同一哲学。
+> （`broadcast_casting` 开关）。v1 默认 **False**；**2026-09-06 已转 True**——用户规则全局禁用
+> pro 只用 flash，广播 `max_tokens`=16000 兜住 flash 更大思考离散，批跑
+> （broadcast_fired 18/18、degrade=0、miss=0、增益 21 全 plausible）验收通过（docs/问题总账 B1）。
 
 - **背景（为什么需要广播）**：当前事件选角是**确定性的**——`declared_cast`（细纲"出场人物"行，
   章级）+ `cast_from_text`（事件文本字面命中，≤2 人兜底）。两个缺口：
@@ -323,9 +324,9 @@
   - 解析纪律：防造名（不在池点名 → 拒绝 + 告警）、```json 围栏容错、非 JSON 不崩；
   - 确定性校验：细纲声明 ⊇ 补回 / 池外剔除 / 文本命中补回 / ≤6 上限裁剪；
   - 失败纪律：provider 挂/blocked/解析失败 → 返回 None，调用方静默回退确定性选角；
-  - orchestrator：`broadcast_casting: bool = False`（v1 默认关），开启后名单驱动 `match_cast`，
+  - orchestrator：`broadcast_casting: bool = True`（2026-09-06 由 v1 默认 False 转正），名单驱动 `match_cast`，
     计数回传 `ProductionResult.broadcasts_built`（tests/test_broadcast.py 全链路断言）。
-- **v2 待真机验证后再开**：默认转 True；「不应出场者」推理披露；池 >40 时 RAG 预筛 top-K。
+- **v2 后续（默认转 True 已于 2026-09-06 完成）**：「不应出场者」推理披露；池 >40 时 RAG 预筛 top-K。
 
 ### ADR-022 角色工厂（Character Factory，按需生产新角色并与广播联动）
 
@@ -513,6 +514,82 @@
   审计/回声/replay + 借鉴三项 carrier/due/埋设提示）均已编码 2026-09-06；
   测试 +28（tests/test_lines.py），全量 774 passed。阶段6 真机验收待做
   （云服务器关闭期间未做任何依赖远程模型的验证，单测全走 fake provider）。
+
+### ADR-026 承诺账本 + 未来窗口滚动细纲（恒定/可变层 · 设计定稿 2026-09-06，**已编码**）
+
+> 背景：细纲到正文一路"可改"。若不设边界，作者/引擎在章节级修订时会**静默改写已对读者/
+> 主线做出的承诺**——伏笔还没兑现就被删、卷主线变了、核心人设漂移。需要一个确定性闸门：
+> 哪些层**恒定不可改**（承诺账本），哪些层在什么窗口内**可变可自动落盘**。
+>
+> 一句话：「已发生的承诺不可静默改；未发生但已对读者显影的伏笔，若要改动必须过人工审核；
+> 其余未来 2-3 章窗口内的执行层反复横跳，全部自由。
+
+- **承诺账本（Covenant）——只读"恒定 vs 可变"边界视图**（`forge/covenant.py`）：
+  由**蓝图 canonical 集**确定性汇聚，非新事实源：
+  - **恒定层**（承诺触即 gate，绝不静默改）：已埋且在途的伏笔（`threads.status ∈
+    {planted, pending_return}`，guard `status,target_vol`）、卷主线（`volumes` guard
+    `summary,key_beats`）、核心角色人设/弧线/结局（`characters` guard `role,arch,
+    ending`）——即"恒定 vs 可变"的恒定侧。
+  - **可变层**：未来刻度上尚未成文的 key_events 排序与实现手段、单章节奏。
+  - 判定 `touched_entries(bp_old, bp_new, covenant)` **全确定性**（逐 guard 字段取值比较
+    + 整条被删），零 LLM、零配额；`affected_modules` 映射到审核模块 id。
+- **未来窗口滚动细纲**（`engine.roll_window`，CLI `forge roll-window <vol>`）：
+  - 故事写到卷内某处后，修订**尚未成文的下 N 章**（缺省 3，`--width`）的 key_events 等
+    执行层，使细纲贴合已发生事实——卷间/章节间**纠偏入口**。
+  - **门控**：改动先过 `touched_entries`。未触及承诺 → 自动落盘（细纲 md + 蓝图 chapters）；
+    触及 → **回滚**窗口改动 + `mark_pending` 人工闸门（复用 ADR-024 分模块审核）——
+    绝不静默改承诺。
+  - **边界**：窗口越过卷尾钳制在卷内（`--from` 缺省 = 卷内第一未写章自动定位）；已写章跳过；
+    整卷写完提示用 `forge roll <vol+1>` 衔接下一卷；每次滚动前自动打快照（F5 双快照基线）。
+- **影响**：写正文到中途也可安全纠偏细纲，不用整卷重来；风险边界清晰。
+- **实现（2026-09-06）**：`forge/covenant.py` + `engine.roll_window` +
+  CLI `forge roll-window` + `forge covenant`；测试 `tests/test_covenant.py`
+  （13 例）+ `tests/test_m21_roll_window.py`（7 例）全绿。
+
+### ADR-027 记忆 LLM 侧选 rerank（检索质量增强 · 设计定稿 2026-09-06，**核心已编码**）
+
+> 背景：`MemoryRetriever` 打分 = 相似度（`VectorEmbedding` 余弦 / `KeywordEmbedding`
+> 精确 token）× 事件类型权重。它擅长"字面/分词重合"，但**"分词重合度低、语义却相关"**
+> 的碎片会被漏在前门——尤其在关键词模式（无真 embedding 时），Novelist 已在
+> `_keyword_score` 注释里记下哈希向量噪声的教训，检索质量是登记在案的痛点。
+> 借鉴 Claude Code 的 s09（记忆选择用 LLM side-query，而非 embedding）：在相似度之上
+> 再叠一层 LLM 相关性精审，补回纯相似度追不回的语义相关。
+
+- **形态**：`MemoryQuery` 增加可选 `reranker` 回调 + `rerank_pool`；回调在
+  `MemoryRetriever.query()` 打分排序后、返回前执行。**回调=None = 完全保持现状**
+  （确定性高达逐字节、零 LLM、零配额）。
+- **候选池放大**：rerank 开启时先从全部已过滤候选取 `top_k×3`（至少 6）作候选池——
+  否则侧选只能"重排已被相似度认为相关的"，救不回漏检。池外碎片按原分回补。
+- **产物**：回调返回 `(sig, reason)` 降序；`reason`（该条为何被优先）写入
+  `MemoryHit.reason`（默认空=未 rerank），供一致性审查/审计。
+- **注入**：回调经注入，非内建 LLM（与 `MemoryWriter.semantic_checker` 同模式）；
+  编排层负责把它接到"判断类·thinking 路由"（dp-thinking-policy）。异常→静默回退纯相似度。
+- **影响**：写正文/一致性审查的"该忆没忆、不该忆乱忆"降低；风险=多一次 LLM 调用
+  （判断类，接受）。逐开关默关，真机对照后再转正。
+- **实现（2026-09-06）**：`core/memory.py` `MemoryQuery.reranker/rerank_pool` +
+  `MemoryRetriever._rerank` + `MemoryHit.reason`；测试 `tests/test_m22_mem_rerank.py`
+  5 例 + 既有 `test_m3_memory.py` 22 例全绿。编排层 LLM-backed 注入待真机验证阶段接线。
+
+### ADR-028 任务级持久化 + 编排器指派 owner + can_start（崩溃单任务恢复 · 设计定稿 2026-09-06，**核心已编码**）
+
+> 背景：`pipeline_state` 是阶段级**单个字符串**，没有卷/章/事件粒度——崩溃/中断只能整卷
+> 快照恢复，无法"续那章半成品"。借鉴 Claude Code s12 的 Task System（细粒度任务 JSON +
+> blockedBy 依赖 + owner + 文件锁），但**适配 Novelist 的中央编排哲学**：不做"多 Agent
+> 自看板认领"，而由编排器显式指派 owner + 显式 can_start 前置就绪检查。
+
+- **形态**：`core/tasks.py` 的 `TaskStore`——每个卷/章任务落一个
+  `{project_id}/tasks/{safe_id}.json`（Windows 安全文件名）；`Task` 记录
+  `id/kind/ref/status/owner/dependencies/output/meta/时间戳`。
+- **状态机**：`pending → in_progress(owner) → done`；`blocked`（承诺门/依赖挂起）、`failed`。
+- **owner**：`start(task_id, owner, *, precheck=...)` 由**编排器**指派；防重入——任务在途且
+  被他人持锁 → `TaskBusyError`；同 owner 幂等。
+- **can_start**：显式依赖就绪检查（依赖全 done），返回 `(ok, blockers)`；下游解锁依赖上游 done。
+- **covenant 衔接**：`start` 接受注入的 `precheck` 回调（如 `touched_entries`），不通过 →
+  置 `blocked` 抛 `TaskError`；本模块不内置 LLM/不依赖 covenant（确定性）。
+- **崩溃恢复**：`recover(policy="list"|"redo")` 扫出"in_progress 未 done"半成品及下游，决定续写或重做。
+- **进入方式**：核心任务板与我不在重构段落的 `orchestrator.py` 耦合——**核心层已就绪，
+  orchestrator 推进卷/章的接线按 docs/11 §13 结合真机验证阶段一起做**，避免在整改区叠债务。
+- **实现（2026-09-06）**：`core/tasks.py`；测试 `tests/test_m23_tasks.py` 8 例全绿。
 
 ## 6. 与其他备选方案的对比小结
 

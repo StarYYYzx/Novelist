@@ -175,7 +175,8 @@ def _gen_candidates(bp: Blueprint, slots: list[Slot], provider, round_no: int,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="system", content=CANDIDATE_SYSTEM),
                       LLMMessage(role="user", content=_candidates_prompt(bp, slots, round_no))],
-            temperature=0.5, max_tokens_out=700, response_format="json_object"))
+            temperature=0.5, max_tokens_out=700, response_format="json_object",
+            thinking=False))  # 生成类：商讨候选生成，关思考
         if res.blocked:
             raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")
         if not (res.content or "").strip():

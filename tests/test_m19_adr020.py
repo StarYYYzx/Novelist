@@ -446,7 +446,7 @@ def test_event_loop_adr020_counters_reach_result(ws_factory, write_json):
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
         knowledge_llm=False, event_polish=False, supplement_settings=False,
-        session=SessionInfo(project_id=pid, agent="t"),
+        broadcast_casting=False, session=SessionInfo(project_id=pid, agent="t"),
         # ADR-020 四件套全开（default 即开，显式写出强调本测试意图）
         defer_title=True, cast_injection=True,
         character_direction=True, perspective_memory=True)

@@ -268,6 +268,11 @@ get_character_history(char_id, {recent_n}) -> [experience entry 摘要]
 get_plot_events({filter, around})          -> 剧情事件流（因果/伏笔回溯）
 ```
 - 检索结果默认以**摘要**注入上下文；文字匠可再按需 `read_file` 取详细原章。
+- **可选 LLM 侧选 rerank（ADR-027，默认关）**：`MemoryQuery` 可带 `reranker`
+  （`Callable[[query,候选], list[(sig, reason)]]`）与 `rerank_pool`。开启时，先在相似度
+  打分之上从候选池（`top_k×3`）让 LLM 精审"最相关 ≤top_k 条"，救回分词不重合但语义相关的
+  碎片；`reason`（为何优先）写入命中项，未入选按原相似度回补。回调 None = 保持纯确定性地现
+  行检索，零 LLM 零配额；编排层负责把回调接到判断类 thinking 路由。
 
 ### 7.2 写入接口（sensitive，编纂员/主编剧）
 ```

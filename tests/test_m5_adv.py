@@ -262,7 +262,8 @@ def test_event_loop_generates_per_event_and_writes_back(tmp_path):
         ws, pid, 1, 1, llm, prefer_direct=True,
         inject_bible=False, event_loop=True, commit_chapter_event=False,
         knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"),
-        # ADR-020 四件套默认开：本测试脚本队列不含其额外调用（调度/视角/拟题），显式关闭
+        # ADR-020 四件套默认开 + 广播默认开：本测试脚本队列不含其额外调用，显式关闭
+        broadcast_casting=False,
         character_direction=False, perspective_memory=False, defer_title=False)
     assert res.ok, res.result
     final = ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")

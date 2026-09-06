@@ -106,7 +106,7 @@ def main() -> None:
                 ws, PID, provider, vol=1, ch=6, idx=idx,
                 ev_text=ev_text, seam=_seam(ws, 6, idx, evs),
                 declared=declared, prev=prev, text_hits=text_hits,
-                max_tokens=800)
+                max_tokens=2000)  # 思考模式耗预算大：默认 700 会被推理吃光→content 空→降级
             rec = {
                 "event_index": idx + 1, "ev_text": ev_text,
                 "pool_size": len(pool),

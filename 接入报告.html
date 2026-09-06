@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Novelist 项目接入报告</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#17222e; --panel2:#1e2b3a; --border:#2c3e52;
+    --tx:#e6edf3; --mut:#9aa9ba; --acc:#4cc2ff; --acc2:#7ee0a3;
+    --warn:#e6b450; --err:#f07070; --ok:#5bc77e;
+    --mono:'Cascadia Code','JetBrains Mono',Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 28px 80px}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:12px;padding-bottom:18px;border-bottom:1px solid var(--border)}
+  header h1{margin:0;font-size:26px;letter-spacing:.5px}
+  .tag{font-size:12px;padding:3px 10px;border-radius:20px;background:var(--panel2);border:1px solid var(--border);color:var(--acc)}
+  .sub{color:var(--mut);font-size:13px;margin-top:6px}
+  h2{font-size:19px;margin:40px 0 14px;color:var(--acc);border-left:4px solid var(--acc);padding-left:10px}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--acc2)}
+  p{margin:8px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin:16px 0}
+  .cell{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .cell .k{font-size:12px;color:var(--mut)}
+  .cell .v{font-size:17px;font-weight:600;margin-top:4px}
+  pre{background:#0b1219;border:1px solid var(--border);border-radius:10px;padding:14px 16px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6}
+  code{font-family:var(--mono);background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13px}
+  th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#cfe4ff;font-weight:600;position:sticky;top:0}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+  .g{background:var(--ok)} .w{background:var(--warn)} .e{background:var(--err)} .a{background:var(--acc)}
+  .pill{font-size:11.5px;padding:1px 8px;border-radius:12px;border:1px solid var(--border)}
+  .pill.done{color:var(--ok);border-color:var(--ok)}
+  .pill.todo{color:var(--warn);border-color:var(--warn)}
+  .pill.ahead{color:var(--acc);border-color:var(--acc)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin:12px 0}
+  .note{font-size:12.5px;color:var(--mut)}
+  .kbd{font-family:var(--mono);font-size:11.5px;background:var(--panel2);padding:1px 6px;border-radius:4px}
+  a{color:var(--acc)}
+  ul{margin:6px 0;padding-left:20px} li{margin:3px 0}
+  .footer{margin-top:50px;padding-top:14px;border-top:1px solid var(--border);color:var(--mut);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div><h1>Novelist · 项目接入报告</h1>
+  <div class="sub">多 Agent 长篇小说撰写系统 · M0–M3 里程碑推进 · 为接手继续开发准备的读码报告</div></div>
+  <span class="tag">2026-09-06</span>
+</header>
+
+<h2>1. 项目速览</h2>
+<p>Novelist 是一套把"写小说"工程化为"多 Agent 流水线"的系统：把一句话/已有稿子（Forge 构建层）加工成 <b>bible + 大纲 + 细纲</b>，再经<string>事件循环</string>逐事件生成正文，并以<b>文件工作区为单一事实源</b>（ADR-004/016），配合记忆、索引、确定性一致性闸门、LLM 审校/润色，产出长篇小说成稿并可导出 Markdown/Word。</p>
+<div class="grid">
+  <div class="cell"><div class="k">语言 / 测试</div><div class="v">Python 3.11+</div><div class="note">pytest · 当前 91.9s</div></div>
+  <div class="cell"><div class="k">测试健康度</div><div class="v">797 passed</div><div class="note">2 skipped · 2 deselected · 全绿</div></div>
+  <div class="cell"><div class="k">代码量</div><div class="v">src ~150+ 文件</div><div class="note">core / forge / providers / storage / tools / craft / consistency</div></div>
+  <div class="cell"><div class="k">里程碑</div><div class="v">M0–M2 完成</div><div class="note">M3 进行中 · M4/M5 待启动</div></div>
+</div>
+<p class="note">进度口径以 <code>docs/08-implementation-plan.md</code> + git log + 测试为准（README/AGENTS 自述可能滞后）。</p>
+
+<h2>2. 目录结构与分层</h2>
+<pre>novelist/
+├─ src/novelist/
+│  ├─ core/       # 内核：llm/embedding/memory/writeback/worldstate/tools/approval
+│  │              #       pipeline/orchestrator/director/broadcast/character_factory/
+│  │              #       chronicler/polish/timeline/lines/rel_ledger/registry/…
+│  ├─ forge/      # 构建层：state(Blueprint)/slots/ask/io_console/seed/ingest/
+│  │              #       engine/nodes(递归DFS)/genres/validate/report/review/coherence
+│  ├─ providers/  # openai(兼容)/deepseek/lmstudio/fake —— REGISTRY 注册
+│  ├─ storage/    # workspace(沙箱+原子写)/checkpoint(双轨快照)/indexdb(SQLite)/models
+│  ├─ tools/      # filesys/writing/memory_tools/governance —— build_registry() 装配
+│  ├─ craft/      # 题材工艺卡(Genre Pack 运行时)
+│  └─ consistency/# rules(确定性规则引擎) + reviewer(LLM 审校, R-SEM)
+├─ tests/         # ~110 个测试文件
+├─ docs/          # 01–12 + 各批次讨论/排查总账
+├─ schemas/       # 实体 JSON Schema（bible/outline/memory/forge/config/policy）
+└─ novel_workspace/ # 测试书工作区（不入 git）
+</pre>
+<p>核心设计原则：<b>文件即事实源</b>（可版本控制、可人工编辑）→ 引擎/规则做"硬约束"→ LLM 只做"内容生成"、尽量不做"确定性判断"。检索打分教训：关键词路径<code>绝不能走定长哈希向量余弦</code>（碰撞噪声盖过真实信号），改精确 token 集合 + IDF 加权。</p>
+
+<h2>3. 里程碑进度（docs/08 §3）</h2>
+<table>
+  <tr><th>里程碑</th><th>内容</th><th>状态</th></tr>
+  <tr><td>M0–M2</td><td>骨架/契约 · Agent 循环闭环 · 流水线+一致规则+记忆初版</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3a/c/d/e</td><td>门禁 · HTTP · 记忆完整化(Embedding双路径/冲突双检) · 成稿质量(B-02~13)</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3f/g/h/i</td><td>事件循环/续写/世界状态 · 注册表/设定状态机/分级检索 · 明暗线+RAG + 事件审校 + 知识检索层</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3l(Forge)</td><td>F0'–F5：schema 对齐 → Blueprint/槽位 → seed 提炼 → 商讨问答 → ingest → 递归深化 → 契约校验V1-6/快照/rollback → pipeline 推进到细纲</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3m</td><td>时间线与定时事件（ADR-019，天数轴/分档提醒/不可出场/R-TIME），含 3080ti 事故修复</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3n/o/p/q/r</td><td>生成期人物一致性四件套(ADR-020) · docx⇄md 互转 · P0 闸门 · 角色工厂(ADR-022) · P0-A bible 数据补喂</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td>M3s</td><td>世界广播选角(ADR-021) —— v1 默认关，待真机验证后转 True</td><td><span class="pill done">代码完成</span></td></tr>
+  <tr><td>M3t+/t++</td><td>线索(Line)子系统批1+批2（ADR-025，阶段1-5：账本/注入/回写/检查点/卷末审计/回声/replay）</td><td><span class="pill done">代码完成</span></td></tr>
+  <tr><td>M3u/v</td><td>商讨轮 pace/romance/opening · 事件级实然回写完全体(ADR-013 闭环) + 双 JSON 清污</td><td><span class="pill done">已完成</span></td></tr>
+  <tr><td><b>M4</b></td><td>硬化与评测（完整评测集/多 Provider/长文压力/审核拦截降级）</td><td><span class="pill todo">待启动</span></td></tr>
+  <tr><td><b>M5</b></td><td>多厂商 LLM 接入 + api-key 统一管理（X1–X4）</td><td><span class="pill todo">待做</span></td></tr>
+</table>
+
+<h2>4. 主要设计亮点（接手时需理解的机制）</h2>
+<div class="grid">
+  <div class="cell"><div class="k">生成</div><div class="v">事件循环</div><div class="note">细纲 key_events 声明式驱动，逐事件：先忆→装配(接缝/卡/live_state)→生成→审校→回写→润色；截断则续写，key_events 缺失回退整章。</div></div>
+  <div class="cell"><div class="k">记忆</div><div class="v">先忆 / 后纂</div><div class="note">MemoryRetriever 双路径检索 + 编纂员抽取事件/状态/时间/约定/线索行，冲突双检 + 章级 trace 可回滚。</div></div>
+  <div class="cell"><div class="k">一致性</div><div class="v">规则引擎做硬闸门</div><div class="note">R-TIME/R-STATE/R-TL/R-LEX/R-PWR/R-ITEM/R-CAST… block/warn 分层；决定性问题不交给 LLM。</div></div>
+  <div class="cell"><div class="k">状态</div><div class="v">worldstate 确定性事实源</div><div class="note">修为/位置/持物/时间轴/pending/baselines；事件级实然与角色卡双向同步(ADR-013/019/相邻 M3v)。</div></div>
+  <div class="cell"><div class="k">人物</div><div class="v">调度+视角记忆</div><div class="note">ADR-020：direction sheet + 事件末多角色视角总结 + 双阈值回读 + 延迟拟题；ADR-021/022 广播选角与角色工厂。</div></div>
+  <div class="cell"><div class="k">构建</div><div class="v">Forge 递归构建</div><div class="note">Blueprint+provenance(user受保护) · 商讨协议 · ingest 确定性抽取 · 节点增量落盘 · 预算硬边界 · 快照/rollback。</div></div>
+</div>
+
+<h2>5. 文档 — 代码对齐度核对</h2>
+<h3>5.1 ADR 状态</h3>
+<table>
+  <tr><th>范围</th><th>结论</th></tr>
+  <tr><td>ADR-001~011（内核/存储/记忆/流水线基座）</td><td><span class="pill done">对齐</span> 均有对应代码模块</td></tr>
+  <tr><td>ADR-013/015/016/017/018/019/020/021/022/025</td><td><span class="pill done">对齐</span> 代码已落地，docs/08 已标注完成</td></tr>
+  <tr><td>ADR-012 角色演员写拍</td><td><span class="pill ahead">文档超前</span> <code>core/takes.py</code>、<code>actor.template.md</code>、<code>write_take</code> 均不存在；剧本草稿(screenplay)已做但只是两段式生成，非多演员排演。await 接入编排流。</td></tr>
+  <tr><td>ADR-014 受控围读会</td><td><span class="pill ahead">文档超前</span> SceneBus + join/say/leave 已编码，但<code>orchestrator</code> 未导入 scene，主持人/结束判据未接入 produce_chapter。</td></tr>
+  <tr><td>ADR-023 关系账本 / ADR-024 分模块审核闸门</td><td><span class="pill ahead">代码超文档</span> <code>core/rel_ledger.py</code>、<code>forge/review.py</code> 已落地，但 docs/08 未直接引用、docs/03 中 ADR-024 仍标"待编码"。</td></tr>
+  <tr><td>子代理框架 core/subagent.py</td><td><span class="pill done">刻意不引入</span> —— 用户拍板；编纂员/审校/文字匠以独立领域组件实现。</td></tr>
+</table>
+<h3>5.2 文档滞后/漂移（接手时易踩坑）</h3>
+<ul>
+  <li><b>docs 自述滞后于代码</b>：README/AGENTS 阶段描述、docs/03 早期 ADR 缺"已实施"标注、质量加固提案标题仍写"批次二三待拍板"但其实施记录已齐全。判断进度以 git log + 测试为准。</li>
+  <li><b>统一 prompt 装配器未实现</b>：system/目标/事件级装配仍分散在 context/prompt_budget/orchestrator 多处（人工审查待办）——读者需在各处找注入逻辑。</li>
+  <li><b>docs/人工审查.md「第二批」空栏</b>待用户填写，透传时勿当缺失内容。</li>
+  <li><b>方案B/受控一层递归</b>：细纲标记可展开 → ≤3 子拍，为已拍板设计但<b>未实装</b>（M3v 遗留：beat 展开路径的 prompt 未传 live_state）。</li>
+</ul>
+
+<h2>6. 存量债务与开放待办（接手优先关注）</h2>
+<h3>6.1 P0 · 结构性债务</h3>
+<table>
+  <tr><th>编号</th><th>项</th><th>说明</th></tr>
+  <tr><td>P0-1</td><td>produce_chapter 拆解</td><td>497 行 / 25+ 参数，建议拆 ChapterJob + 子函数（docs/11 §13）</td></tr>
+  <tr><td>P0-2</td><td>Provider 双轨制</td><td>REGISTRY 定义却零调用，CLI 仍 if/elif 硬编码；M5 前置清偿项</td></tr>
+  <tr><td>P0-3</td><td>Workspace 私有 API 泄漏</td><td><code>ws._abs</code> 被 21 文件 42 次调用，封装 <code>ws.path()</code></td></tr>
+  <tr><td>A4</td><td>工厂草卡无实然历史</td><td>新卡 relationships/rules 无历史约束，需注入实然摘要</td></tr>
+  <tr><td>D2</td><td>beat 近死分支</td><td>拍级展开仅当 chapter 返回 decide=expand 才触发，协议不要求该字段 → 几乎永不触发</td></tr>
+</table>
+<h3>6.2 P1 · 一致性与链路</h3>
+<p>广播 v2 转正验证(B1)、needs 判定链(B3)、非人实体 cast 语义(B5)、细纲工艺硬要求(D1)、生成完整性部分落地(E4)、文档漂移(E12)、enrich 通用性(E13)、broadcast 可及池过严(F7)，以及线索账本对齐系列：F1-F7（主线零落账/双账本错位/dormant 带 progress/细纲 lines_present 与账本脱节等）。</p>
+<h3>6.3 P2 / 待拍板</h3>
+<ul>
+  <li>异常类统一归入 <code>NovelistError</code>（7 个直接继承 Exception）</li>
+  <li>conftest 共享夹具、CLI 装配去重(RuntimeWiring)、类型/docstring 渐进补齐</li>
+  <li>质量加固批次二方案1（反 AI 味量化引擎）、批次三方案3/8/9（称谓账本/时间底线/章内时序启发式）——<b>待拍板</b></li>
+  <li>线索子系统阶段6：用户新出一句话多线密集题材需求 → 全流程 5 章真机验收</li>
+  <li>M5 多厂商接入（X1–X4，待 M3 尾清债后启动）</li>
+</ul>
+
+<h2>7. 接手建议：从哪里切入</h2>
+<div class="card">
+  <ol>
+    <li><b>先跑一遍</b>：<code>C:/Python314/python.exe -m pytest tests/ -q</code>（约 90s，797 绿）；再 <code>novelist forge show</code> 看一个工作区。</li>
+    <li><b>读码顺序</b>：docs/11(规范) → docs/08(M3 尾) → <code>orchestrator.py</code>(produce_chapter 事件循环主入口) → <code>worldstate/chronicler/lines</code>(写回链) → <code>forge/engine+nodes</code>(构建链) → <code>providers/__init__</code>(新增 Provider 单轨注册)。</li>
+    <li><b>若做 M4 硬化</b>：从评测集 + 审核拦截降级链开始（确定性、不依赖云端）；<b>若做 M5</b>：先清偿 P0-2（REGISTRY 单轨），再按 X1→X4。</li>
+    <li><b>若做生成质量</b>：优先 D2(beat 死分支)、M3v 遗留(live_state 未入 beat)、统一 prompt 装配器；剩余"人设/广播/线索"链路见 §6。</li>
+    <li><b>红线纪律</b>：测试绝不真调 LLM（用 fake provider）；改 schema 须同步 docs/06 规则白名单；SceneBus 锁不可重入；Windows 真机上 docx 顺序/控制字符是易翻车点。</li>
+  </ol>
+</div>
+
+<div class="footer">本报告基于 docs/08、git log、全量测试(797 passed)与两位只读子代理的代码核对生成。进度口径：<b>代码 + 测试 &gt; 文档自述</b>。</div>
+</div>
+</body>
+</html>

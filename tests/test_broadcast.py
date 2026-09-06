@@ -122,6 +122,92 @@ def test_parse_decision_garbage_not_crash():
     assert alarms and "非 JSON" in alarms[0]
 
 
+# ---------------------------------------------------------------- F7：不在场点名（注册角色 / 真自造名两级）
+
+
+def test_parse_decision_off_scene_registered_allowed():
+    """F7 二级：注册角色不在可及池（闭关/远在别处）→ 按【不在场点名】保留，不拒不拉黑。
+
+    `names` 不含（物理在场者），`off_scene_names` 含；有告警但 `rejected_out` 不收。
+    """
+    pool = {"叶岚"}
+    rejected: list[str] = []
+    members, needs, alarms = parse_decision(json.dumps({
+        "present": [{"name": "叶岚", "reason_category": "职能必需", "reason": "事件主角"},
+                    {"name": "林清月", "reason_category": "动机主动",
+                     "reason": "闭关中仍遥闻叶岚之名"}],
+        "needs": [],
+    }, ensure_ascii=False), pool, registered={"林清月"}, rejected_out=rejected)
+    assert [m.name for m in members if not m.off_scene] == ["叶岚"]
+    assert [m.name for m in members if m.off_scene] == ["林清月"]
+    assert any("不在场点名" in a for a in alarms)
+    assert rejected == []     # 注册角色不再被当作自造名拉黑
+
+
+def test_parse_decision_off_scene_not_registered_rejected():
+    """F7 一级：真自造名（池+bible 双查无）仍拒绝 + 告警 + 拉黑（回归）。"""
+    pool = {"叶岚"}
+    rejected: list[str] = []
+    members, needs, alarms = parse_decision(json.dumps({
+        "present": [{"name": "叶岚", "reason_category": "职能必需", "reason": "事件主角"},
+                    {"name": "上官屠神", "reason_category": "动机主动", "reason": "自造名"}],
+        "needs": [],
+    }, ensure_ascii=False), pool, registered={"林清月"}, rejected_out=rejected)
+    assert [m.name for m in members] == ["叶岚"]
+    assert rejected == ["上官屠神"]
+    assert any("上官屠神" in a and "已拒绝" in a for a in alarms)
+
+
+def test_broadcast_cast_off_scene_registered_not_in_physical_cast(ws_factory, write_json):
+    """F7 集成：扬名播报点名闭关中的注册角色 → 保留为不在场引用，不进物理 cast。
+
+    dec.names（驱动 N3 调度/正文 cast）= 物理在场者；off_scene_names = 引用者；
+    落盘 casting 带 off_scene=true 且不进入正文禁令（rejected 空）。
+    """
+    ws, pid = ws_factory()
+    write_json(ws, pid, "bible/characters.json", [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male", "status": "active",
+         "power": {"level": "炼气三层", "faction": "青云宗"}},
+        {"id": "char:lin", "name": "林清月", "gender": "female", "status": "active",
+         "power": {"level": "筑基", "faction": "青云宗"},
+         "relationships": [{"target": "char:yelan", "type": "青梅竹马"}]},
+    ])
+    # 林清月闭关到 day 200 > now 100 → 不在可及池，但仍是注册角色
+    wst = {"time": {"now": 100},
+           "characters": {"char:lin": {"unavailable_until": 200}}}
+    reply = json.dumps({
+        "present": [
+            {"name": "叶岚", "reason_category": "职能必需", "reason": "扬名主角"},
+            {"name": "林清月", "reason_category": "动机主动",
+             "reason": "闭关仍遥闻叶岚之名，心绪震动"},
+        ],
+        "needs": [],
+    }, ensure_ascii=False)
+    dec = broadcast_cast(ws, pid, _stub(reply), vol=1, ch=3, idx=0,
+                         ev_text="叶岚一夜扬名，消息传遍各大宗门，连闭关中的林清月都听闻",
+                         declared=["叶岚"], text_hits=["叶岚"],
+                         worldstate=wst)
+    assert dec is not None
+    assert set(dec.names) == {"叶岚"}                 # 物理在场只有主角
+    assert set(dec.off_scene_names) == {"林清月"}     # 闭关者仅作引用
+    assert dec.rejected == []                          # 不拉黑
+    assert any("不在场点名" in a for a in dec.alarms)
+    data = json.loads(ws._abs(f"{pid}/memory/castings/v1-c3-e0.json")
+                      .read_text(encoding="utf-8"))
+    present = {m["name"]: m["off_scene"] for m in data["present"]}
+    assert present == {"叶岚": False, "林清月": True}  # 落盘区分物理/不在场
+
+
+def test_available_pool_keeps_registered_out_of_pool():
+    """F7 前置：闭关/失踪者确被排除出可及池（在池才真在场，不在池才触发不在场引用）。"""
+    wst = {"time": {"now": 100}, "characters": {"char:lin": {"unavailable_until": 200}}}
+    names = {c["name"] for c in available_pool([
+        {"id": "char:yelan", "name": "叶岚", "status": "active"},
+        {"id": "char:lin", "name": "林清月", "status": "active"},
+    ], wst)}
+    assert names == {"叶岚"}
+
+
 # ---------------------------------------------------------------- 确定性校验
 
 
@@ -375,6 +461,60 @@ def test_broadcast_cast_failure_returns_none(ws_factory, write_json):
     assert not ws._abs(f"{pid}/memory/castings").exists()  # 无落盘残留
 
 
+def _seq_complete(replies: list[str]):
+    """定序 provider：依次返回固定 content；耗尽后返回空。返回 (provider, calls)。"""
+    from novelist.core.llm import LLMResult
+
+    calls: list[str] = []
+
+    class _Seq:
+        def __init__(self):
+            self.replies = list(replies)
+
+        def complete(self, req):
+            calls.append(req.messages[-1].content if req.messages else "")
+            if not self.replies:
+                return LLMResult(ok=True, content="", finish_reason="stop", blocked=False)
+            return LLMResult(ok=True, content=self.replies.pop(0),
+                             finish_reason="stop", blocked=False)
+
+    return _Seq(), calls
+
+
+def test_broadcast_cast_retries_empty_cast_converges(ws_factory, write_json):
+    """思考抖动重试：先返回空 cast({present:[]})，再给有效 cast → 重试收敛采用后者。
+
+    provider 调用数 = 2（空那次被丢弃），最终名单不含空结果，落盘仅一份好决定。
+    """
+    ws, pid = ws_factory()
+    write_json(ws, pid, "bible/characters.json", [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male", "status": "active",
+         "power": {"level": "炼气三层", "faction": "青云宗"}},
+    ])
+    good = _broadcast_reply(["叶岚"])
+    llm, calls = _seq_complete(['{"present":[],"needs":[]}', good])
+    dec = broadcast_cast(ws, pid, llm, vol=1, ch=1, idx=0,
+                         ev_text="叶岚在宗门广场", declared=[], text_hits=["叶岚"])
+    assert dec is not None and set(dec.names) == {"叶岚"}
+    assert len(calls) == 2, f"空结果应触发重试，实际 {len(calls)} 次"
+    assert ws._abs(f"{pid}/memory/castings/v1-c1-e0.json").exists()
+
+
+def test_broadcast_cast_retries_exhausted_returns_none(ws_factory, write_json):
+    """思考抖动重试尽：始终返回空 cast → 3 次后降级 None，不落盘不崩。"""
+    ws, pid = ws_factory()
+    write_json(ws, pid, "bible/characters.json", [
+        {"id": "char:yelan", "name": "叶岚", "gender": "male", "status": "active",
+         "power": {"level": "炼气三层", "faction": "青云宗"}},
+    ])
+    llm, calls = _seq_complete(['{"present":[],"needs":[]}'] * 3)
+    dec = broadcast_cast(ws, pid, llm, vol=1, ch=1, idx=0,
+                         ev_text="叶岚在宗门广场", declared=[], text_hits=["叶岚"])
+    assert dec is None
+    assert len(calls) == 3
+    assert not ws._abs(f"{pid}/memory/castings").exists()
+
+
 # ---------------------------------------------------------------- orchestrator 集成
 
 
@@ -503,8 +643,9 @@ def test_orchestrator_broadcast_garbage_falls_back(ws_factory, write_json):
     _seed_two_chars(ws, pid, write_json)
     _write_gist_two_events(ws, pid)
     e1, e2, title = _event_reply_blocks()
-    replies = (["选角导演开始胡言乱语"] + e1      # e1 广播：解析失败 → None
-               + ["选角导演开始胡言乱语"] + e2 + [title])
+    # 广播带思考抖动重试（broadcast_cast 默认 max_retries=2 → 每事件最多 3 次仍空 → 降级）
+    bad = ["选角导演开始胡言乱语"] * 3
+    replies = (bad + e1 + bad + e2 + [title])
     llm = _seq_llm(replies)
     res = _produce(ws, pid, llm, broadcast_casting=True)
     assert res.ok, res.result

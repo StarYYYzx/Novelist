@@ -226,6 +226,11 @@ def render_card_line(c: dict, _names: dict | None = None) -> str:
     if c.get("arc"):
         arc = str(c["arc"])
         seg.append("弧线：" + (arc if len(arc) <= 60 else arc[:60] + "…"))
+    # dp-intent：动机着色。intent=人物此刻最执着的欲望，plan=近段计划；只给"想干什么"，
+    # 不改 key_event 目标——让人物带着自己的欲望行动、彼此动机不同，人物不变成剧情提线木偶。
+    want = c.get("intent") or c.get("plan")
+    if want:
+        seg.append("动机：" + str(want)[:80])
     rels = c.get("relationships") or []
     if rels:
         parts = []
@@ -318,6 +323,7 @@ def build_direction(ws, project_id: str, provider, *, vol: int, ch: int,
                           LLMMessage(role="user", content=prompt)],
                 max_tokens_out=max_tokens,
                 temperature=0.4,
+                thinking=True,  # 判断类：本场人物调度规划（出场+演绎取向），开思考提人设把关
             )
         )
     except Exception:  # noqa: BLE001 - 调度失败静默降级
