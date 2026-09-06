@@ -89,7 +89,11 @@ def _patch_gist(path: Path) -> tuple[list[dict], list[dict]]:
                       "本章线索: " + json.dumps(new_inline, ensure_ascii=False),
                       body, flags=re.M)
     fm_json = json.dumps(fm, ensure_ascii=False, indent=2)
-    path.write_text("---\n" + fm_json + "\n---\n" + body, encoding="utf-8")
+    # 写回时剥离 body 里残留的旧 frontmatter（2026-09-06 修复：原写回把 body 原样
+    # 拼在新建 frontmatter 之后，body 首段仍是 {原版 json}——10 份细纲全部变成
+    # 双 JSON，第二段与第一段 title/lines_present 互相矛盾地注入给下一章）。
+    _rest = body.split("---\n", 1)[1] if body.startswith("{") else body
+    path.write_text("---\n" + fm_json + "\n---\n" + _rest, encoding="utf-8")
     return old_fm, new_inline
 
 

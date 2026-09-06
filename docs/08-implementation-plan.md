@@ -885,6 +885,11 @@ exclude_src 整章排除（H12 防复述的副作用）——下一事件只能�
 遗留：重场戏 beat 展开路径（`_generate_beats`）的 prompt 未传 live_state（fame5 细纲 beats 全空，
 低优先）；`_sync_card_realm` 只同步 power.level，location 等依赖实然块注入（卡上无此字段）。
 
+**双 JSON 清污（P0 收尾，2026-09-06 同日闭环）**：fix_fame5_lines.py 写回未剥旧 frontmatter 导致
+10 份细纲双段污染（总账 F8）。`bible.normalize_gist_frontmatter`（保留第一份回填段，标准 `---`
+引导段与裸 JSON 段两种第二段均识别，正文保真）+ `normalize_all_gists` 产品化落地；
+fame5 10 份实测干净且幂等（fixed=0），tests/test_gist_normalize.py 5 条，全量 **796 passed**。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

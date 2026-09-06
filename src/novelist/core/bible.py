@@ -90,6 +90,74 @@ def _parse_frontmatter(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+_FM_BLOCK_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
+# 裸 JSON 段（无前导 ---，复用上一段的闭合线）：`} \n\n---\n{json2}\n---\n正文`
+_BARE_FM_RE = re.compile(r"\A\{.*?\}\s*\n---\s*\n", re.S)
+
+
+def normalize_gist_frontmatter(text: str) -> str:
+    """细纲文件规范化：多余的 frontmatter 段收敛为一份（保留第一份，最新回填）。
+
+    背景（2026-09-06 fame5 实测）：修复工具写回未剥离旧 frontmatter，10 份细纲
+    变成 `---{新json}---{旧json}---正文`——旧段与新段 title/lines_present 互相
+    矛盾，随细纲一起注入给下一章（叙事混乱来源之一）。确定性收敛：第一段
+    frontmatter 保留（`_apply_chapter_title` 的回填目标），其后连续的 JSON
+    frontmatter 段（标准段或裸 JSON 段均识别）丢弃；正文原样保真。
+    单段/无段文件原样返回。
+    """
+    first = _FM_BLOCK_RE.match(text)
+    if not first:
+        return text
+    try:
+        fm = json.loads(first.group(1).strip())
+    except ValueError:
+        return text
+    if not isinstance(fm, dict):
+        return text
+    rest = text[first.end():]
+    changed = False
+    while True:
+        # 两种第二段形态：裸 JSON 段（`}⏎⏎---⏎{json2}`）优先，其次标准 `---` 引导段
+        m = _BARE_FM_RE.match(rest)
+        if m:
+            seg = m.group(0)
+            body_txt = seg[:seg.rfind("}") + 1]
+        else:
+            m = _FM_BLOCK_RE.match(rest)
+            if not m:
+                break
+            body_txt = m.group(1)
+        try:
+            nxt = json.loads(body_txt.strip())
+        except ValueError:
+            break
+        if not isinstance(nxt, dict):
+            break
+        rest = rest[m.end():]
+        changed = True
+    if not changed:
+        return text
+    return "---\n" + json.dumps(fm, ensure_ascii=False, indent=2) + "\n---\n" + rest
+
+
+def normalize_all_gists(ws, project_id: str) -> int:
+    """全量规范化细纲 frontmatter，返回被改写的文件数（确定性，零 LLM）。"""
+    root = ws._abs(f"{project_id}/outline/chapters")  # noqa: SLF001
+    if not root.exists():
+        return 0
+    fixed = 0
+    for p in sorted(root.glob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out = normalize_gist_frontmatter(text)
+        if out != text:
+            p.write_text(out, encoding="utf-8")
+            fixed += 1
+    return fixed
+
+
 def parse_gist(ws, project_id: str, vol: int, ch: int) -> dict | None:
     """解析章节细纲为 `outline/chapter_gist` 契约形状（docs/06 §3.4）。
 
