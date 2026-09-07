@@ -642,6 +642,47 @@
 - **测试（批次B）**：`tests/test_m3zb_draft_provenance.py`——聚合/指纹变化/空工作区健壮/往返路径/渲染/接线
   成稿自动落源清单，共 8 例全绿。
 
+### ADR-032 判断型子代理 Agent 化：统一证据基座 + chronicler/reviewer（· 拍板定稿 2026-09-07，**已实现 F0–F2**）
+
+> 背景：系统只有主编剧（`chapter --loop`）走 `AgentRunner`，其余"子角色"（记忆编纂员 chronicler、审校师
+> reviewer 等）都是**函数内嵌单轮 LLM**，任务一旦需要"多轮查证→决策→修正"（记忆冲突仲裁、审校求证）就
+> 力不从心。方向（2026-09-07 用户拍板四选）：**第一批只升级 chronicler + reviewer；建统一子代理基座；
+> 章内同步运行；Agent 只建议不直写（落库仍走确定性闸门，敏感项提请人工）**。forge 构建因本身是确定性递归
+> 调度（形态不同：Agent 指挥 + 引擎执行）**延后单独评估**，不并入本批。
+
+- **形态**：扩展 `core/agent_runner.AgentRunner` 成"证据循环"子代理基座——每轮 LLM 可先经 `ToolRegistry`
+  观察面（读 圣经/记忆/草稿：`filesys.read` + `memory_tools.query_memory`）作为证据，再做决策；判断类
+  任务**开 thinking**（`_decide` 现以 `self.thinking` 透传，可按角色配，TestScript injectable）；输出结构化
+  结果（事件候选 / ReviewIssue / 建议），**不直接落库**。
+- **复用**：预算（Budget）、权限面（按角色裁剪 registry）、轮次上限沿用 editor agent 语义；决策者可注入
+  （`fake/scripted`，PatchDecision），单测不真调 LLM（docs/09 §2.1）。只读证据 registry 由
+  `tools.EVIDENCE_READ_TOOLS` / `evidence_tools` / `evidence_registry` 提供（排除 write_*/reindex_memory）。
+- **Chronicler 升级（F1，已实现）**：`core/chronicler_agent.py` —— 保留 tuned `extract()` 抽候选，
+  新增 `arbitrate()` 只读证据环（query_memory/get_character_history/read_file 取证后裁决 保持/忽略/改写/提请），
+  `agentic_chronicle()` / `Chronicler.run_agentic` 统合“抽取→仲裁→确定性闸门落库”；编排事件级/章级接入，
+  `produce_chapter(agentic_chronicle=True)` / `chapter --agentic-chronicle`。未提及即保持；仲裁失败回退原全集。
+- **Reviewer 升级（F2，已实现）**：`consistency/reviewer_agent.py` —— 复用 `REVIEW_PROMPT` 输入口径，
+  以证据环在上报前 `query_memory`/`read_file` 核实可疑点，最终仍输出同格式 `ReviewIssue` 行（`Reviewer._parse`
+  解析，下游零改动）；证据环失败回退 `Reviewer.review`。编排事件级接入，
+  `produce_chapter(agentic_review=True)` / `chapter --agentic-review`。
+- **写权限（拍板·推荐）**：Agent 产出候选/告警+证据链；**最终落库与门禁仍由确定性层负责**；命中敏感项
+  （covenant / 记忆冲突 / 删除）复用 ApprovalQueue 提请人工。改的是"怎么取证"，不改"谁有权落库"。
+  证据环 registry 结构上**不含任何写库/写文件工具**。
+- **编排判据与保真护栏（2026-09-07 拍板）**：
+  1. **切换/调度风格（丙+乙混合）**：工序出口尽量做成**确定性出口谓词**（可审、可控）——条件满足才进下一
+     工序，不满足则留在本节点再跑内部取证或提请人工；复杂度不可量化的判断（质量够不够、是否重写）才交给
+     主编剧 LLM 判定；**子代理只做证据增强、不决定工步**。不把"何时换 Agent"交给子代理自裁。
+  2. **效果保真（A/B 双轨抽查）**：对冲突/可疑 `vol:ch` 显式跑"旧直出 vs 新 Agent 化"两轨，比对
+     `report.written`/issues 与证据 `evidence` 差分，量化新路径是否劣于旧路径。抽查级、默认关（跑两遍
+     较慢），作为人工复查与回归的复核工具。
+  3. **取证预算（收紧+可配）**：chronicler/reviewer 子代理取证轮次上限默认收紧（6/8），宁漏勿误杀、控
+     耗时与 token；经 `produce_chapter(agentic_*_rounds)` / `chapter --agentic-{chronicle,review}-rounds`
+     显式覆盖。
+- **里程碑**：见 docs/08 `M3aa`（子代理 Agent 化，F0 基座 / F1 chronicler / F2 reviewer 已完成，F3 文档+提交）。
+- **验收**：F0–F2 单测（`tests/test_m3aa_*`）共 25 例，全量非 slow 回归 926 passed；既有 tool-loop 语义不变。
+- **风险**：章内同步使单章/审查耗时上升（多轮 LLM）；用预算与轮次上限收敛（max_rounds 默认 6/8）；开关默认关，
+  需显式 `--agentic-chronicle/--agentic-review` 启用，量产后评估后再转默认。
+
 ### ADR-031 人工修订识别 + 归因回写（Edit Attribution & Writeback · 设计定稿 2026-09-07，**批次C 待编码**）
 
 > 背景：人工把草稿改成了正文，系统需要知道"这些改动哪些影响设定/事实/记忆"，再决定是否回写。不识别就丢

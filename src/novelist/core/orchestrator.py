@@ -1545,6 +1545,10 @@ def produce_chapter(
     cast_injection: bool = True,     # 决策二：出场人物卡无条件注入
     character_direction: bool = True,  # 决策三：人物调度层（细纲与正文之间的第 3 次细化）
     perspective_memory: bool = True,   # 决策四：角色视角记忆（事件末调用 + 无条件注入 + 双阈值回读）
+    agentic_chronicle: bool = False,   # ADR-032 F1：编纂走只读证据仲裁环（慢性重冲突取证后落库）
+    agentic_review: bool = False,      # ADR-032 F2：审校走只读证据环（可疑点取证后再定论）
+    agentic_chronicle_rounds: int = 6,  # F1 取证预算（取证轮次上限，宁漏勿误杀，CLI 可配，ADR-032）
+    agentic_review_rounds: int = 8,     # F2 取证预算上限（ADR-032）
     # ---- ADR-021 世界广播选角（一致性栈第 0 层：先定"谁该在场"，N3 调度才有意义）----
     broadcast_casting: bool = True,    # 事件级选角 LLM 推理（v1 默认关；B1 验收已过→转 True：
                                        # flash+16000 批跑 18 事件 degrade=0/miss=0/增益 21 全
@@ -2097,6 +2101,15 @@ def produce_chapter(
                                 issues = reviewer.review(
                                     piece, vol, ch, gist_text=gist_text_for_events,
                                     memories=memories_ev, scope=_scope)
+                                if agentic_review:
+                                    from ..consistency.reviewer_agent import agentic_review
+
+                                    _ar = agentic_review(
+                                        piece, vol, ch, ws=ws, project_id=project_id,
+                                        provider=provider, session=sess, embedding=embedding,
+                                        gist_text=gist_text_for_events, memories=memories_ev,
+                                        scope=_scope, max_rounds=agentic_review_rounds)
+                                    issues = _ar.issues
                                 blocks = [i for i in issues if i.level == "block"]
                             except Exception:  # noqa: BLE001 - 审校失败不阻断
                                 issues, blocks = [], []
@@ -2143,10 +2156,21 @@ def produce_chapter(
                                                       semantic_checker)
                     if chronicler is not None:
                         try:
-                            chronic_reports.append(
-                                chronicler.run(piece, vol, ch, max_events=2,
-                                               tag=f"e{idx}",
-                                               payoff=(phase is Phase.TAIL)))
+                            if agentic_chronicle:
+                                from .chronicler_agent import run_agentic
+
+                                _rep, _arb = run_agentic(
+                                    chronicler, piece, vol=vol, ch=ch, max_events=2,
+                                    tag=f"e{idx}", payoff=(phase is Phase.TAIL),
+                                    provider=provider, session=sess, embedding=embedding,
+                                    max_rounds=agentic_chronicle_rounds,
+                                )
+                                chronic_reports.append(_rep)
+                            else:
+                                chronic_reports.append(
+                                    chronicler.run(piece, vol, ch, max_events=2,
+                                                   tag=f"e{idx}",
+                                                   payoff=(phase is Phase.TAIL)))
                         except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             pass
                         # 角色视角记忆（ADR-020 决策四）：事件落定即记，一人一条视角
@@ -2484,8 +2508,18 @@ def produce_chapter(
                     chronicler = Chronicler(ws, project_id, llm=provider, embedding=embedding,
                                             semantic_checker=semantic_checker)
                 if chronicler is not None:
-                    chronicle = chronicler.run(text_for_chronicle, vol, ch,
-                                               payoff=(phase is Phase.TAIL))
+                    if agentic_chronicle:
+                        from .chronicler_agent import run_agentic
+
+                        chronicle, _arb = run_agentic(
+                            chronicler, text_for_chronicle, vol=vol, ch=ch,
+                            payoff=(phase is Phase.TAIL), provider=provider,
+                            session=sess, embedding=embedding,
+                            max_rounds=agentic_chronicle_rounds,
+                        )
+                    else:
+                        chronicle = chronicler.run(text_for_chronicle, vol, ch,
+                                                   payoff=(phase is Phase.TAIL))
                     events = chronicle.written
     except Exception:  # noqa: BLE001 - 编纂失败不影响草稿已落盘
         chronicle = None

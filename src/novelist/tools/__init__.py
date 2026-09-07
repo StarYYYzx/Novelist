@@ -43,4 +43,28 @@ def all_tools(ws: Workspace, embedding=None) -> list[Tool]:
     )
 
 
-__all__ = ["build_registry", "all_tools", "PermissionGate", "SessionInfo"]
+# 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
+EVIDENCE_READ_TOOLS = frozenset(
+    {"read_file", "grep_text", "query_memory", "get_character_history", "get_plot_events"}
+)
+
+
+def evidence_tools(ws: Workspace, embedding=None) -> list[Tool]:
+    """取 `all_tools` 中允许的证据读取子集（只读，供 chronicler/reviewer 取证）。"""
+    return [t for t in all_tools(ws, embedding=embedding) if t.name in EVIDENCE_READ_TOOLS]
+
+
+def evidence_registry(
+    ws: Workspace,
+    gate: PermissionGate | None = None,
+    embedding=None,
+) -> ToolRegistry:
+    """装配只读证据 registry（ADR-032）：仅 `EVIDENCE_READ_TOOLS`，供子代理读圣经/记忆/草稿取证。"""
+    reg = ToolRegistry(gate=gate or PermissionGate())
+    for tool in evidence_tools(ws, embedding=embedding):
+        reg.register(tool)
+    return reg
+
+
+__all__ = ["build_registry", "all_tools", "evidence_registry", "evidence_tools",
+           "PermissionGate", "SessionInfo"]

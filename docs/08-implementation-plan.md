@@ -985,6 +985,25 @@ provenance 标记。
 - **Backlog（用户画像 memory）**：全局 gitignored 用户级目录沉淀文风/修改偏好，从批次 C 修订历史蒸馏
   craft 偏好/skill；见 docs/03 ADR-030 尾部与 docs/08 §6。
 
+### M3aa — 判断型子代理 Agent 化（ADR-032 · 2026-09-07 拍板定稿 / **F0–F2 已完成**）
+
+> 方向：把"函数内嵌单轮 LLM"的**记忆编纂员 chronicler、审校师 reviewer** 升级为真正的 Agent 闭环——
+> 统一子代理基座（证据循环）+ 章内同步 + **只建议不直写**（落库仍走确定性闸门，敏感项提请人工）。
+> forge 构建（确定性递归调度，形态不同：Agent 指挥 + 引擎执行）**延后单独评估**。详见 ADR-032。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| F0 | 子代理基座：扩展 `agent_runner.AgentRunner`——证据循环（每轮可经 ToolRegistry 读 圣经/记忆/草稿）+ 判断类任务**可开 thinking**（`thinking` 透传 LLMRequest，可按角色配）+ 证据轨迹 `SubAgentRun`/`evidence` + 只读证据 registry（`tools.evidence_registry`）；**向后兼容现有 tool loop** | ✅ 已完成 |
+| F1 | chronicler Agent 化（`core/chronicler_agent.py`）：候选抽取 → `query_memory` 查相似/冲突 → 证据环裁决（保持/忽略/改写/提请）→ 确定性闸门兜底 → `MemoryWriter` 确定落库；章内事件级/章级接入，`--agentic-chronicle` | ✅ 已完成 |
+| F2 | reviewer Agent 化（`consistency/reviewer_agent.py`）：证据环取证（`query_memory`/`read_file`）后出 `ReviewIssue` 工单（输出契约不变，下游零改动）；证据环失败回退单发；事件级接入，`--agentic-review` | ✅ 已完成 |
+| F3 | 全量回归（922 passed）+ 文档补录（ADR-032 + 命令手册/接口） | ✅ 已完成（文档/回归）· 提交待办 |
+| F4 | 取证预算 CLI 可配（`--agentic-{chronicle,review}-rounds`，默认收紧 6/8）+ ADR-032 补“编排判据 丙+乙/保真 A/B/预算”三决策 | ✅ 已完成 |
+| 后续 | A/B 双轨差异审计命令（抽查级·默认关）：旧直出 vs 新 Agent 化比对 `report.written`/issues + `evidence` 差分 | ⬜ 待编码（ADR-032 已拍板） |
+
+**验收**：①基座单测决策注入不真调 LLM；②chronicler 冲突场景：仲裁的"保持/忽略/改写/提请"记录留 evidence
+轨迹，落库由确定性闸门背书；③reviewer 同一章产出带证据的告警可解释，契约不变；④全量非 slow 926 全绿；
+⑤取证预算默认收紧可被 CLI 覆盖（`tests/test_m3aa_budget.py` 验证预算不足走回退、充足走 agent）。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

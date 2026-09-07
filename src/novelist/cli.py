@@ -214,6 +214,14 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="事件接缝 LLM 复述审查（批次三方案2；G3 修复：原先默认关且 CLI 无法打开）")
 @click.option("--volume-facts/--no-volume-facts", default=True,
               help="卷末章自动产'本卷事实清单'并注入下卷（批次三方案3）")
+@click.option("--agentic-chronicle", is_flag=True, default=False,
+              help="编纂走只读证据仲裁环（ADR-032 F1）：落库前 query_memory 查冲突再裁决")
+@click.option("--agentic-review", is_flag=True, default=False,
+              help="审校走只读证据环（ADR-032 F2）：可疑点取证后再定论")
+@click.option("--agentic-chronicle-rounds", type=int, default=6,
+              help="F1 取证预算：chronicler 证据环轮次上限（宁漏勿误杀，ADR-032）")
+@click.option("--agentic-review-rounds", type=int, default=8,
+              help="F2 取证预算：reviewer 证据环轮次上限（ADR-032）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str,
             api_key: str | None, api_base: str | None, model: str | None,
@@ -223,7 +231,11 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
             polish: bool, no_bible: bool,
             event_loop: bool, screenplay: bool, readback: bool, event_polish: bool,
             supplement_settings: bool, no_jit: bool,
-            seam_review: bool, volume_facts: bool) -> None:
+            seam_review: bool, volume_facts: bool,
+            agentic_chronicle: bool,
+            agentic_review: bool,
+            agentic_chronicle_rounds: int,
+            agentic_review_rounds: int) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider 选后端；deepseek 等真实模型配 key（env/.env），custom 用 --api-base/--api-key/--model。
@@ -269,7 +281,11 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                           event_loop=event_loop, screenplay=screenplay,
                           readback=readback, event_polish=event_polish,
                           supplement_settings=supplement_settings, jit_characters=not no_jit,
-                          seam_review=seam_review, volume_facts=volume_facts)
+                          seam_review=seam_review, volume_facts=volume_facts,
+                          agentic_chronicle=agentic_chronicle,
+                          agentic_review=agentic_review,
+                          agentic_chronicle_rounds=agentic_chronicle_rounds,
+                          agentic_review_rounds=agentic_review_rounds)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "
