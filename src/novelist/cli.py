@@ -26,6 +26,32 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     ctx.obj["workspace"] = Workspace(root=root)
 
 
+class ProviderConnOpts:
+    """共享的 provider 连接透传选项集合（P0-2 / 自定义模型接入）。
+
+    用法：在命令的 click.option 装饰器列表里加 ``*ProviderConnOpts.options()``，
+    函数签名加 ``api_key, api_base, model`` 三个参数，调用 ``_make_cli_provider``
+    时透传。这样所有命令统一支持 ``--api-key/--api-base/--model``。
+    """
+
+    @staticmethod
+    def options():
+        return (
+            click.option("--api-key", "api_key", default=None,
+                         help="显式 API Key（优先级：值 > 环境变量 > .env，见 providers/secrets.py）"),
+            click.option("--api-base", "api_base", default=None,
+                         help="自定义 base_url（OpenAI 兼容端点，覆盖 naming preset 默认；custom 必填）"),
+            click.option("--model", "model", default=None,
+                         help="覆盖该 provider 的默认模型名（如 qwen-plus / gpt-4o / deepseek-v4-flash）"),
+        )
+
+
+def _apply_provider_conn(func, names_extra=()):
+    for o in ProviderConnOpts.options():
+        func = o(func)
+    return func
+
+
 def _new_project_id() -> str:
     import time
 
@@ -154,7 +180,9 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.argument("directory", required=False, default=None)
 @click.option("--vol", default=1, type=int, help="卷号")
 @click.option("--ch", default=1, type=int, help="章节号")
-@click.option("--provider", default="fake", help="LLM provider：fake/scripted/lmstudio/deepseek/openai")
+@click.option("--provider", default="fake",
+              help="LLM provider：fake/scripted/deepseek/openai/qwen/kimi/glm/anthropic/ollama/vllm/custom")
+@_apply_provider_conn
 @click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
 @click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
 @click.option("--gen-tokens", type=int, default=None,
@@ -187,7 +215,9 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.option("--volume-facts/--no-volume-facts", default=True,
               help="卷末章自动产'本卷事实清单'并注入下卷（批次三方案3）")
 @click.pass_context
-def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str, direct: bool | None,
+def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str,
+            api_key: str | None, api_base: str | None, model: str | None,
+            direct: bool | None,
             policy: str | None, gen_tokens: int | None, content_tokens: int | None,
             max_events: int | None, min_event_words: int,
             polish: bool, no_bible: bool,
@@ -196,7 +226,7 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
             seam_review: bool, volume_facts: bool) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
-    --provider lmstudio 走本地 LM-Studio（默认直出文本，量力而为，避免多轮工具调用）。
+    --provider 选后端；deepseek 等真实模型配 key（env/.env），custom 用 --api-base/--api-key/--model。
     --policy 指定策略文件后，sensitive/danger 工具按策略处置；ask 时交互审批（grant 可见）。
     """
     from novelist.core.orchestrator import produce_chapter
@@ -211,12 +241,12 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     except Exception as e:  # noqa: BLE001
         raise click.ClickException(f"chapter: {e}") from e
 
-    prov = _make_cli_provider(provider, vol, ch)
-    # 本地模型默认直出（prefer_direct）；其余遵循用户 --direct/--loop 显式选择
-    prefer_direct = True if provider in ("lmstudio", "local") else (direct if direct is not None else False)
-    # 生成预算（B-05）：显式 --gen-tokens 优先；否则本地模型 400、其余 4000
+    prov = _make_cli_provider(provider, vol, ch, api_key=api_key, api_base=api_base, model=model)
+    # 默认直出文本（量力而为，避免多轮工具调用）；需 Agent 工具循环加 --loop
+    prefer_direct = direct if direct is not None else False
+    # 生成预算（B-05）：显式 --gen-tokens 优先；缺省 4000
     if not gen_tokens:
-        gen_tokens = 400 if provider in ("lmstudio", "local") else 4000
+        gen_tokens = 4000
 
     # 门禁 + 审批：策略文件（可选）→ 默认 supervised；ask 走交互审批并持久化供 grant 查询
     # Embedding：按配置 provider.embedding 选取；无 key/不可用时自动降级为关键词索引（F9.4）
@@ -345,35 +375,41 @@ def _interactive_decision(req) -> str:
     return "allow" if ans.strip().lower() in ("y", "yes") else "deny"
 
 
-def _make_cli_provider(provider: str, vol: int = 1, ch: int = 1):
+def _make_cli_provider(
+    provider: str,
+    vol: int = 1,
+    ch: int = 1,
+    *,
+    api_key: str | None = None,
+    api_base: str | None = None,
+    model: str | None = None,
+):
+    """统一实例化 LLM provider（P0-2：走 providers.create 单轨工厂）。
+
+    fake/scripted 保留测试替身语义；真实 provider（deepseek/openai/qwen/kimi/glm/
+    anthropic/ollama/vllm/custom）由 create() 查询 REGISTRY 预设 + .env/config 注入 key。
+    """
+    from novelist.providers import create
     from novelist.providers.fake import FakeProvider, ScriptedProvider
 
     if provider == "fake":
-        # 占位演示：返回一段文本（不产生工具调用），展示循环结束
         return FakeProvider(reply="演示：fake provider 直接返回文本。")
     if provider in ("scripted", "demo"):
-        # 默认/演示：脚本驱动一次 write_draft 工具调用（写入指定卷/章）+ 结束语
         return ScriptedProvider(
             [
                 {"tool": "write_draft", "args": {"vol": vol, "ch": ch, "content": f"第 {ch} 章占位草稿：由 scripted provider 写入。"}},
                 {"final": "done"},
             ]
         )
-    if provider == "deepseek":
-        from novelist.providers.deepseek import DeepSeekProvider
-
-        return DeepSeekProvider()
-    if provider in ("lmstudio", "local"):
-        from novelist.providers.lmstudio import LMStudioProvider
-
-        # 思考型模型（qwen3.5-9b）+ 大 prompt（forge 构建节点）单次调用可达 4-5 分钟
-        # （10 token/s × 2600 + 思考），默认 120s 会让 book 节点超时回退父层（实测）。
-        # 构建/写作场景统一放宽到 600s，超时仅作兜底保护。
-        return LMStudioProvider(timeout_s=600)
-    # openai 等真实 provider（需 key/base_url，见 providers.openai）
-    from novelist.providers.openai import OpenAICompatibleProvider
-
-    return OpenAICompatibleProvider(model="gpt-4o-mini")
+    try:
+        return create(
+            provider,
+            api_key=api_key,
+            api_base=api_base,
+            model=model,
+        )
+    except KeyError as e:
+        raise click.ClickException(str(e)) from e
 
 
 @cli.command()
@@ -425,10 +461,14 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
-@click.option("--provider", default="lmstudio", help="审校用的 LLM provider")
+@click.option("--provider", default="deepseek",
+              help="审校用的 LLM provider；默认 deepseek（fake/scripted 均可用）。")
+@_apply_provider_conn
 @click.option("--max-show", default=20, type=int, help="最多展示多少条告警")
 @click.pass_context
-def review(ctx: click.Context, directory: str | None, provider: str, max_show: int) -> None:
+def review(ctx: click.Context, directory: str | None, provider: str,
+           api_key: str | None, api_base: str | None, model: str | None,
+           max_show: int) -> None:
     """一致性审查：确定性规则 + 审校师语义检（docs/04 §5.4，B-08）。
 
     不传 provider 也能跑（只跑规则层）；传了才会追加 LLM 语义审校。
@@ -440,7 +480,7 @@ def review(ctx: click.Context, directory: str | None, provider: str, max_show: i
     llm = None
     if provider and provider != "none":
         try:
-            llm = _make_cli_provider(provider)
+            llm = _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model)
         except Exception as e:  # noqa: BLE001 - provider 不可用时降级为纯规则层
             click.echo(f"[warn] provider unavailable, rule layer only: {e}")
 
@@ -766,11 +806,14 @@ def forge_approve(ctx: click.Context, module: str, remember: bool,
 @forge.command("revise")
 @click.argument("module")
 @click.argument("suggestions")
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--dir", "directory", default=None, help="目标项目目录")
 @click.pass_context
 def forge_revise(ctx: click.Context, module: str, suggestions: str,
-                 provider: str, directory: str | None) -> None:
+                 provider: str, api_key: str | None, api_base: str | None,
+                 model: str | None, directory: str | None) -> None:
     """按修改建议重生成模块内容并再次展示（新旧差异如实列出）。"""
     from novelist.forge.engine import revise_module
     from novelist.forge.review import REVIEW_MODULES, load_review
@@ -782,7 +825,7 @@ def forge_revise(ctx: click.Context, module: str, suggestions: str,
     if module not in load_review(ws, project_id)["pending"]:
         raise click.ClickException(f"{module}: 无待审内容")
     diffs = revise_module(ws, project_id, module, suggestions,
-                          _make_cli_provider(provider))
+                          _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model))
     click.echo(f"revise {module} 完成，仍待审核。与旧版差异：")
     if diffs:
         for ln in diffs[:40]:
@@ -846,7 +889,9 @@ _FAKE_SEED_REPLY = json.dumps({
 @click.option("--dir", "directory", default=None, help="目标项目目录（缺省取 workspace 根下唯一项目）")
 @click.option("--mode", type=click.Choice(["auto", "interactive"]), default="auto",
               help="interactive 会先展示提炼结果并授权询问；非 TTY 自动降级 auto")
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--genre-pack", default=None, help="类型包 id（缺省由提炼匹配，兜底通用包）")
 @click.option("--volumes", type=int, default=None, help="卷数（缺省由提炼/模板定）")
 @click.option("--chapters-per-volume", type=int, default=None, help="每卷章数")
@@ -857,7 +902,8 @@ _FAKE_SEED_REPLY = json.dumps({
 @click.option("--smoke", is_flag=True, default=False, help="冒烟：只提炼 + 建蓝图，不跑构建")
 @click.pass_context
 def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
-               provider: str, genre_pack: str | None,
+               provider: str, api_key: str | None, api_base: str | None, model: str | None,
+               genre_pack: str | None,
                volumes: int | None, chapters_per_volume: int | None,
                target_words: int | None,
                max_calls: int, max_depth: int, max_width: int, smoke: bool) -> None:
@@ -875,7 +921,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 
         prov = FakeProvider(reply=_FAKE_SEED_REPLY)  # 演示：固定 SeedSpec，链路可跑通
     else:
-        prov = _make_cli_provider(provider)
+        prov = _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model)
     state = ForgeState.load(ws, project_id)
     if state.stage == "built" and not smoke:
         click.echo(f"{project_id}: 已构建过（stage=built）。改动蓝图后重跑用 `forge build`；"
@@ -909,7 +955,9 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 @forge.command("build")
 @click.argument("directory", required=False, default=None)
 @click.option("--force", is_flag=True, default=False, help="已有 chapters/ 时强制（docs/10 §7.6）")
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
 @click.option("--no-deepen", is_flag=True, default=False,
               help="退化为 F1 最小树（跳过旁支递归深化与 arc/beat 层）")
@@ -917,6 +965,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
               help="影响分析：比对最近快照，只重建被改实体引用的章/节点（docs/10 §9.6）")
 @click.pass_context
 def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
+                api_key: str | None, api_base: str | None, model: str | None,
                 max_calls: int, no_deepen: bool, diff: bool) -> None:
     """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
 
@@ -943,7 +992,7 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
         click.echo(f"diff: {plan.summary}（清理 {removed} 个产物文件）")
         if plan.rebuild_all:
             click.echo("  [info] 结构级变更（worldview/style/volumes/arcs）→ 全量重建")
-    res = build(ws, project_id, provider=_make_cli_provider(provider),
+    res = build(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                 max_calls=max_calls, resume=False, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
@@ -961,12 +1010,15 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
 @forge.command("roll")
 @click.argument("vol", type=int)
 @click.argument("directory", required=False, default=None)
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--max-calls", type=int, default=40, help="roll 每卷分阶段配额（docs/10 §7.3）")
 @click.option("--gate/--no-gate", default=True,
               help="审核闸门（ADR-024，G1 修复：roll 原先完全绕过闸门）")
 @click.pass_context
 def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: str,
+               api_key: str | None, api_base: str | None, model: str | None,
                max_calls: int, gate: bool) -> None:
     """滚动生成第 N 卷细纲（需前卷已有正文）：注入前卷事实四块上下文（docs/10 §7.7）。"""
     from novelist.forge import Blueprint, roll
@@ -978,7 +1030,7 @@ def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: st
     except FileNotFoundError:
         raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
     try:
-        res = roll(ws, project_id, provider=_make_cli_provider(provider),
+        res = roll(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                    vol=vol, max_calls=max_calls, gate=gate)
     except ValueError as e:
         raise click.ClickException(str(e)) from None
@@ -996,14 +1048,17 @@ def forge_roll(ctx: click.Context, vol: int, directory: str | None, provider: st
 @click.option("--from", "from_ch", type=int, default=None,
               help="窗口起点章（缺省=卷内第一未写章）")
 @click.option("--width", type=int, default=3, help="未来窗口宽度（未来未写章数，缺省 3）")
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--max-calls", type=int, default=None,
               help="窗口重生成分阶段配额（缺省 width×2+2）")
 @click.option("--gate/--no-gate", default=True,
               help="承诺账本门（ADR-024）：触及承诺→回滚+mark_pending，不静默改承诺")
 @click.pass_context
 def forge_roll_window(ctx: click.Context, vol: int, directory: str | None, from_ch: int | None,
-                      width: int, provider: str, max_calls: int | None, gate: bool) -> None:
+                      width: int, provider: str, api_key: str | None, api_base: str | None,
+                      model: str | None, max_calls: int | None, gate: bool) -> None:
     """未来窗口滚动细纲：修订第 N 卷尚未成文的下 N 章 key_events（docs/10 §7.7）。
 
     卷间纠偏入口：在任意未写章前运行，让细纲贴合已发生的事实。改动先过承诺账本——
@@ -1019,7 +1074,7 @@ def forge_roll_window(ctx: click.Context, vol: int, directory: str | None, from_
     except FileNotFoundError:
         raise click.ClickException(f"{project_id}: 尚无蓝图——先跑 `forge seed`") from None
     try:
-        res = roll_window(ws, project_id, provider=_make_cli_provider(provider),
+        res = roll_window(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                           vol=vol, from_ch=from_ch, width=width,
                           max_calls=max_calls, gate=gate)
     except ValueError as e:
@@ -1042,10 +1097,13 @@ def forge_roll_window(ctx: click.Context, vol: int, directory: str | None, from_
 @forge.command("resume")
 @click.argument("directory", required=False, default=None)
 @click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted（商讨续跑时生成候选）")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--no-deepen", is_flag=True, default=False, help="续跑构建时跳过旁支深化与 arc/beat 层")
 @click.pass_context
 def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, provider: str,
+                 api_key: str | None, api_base: str | None, model: str | None,
                  no_deepen: bool) -> None:
     """断点续跑：商讨中断 → 续问答；构建中断 → 跳过已落盘节点续构建（幂等）。"""
     from novelist.forge import Blueprint, ForgeState, build, run_consult
@@ -1061,7 +1119,7 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
         # 商讨续问：已答槽位自动跳过（transcript 判据），q 可再次退出
         from novelist.forge import ConsoleIO
 
-        consult = run_consult(ws, project_id, bp, provider=_make_cli_provider(provider),
+        consult = run_consult(ws, project_id, bp, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                               io=ConsoleIO())
         for w in consult.warnings:
             click.echo(f"  [warn] {w}", err=True)
@@ -1073,7 +1131,7 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
         state.touch_stage(ws, project_id, "seeded")
         click.echo(f"商讨完成。下一步：`forge build --dir {project_id}` 开始构建")
         return
-    res = build(ws, project_id, provider=_make_cli_provider(provider),
+    res = build(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                 max_calls=max_calls, resume=True, deepen=not no_deepen)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
@@ -1091,7 +1149,9 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
 @forge.command("ingest")
 @click.argument("source")
 @click.argument("directory", required=False, default=None)
-@click.option("--provider", default="fake", help="fake|lmstudio|deepseek|openai|scripted（语义抽取）")
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
 @click.option("--genre-pack", default=None, help="类型包 id（缺省通用包；抽取词表随包）")
 @click.option("--chapters-per-volume", type=int, default=None, help="每卷章数（缺省 20）")
 @click.option("--target-words", type=int, default=None, help="切章目标字数（缺省 2400）")
@@ -1102,6 +1162,7 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
 @click.option("--recursive", is_flag=True, default=False, help="递归扫描子目录 .md/.txt/.docx")
 @click.pass_context
 def forge_ingest(ctx: click.Context, source: str, directory: str | None, provider: str,
+                 api_key: str | None, api_base: str | None, model: str | None,
                  genre_pack: str | None, chapters_per_volume: int | None,
                  target_words: int | None, ingest_max_calls: int,
                  mode: str, dry_run: bool, recursive: bool) -> None:
@@ -1116,7 +1177,7 @@ def forge_ingest(ctx: click.Context, source: str, directory: str | None, provide
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
     # fake = 演示/测试（纯确定性抽取链路）；真实 provider 走语义抽取 + 记忆初始化
-    prov = None if provider == "fake" else _make_cli_provider(provider)
+    prov = None if provider == "fake" else _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model)
     res = run_ingest(ws, project_id, source, provider=prov,
                      genre=genre_pack,
                      chapters_per_volume=chapters_per_volume or 20,
@@ -1320,10 +1381,12 @@ def settings_pending(ctx: click.Context, directory: str | None, allow: str | Non
 @cli.command("characters-enrich")
 @click.argument("directory", required=False, default=None)
 @click.option("--provider", default="fake",
-              help="LLM provider：fake/lmstudio/deepseek/openai（默认 fake 防手滑）")
+              help="LLM provider：fake/scripted/deepseek/openai/qwen/kimi/glm/anthropic/ollama/vllm/custom（默认 fake 防手滑）")
+@_apply_provider_conn
 @click.option("--card", default=None, help="只提案指定角色名，逗号分隔（缺省=全部缺料卡）")
 @click.pass_context
 def characters_enrich(ctx: click.Context, directory: str | None, provider: str,
+                      api_key: str | None, api_base: str | None, model: str | None,
                       card: str | None) -> None:
     """P0-A 人物数据补喂：为缺 relationships/behavior_rules 的卡跑 LLM 提案。
 
@@ -1345,8 +1408,8 @@ def characters_enrich(ctx: click.Context, directory: str | None, provider: str,
         if not card_ids:
             raise click.ClickException("no matching characters in roster")
     if provider == "fake":
-        raise click.ClickException("--provider fake 仅为默认防手滑；请指定 deepseek/lmstudio/openai")
-    llm = _make_cli_provider(provider)
+        raise click.ClickException("--provider fake 仅为默认防手滑；请指定 deepseek 等真实 provider")
+    llm = _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model)
     results = propose(ws, project_id, llm, card_ids=card_ids)
     moved = sum(1 for r in results if r.get("proposed"))
     bad = [r for r in results if not r.get("ok")]

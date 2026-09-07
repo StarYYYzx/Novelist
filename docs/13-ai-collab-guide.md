@@ -63,7 +63,8 @@ src/novelist/
               director(人物调度) / tasks(任务板 ADR-028) / polish / consistency(规则引擎)
   forge/      构建层：seed/ingest(两种建书模式) engine+nodes(递归蓝图) ask(商讨轮)
               covenant(承诺账本 ADR-026) coherence/review(蓝图审查+人工闸门 ADR-024)
-  providers/  deepseek(唯一生成通道) / openai(兼容基类) / lmstudio(已停用，代码保留) / secrets / fake(测试)
+  providers/  单轨工厂 `providers.create`（见 docs/07 §2.3/2.4）：deepseek(唯一生成通道) /
+              openai(兼容基类) / qwen/kimi/glm/anthropic/ollama/vllm(预设) / custom / fake(测试) / secrets(.env+key)
   storage/    workspace(沙箱+原子写) checkpoint / indexdb
 docs/01-12   设计文档（01 概述 / 02 需求FR / 03 ADR / 06 数据契约 / 08 实现规划+里程碑状态
              / 10 Forge / 11 编码规范★ / 12 流程走查）

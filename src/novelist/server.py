@@ -166,6 +166,7 @@ def _advance(st, target: str) -> None:
 
 
 def make_provider(provider: str):
+    from .providers import create
     from .providers.fake import FakeProvider, ScriptedProvider
 
     if provider == "fake":
@@ -175,14 +176,4 @@ def make_provider(provider: str):
         return ScriptedProvider([
             {"final": "HTTP 生成的本章正文。\n苏晚立于山巅，望向远方的青冥山。"},
         ])
-    if provider == "lmstudio":
-        from .providers.lmstudio import LMStudioProvider
-
-        return LMStudioProvider()
-    if provider == "deepseek":
-        from .providers.deepseek import DeepSeekProvider
-
-        return DeepSeekProvider()
-    from .providers.openai import OpenAICompatibleProvider
-
-    return OpenAICompatibleProvider()
+    return create(provider)

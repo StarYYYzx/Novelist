@@ -289,7 +289,7 @@ def test_cli_roll(ws_factory, monkeypatch, tmp_path, capsys):
     ws, pid = ws_factory("proj-f4cli")
     _setup_rolled_project(ws, pid)
     monkeypatch.setattr("novelist.cli._make_cli_provider",
-                        lambda p: ScriptedProvider(_roll_script()))
+                        lambda p, **kw: ScriptedProvider(_roll_script()))
     monkeypatch.chdir(str(ws._abs("")))
     runner = CliRunner()
     result = runner.invoke(cli, ["forge", "roll", "2", pid, "--provider", "fake", "--no-gate"])

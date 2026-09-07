@@ -69,18 +69,35 @@ class EmbeddingProvider(Protocol):
 ```
 
 ### 2.3 适配器实现登记
-- 通过**插件注册表**注册：`register_provider(name, factory)`。
+- 通过**插件注册表**注册：`register_provider(name, factory)`；实例化统一走单一工厂
+  `providers.create(name, **kw)`（P0-2 归一，docs/11 §13 P0-2 已闭环）。**禁止在 cli 以 if/elif
+  硬编码 provider 分支**——新增 Provider = 实现 `LLMProvider` Protocol + 在
+  `providers/__init__.py` 注册工厂（唯一入口），命令层只透传 `--provider/--api-base/--api-key/--model`。
+- API Key 来源（`providers/secrets.py`）：**CLI 显式参数 > 环境变量 > 本机 `.env`**
+  （gitignored）。`custom` 支持用户手填任意 OpenAI 兼容端点的 base_url + key + model。
 - 每个适配器仅在**运行时加载**对应 SDK（可选依赖），避免冷启动加载全部。
 - `ProviderCapabilities` 不一致时的降级：例如某模型无 tool_calling → 编排器自动切换为"文本 + 后解析工具调用"策略（见 §2.5）。
 
-### 2.4 内置适配器（第一期）
-| 名称 | 对接 | 说明 |
-| --- | --- | --- |
-| `openai` | OpenAI 兼容 API | 亦覆盖多数兼容网关 |
-| `deepseek` | DeepSeek API | 中文写作性价比 |
-| `anthropic` | Claude API | 可对照 Claude Code 参考 |
-| `ollama` | 本地 Ollama | 本地开源模型 |
-| `vllm` | 本地 vLLM（OpenAI 协议） | 高性能本地推理 |
+### 2.4 内置适配器（现期登记，2026-09-07）
+命名预设统一按 `PRESETS` 维护默认 `base_url` / `model` / `key_env`；CLI 可用
+`--api-base/--api-key/--model` 逐项覆盖。云端（lmstudio/cloud 服务器）已停用。
+
+| 名称 | 对接 | 默认基础 URL / 模型 | Key 环境变量（.env 亦可） |
+| --- | --- | --- | --- |
+| `deepseek` | DeepSeek API（思考型，禁 pro，仅 v4-flash） | `https://api.deepseek.com` / `deepseek-v4-flash` | `DEEPSEEK_API_KEY`（兼容旧名 `DeepSeek-API-KEY`） |
+| `openai` | OpenAI 兼容 API | `https://api.openai.com/v1` / `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `qwen` | 阿里云百炼 DashScope 兼容模式 | `https://dashscope.aliyuncs.com/compatible-mode/v1` / `qwen-plus` | `DASHSCOPE_API_KEY`、`QWEN_API_KEY` |
+| `kimi` | 月之暗面 Moonshot | `https://api.moonshot.cn/v1` / `moonshot-v1-8k` | `MOONSHOT_API_KEY`、`KIMI_API_KEY` |
+| `glm` | 智谱 AI 开放平台 | `https://open.bigmodel.cn/api/paas/v4` / `glm-4-flash` | `ZHIPU_API_KEY`、`GLM_API_KEY` |
+| `anthropic` | Claude API | `https://api.anthropic.com` / `claude-3-5-sonnet` | `ANTHROPIC_API_KEY` |
+| `ollama` | 本地 Ollama（OpenAI 网关） | `http://localhost:11434/v1` | `OLLAMA_API_KEY` |
+| `vllm` | 本地 vLLM（OpenAI 协议） | `http://localhost:8000/v1` | `VLLM_API_KEY` |
+| `custom` | 任意 OpenAI 兼容端点，**用户自配** | 需显式 `--api-base/--api-key/--model` | 省略 key 时回退 `key_env`/`.env` |
+| `fake` / `scripted` | 确定性测试替身（不走网络，docs/09 §2.1） | — | — |
+
+**Key 存放（方案 A）**：API Key 永不落 git 跟踪文件。推荐写进工作区根
+`novel_workspace/.env` 或当前目录 `.env`（均已 gitignore），形如
+`DEEPSEEK_API_KEY=sk-...`；也可用启动时环境变量。优先级：CLI 显式参数 > 环境变量 > `.env`。
 
 ### 2.5 结构化输出解析与降级（ADR-006）
 1. 请求时置 `response_format=json_object`（若支持）。
@@ -224,8 +241,22 @@ novelist review <dir> 3 5          # 对单章做一致性审查
 novelist status <dir>              # 进度与统计
 novelist grant <dir>               # 处理待决门禁(审批/拒绝)
 novelist export <dir> --format md  # 导出发布包
-novelist server                     # 启动 HTTP 服务
+novelist forge seed <dir> ...      # 模式一：一句话/已有稿子 → bible+大纲+细纲
+novelist forge build <dir> ...     # 模式二：已有稿子/设定 → 精修
+novelist server                    # 启动 HTTP 服务
 ```
+涉及 LLM 的命令统一支持连接透传选项（P0-2）：
+```
+--provider <name>              # LLM 后端：fake/scripted/deepseek/openai/qwen/kimi/glm/
+                               #   anthropic/ollama/vllm/custom（默认 fake，见 §2.4）
+--api-key <key>                # 显式 API Key（优先级：值 > 环境变量 > .env）
+--api-base <url>               # 自定义 OpenAI 兼容 base_url（覆盖预设默认；custom 必填）
+--model <model>                # 覆盖该 provider 默认模型名
+```
+例：`novelist chapter <dir> 3 5 --provider deepseek --api-key sk-xxx`；
+或接任意中转网关 `--provider openai --api-base https://gw/... --model gpt-4o`；
+自定义端点 `--provider custom --api-base <url> --api-key <key> --model <model>`。
+未给 `--api-key` 时会回退环境变量 / `.env`（见 §2.4 Key 存放）。
 
 ### 6.2 HTTP REST（第二形态，Web 应用）
 ```

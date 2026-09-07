@@ -390,7 +390,7 @@ def test_cli_resume_build_branch(ws_factory, monkeypatch):
                                   "turns": [], "after_days": 0},
                      "decide": "done", "reason": "r"}, ensure_ascii=False)
     monkeypatch.setattr("novelist.cli._make_cli_provider",
-                        lambda p: ScriptedProvider([{"final": book}, {"final": vol}, {"final": ch}]))
+                        lambda p, **kw: ScriptedProvider([{"final": book}, {"final": vol}, {"final": ch}]))
     runner = CliRunner()
     monkeypatch.chdir(str(ws._abs("")))  # noqa: SLF001
     # 本测试验证 resume 分支而非审核闸门：全关开关（ADR-024）

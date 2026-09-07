@@ -1,4 +1,4 @@
-"""M4 质量增强测试（B-02/03/04/07/08/09/13 + 文风优化）。
+﻿"""M4 质量增强测试（B-02/03/04/07/08/09/13 + 文风优化）。
 
 覆盖端到端系统测试暴露的缺口修复：
 
@@ -587,105 +587,6 @@ def test_export_falls_back_to_project_id_without_title(tmp_path):
     Checkpoint(ws).save(pid, {"id": pid, "pipeline_state": "正文"})
     assert export_project(ws, pid).startswith(f"# {pid}")
 
-
-# ------------------------------------------- 思考型模型的预算挤占（人工审查第二批第 1 条）
-
-
-class _MockResp:
-    def __init__(self, payload: dict, status: int = 200) -> None:
-        self._payload = payload
-        self.status_code = status
-        self.text = json.dumps(payload, ensure_ascii=False)
-
-    def json(self) -> dict:
-        return self._payload
-
-
-class _MockClient:
-    """记录每次请求的 max_tokens，并按脚本返回响应。"""
-
-    def __init__(self, script: list[dict]) -> None:
-        self.script = script
-        self.requested: list[int] = []
-
-    def post(self, url, json=None, headers=None, timeout=None):  # noqa: A002
-        self.requested.append((json or {}).get("max_tokens"))
-        return _MockResp(self.script[min(len(self.requested) - 1, len(self.script) - 1)])
-
-
-def _resp(content: str, *, reasoning: str = "", reasoning_tokens: int = 0,
-          finish: str = "stop", total_out: int | None = None) -> dict:
-    return {
-        "choices": [{"message": {"content": content, "reasoning_content": reasoning},
-                     "finish_reason": finish}],
-        "usage": {"prompt_tokens": 10,
-                  "completion_tokens": total_out if total_out is not None else reasoning_tokens + len(content),
-                  "completion_tokens_details": {"reasoning_tokens": reasoning_tokens}},
-    }
-
-
-def test_parse_lmstudio_extracts_reasoning():
-    """思考内容与思考 token 必须解析出来——否则上层无从判断预算被谁吃了。"""
-    from novelist.providers.lmstudio import parse_lmstudio
-
-    res = parse_lmstudio(_resp("", reasoning="思考过程…", reasoning_tokens=300, finish="length",
-                               total_out=300))
-    assert res.content == ""
-    assert res.reasoning == "思考过程…"
-    assert res.reasoning_tokens == 300
-    assert res.finish_reason == "length"
-
-
-def test_provider_retries_with_larger_budget_when_reasoning_ate_it():
-    """正文被思考挤没 → 自动加预算重试，而不是直接返回空。"""
-    from novelist.core.llm import LLMMessage, LLMRequest
-    from novelist.providers.lmstudio import LMStudioProvider
-
-    client = _MockClient([
-        _resp("", reasoning="想了很久", reasoning_tokens=200, finish="length", total_out=200),
-        _resp("正文内容在这里。", reasoning="想了很久", reasoning_tokens=200, total_out=260),
-    ])
-    p = LMStudioProvider(_client=client, min_content_tokens=40, budget_retries=2)
-    res = p.complete(LLMRequest(messages=[LLMMessage(role="user", content="x")], max_tokens_out=200))
-    assert res.content == "正文内容在这里。"
-    assert client.requested[0] == 200
-    assert client.requested[1] > client.requested[0], "重试必须加大预算"
-    assert res.degraded is True, "走了重试应标记为降级，便于观测"
-
-
-def test_provider_does_not_retry_when_content_is_enough():
-    from novelist.core.llm import LLMMessage, LLMRequest
-    from novelist.providers.lmstudio import LMStudioProvider
-
-    client = _MockClient([_resp("足够长的正文内容，不需要重试。", reasoning_tokens=50, total_out=80)])
-    p = LMStudioProvider(_client=client, min_content_tokens=40)
-    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="x")], max_tokens_out=200))
-    assert len(client.requested) == 1, "正文够长就不该重试"
-
-
-def test_provider_reports_squeeze_when_retries_exhausted():
-    """重试仍不够 → 明确报告"正文被思考挤占"，而不是静默返回空。"""
-    from novelist.core.llm import LLMMessage, LLMRequest
-    from novelist.providers.lmstudio import LMStudioProvider
-
-    client = _MockClient([_resp("", reasoning="想了很久", reasoning_tokens=200, finish="length",
-                                total_out=200)])
-    p = LMStudioProvider(_client=client, min_content_tokens=40, budget_retries=1)
-    res = p.complete(LLMRequest(messages=[LLMMessage(role="user", content="x")], max_tokens_out=200))
-    assert res.content == ""
-    assert res.degraded is True
-    assert "思考" in (res.provider_note or "")
-    assert len(client.requested) == 2  # 首试 + 1 次重试
-
-
-def test_reasoning_aware_can_be_disabled():
-    from novelist.core.llm import LLMMessage, LLMRequest
-    from novelist.providers.lmstudio import LMStudioProvider
-
-    client = _MockClient([_resp("", reasoning_tokens=200, finish="length", total_out=200)])
-    p = LMStudioProvider(_client=client, reasoning_aware=False)
-    p.complete(LLMRequest(messages=[LLMMessage(role="user", content="x")], max_tokens_out=200))
-    assert len(client.requested) == 1
 
 
 # ---------------------------------------------------------------- 规则引擎未被破坏

@@ -120,7 +120,7 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
 ## 9. Provider 与扩展点
 
 - **R9.1 单轨注册**：新增 provider = 实现 Protocol + 在 `providers/__init__.py` REGISTRY 注册工厂
-  （一处）；**禁止**在 cli 里加 if/elif 分支（现状双轨制是债务，§13 P0-2 整改）。
+（一处）；**禁止**在 cli 里加 if/elif 分支（已归一：cli 经 `providers.create(name, **kw)`，§13 P0-2 已闭环，2026-09-07）。
 - **R9.2 测试替身**：`FakeProvider`（固定回复）/ `ScriptedProvider`（脚本化工具调用序列）覆盖全部
   单测需求；新增 provider 行为必须同步补 fake 的等价能力。
 - **R9.3 Genre Pack 是数据不是代码**：新类型 = `forge/genres/*.json` 一个文件，禁止为此改 Python。
@@ -186,14 +186,20 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
    属于功能提交，不混入重构提交）。
 
 **P0-2 Provider 双轨制归一（providers/__init__.py REGISTRY 死代码 vs cli.py:352 `_make_cli_provider`）**
+✅ **已完成（2026-09-07）**——PROVIDER 单轨注册闭环：
 
 现状：REGISTRY/register_provider/get_provider 定义后零调用方；CLI 用 if/elif 硬编码 5 个 provider。
 
 改法：
-1. `providers/__init__.py` 底部实际执行注册（fake/scripted/deepseek/lmstudio/openai 各一个工厂）；
-2. `_make_cli_provider` 改为 `providers.create(name, **kw)`（查 REGISTRY + KeyError 转友好提示）；
+1. `providers/__init__.py` 底部实际执行注册（fake/scripted/deepseek/openai/qwen/kimi/glm/anthropic/ollama/vllm/custom 各一个工厂；`PRESETS` 登记各预设默认 base_url/model/key_env）；
+2. `_make_cli_provider` 改为 `providers.create(name, api_key=, api_base=, model=)`（查 REGISTRY + KeyError 转友好提示）；
 3. 删除 `providers/base.py`（只有 docstring，8 行名不副实），注册表说明并入 `__init__.py` docstring；
-4. 新 provider 只写一处。
+4. 命令层经 `ProviderConnOpts` 共享选项统一透传 `--api-key/--api-base/--model`（cli.py）；server.py 改为 `make_provider` → `providers.create`；
+5. **lmstudio 停用**：删除 `providers/lmstudio.py`、`tests/test_lmstudio.py`（含 test_m4 中 lmstudio 用例）；云端/本地 LM-Studio 不再生成；
+6. **Key 集中管理（方案 A）**：`providers/secrets.py` 新增 `load_env_files()` 注入 `.env`（gitignored），`resolve_api_key` 优先级 = CLI 显式参数 > 环境变量 > `.env`；`mask_secret`/`redact_message` 防泄漏。
+7. 新增测试：`tests/test_providers_factory.py`（create/预设/custom/.env/优先级）。
+
+验收（2026-09-07）：`pytest tests/test_providers_factory.py tests/test_providers_deepseek.py -q` → 35 passed；全量 `-m 'not slow'` → 876 passed。
 
 **P0-3 Workspace 公共路径 API（`_abs` 被 21 文件外部调用 42 次）**
 
@@ -263,7 +269,7 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | 项 | 状态 | 契机 |
 | --- | --- | --- |
 | P0-1 produce_chapter 拆解 | 待做 | M3m T2 |
-| P0-2 Provider 单轨 | 待做 | 任意批次 / 独立 refactor |
+| P0-2 Provider 单轨 | ✅ 已完成（2026-09-07） | 见本节 P0-2 改法/验收 |
 | P0-3 ws.path() | 待做 | 独立 refactor（机械替换） |
 | P1-4 异常归位 | 待做 | 独立 refactor（低风险） |
 | P1-5 conftest | 待做 | M3m T1 |

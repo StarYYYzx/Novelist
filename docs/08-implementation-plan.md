@@ -981,10 +981,10 @@ _make_cli_provider` 用 if/elif 自行装配，未走注册表。多厂商接入
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| X1 | **Provider 统一装配**：清偿 P0-2（REGISTRY 单轨 + `providers.create()`，删 base.py 仅 docstring 文件）+ `ProviderConfig` 加多厂商密钥段（`api_keys: {name: key}`，密钥 gitignored + .env 加载，不入库） | 待做 |
-| X2 | **原生厂商适配器**：Anthropic（Claude）/ Google（Gemini）/ 智谱（GLM）/ 月之暗面（Kimi）各实现 `LLMProvider` Protocol（docs/07 §2.3/§2.4）；OpenAI 兼容厂商（DeepSeek/通义/OpenRouter 等）复用 `OpenAICompatibleProvider` + base_url，零新增适配器 | 待做 |
-| X3 | **能力矩阵与运行时切换**：模型能力注册（上下文长度/思考型标记/embedding 支持/成本档，本地 9B 思考关不掉的教训入库）；`provider@model` 语法；CLI `--provider` 覆盖全部命令；primary→fallback 失败切换链；embedding provider 独立可配 | 待做 |
-| X4 | **验收**：≥3 家真实云厂商各跑通 ≥1 章；同一本书运行中切换厂商续写不丢上下文（bible/细纲/记忆已落盘，切换只换生成后端）；密钥经 gitignored 配置注入 | 待做 |
+| X1 | **Provider 统一装配**：清偿 P0-2（REGISTRY 单轨 + `providers.create()`，删 base.py 仅 docstring 文件）+ `ProviderConfig` 加多厂商密钥段（`api_keys: {name: key}`，密钥 gitignored + .env 加载，不入库） | ✅ 完成（2026-09-07，X2 预设一并落地） |
+| X2 | **厂商适配器（预设化）**：DeepSeek/OpenAI/Qwen/Kimi/GLM/Anthropic/Ollama/vLLM 统一走 `OpenAICompatibleProvider` + `PRESETS`（base_url/model/key_env，docs/07 §2.4）；`custom` 支持用户手填任意 OpenAI 兼容端点；`providers/secrets.py` 统一 .env/key 注入。原生非 OpenAI 协议厂商（Gemini 原生等）留作后续 | ✅ OpenAI 兼容预设化完成；原生非兼容厂商待做 |
+| X3 | **能力矩阵与运行时切换**：模型能力注册（上下文长度/思考型标记/embedding 支持/成本档）与 `provider@model` 语法、primary→fallback 失败切换链未做 | 部分：`--provider` 已覆盖全部命令 + `--api-base/--api-key/--model` 透传；能力矩阵/fallback 链待做 |
+| X4 | **验收**：≥3 家真实云厂商各跑通 ≥1 章；同一本书运行中切换厂商续写不丢上下文（bible/细纲/记忆已落盘，切换只换生成后端）；密钥经 gitignored 配置注入 | 部分：密钥经 gitignored .env 注入已验证（单测）；多厂商真机跑章待做 |
 
 验收：A11（多厂商可用，docs/02 §5）；NFR-2（Provider 插件化）实跑兑现。
 

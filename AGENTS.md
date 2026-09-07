@@ -2,6 +2,8 @@
 
 > **接手必读**：`docs/13-ai-collab-guide.md`（开发要点——模型接入纪律、协作流程、待办优先级、已知坑）。
 > 2026-09-06 拍板：云端服务器与本地 LM-Studio 均已停用，一切生成调用走 DeepSeek API（deepseek-v4-flash）。
+> 2026-09-07：Provider 接入可扩展——`--provider` 支持多主流模型（openai/qwen/kimi/glm/anthropic/ollama/vllm/custom，
+> 经 `providers.create` 单轨工厂 + PRESETS，见 docs/07 §2.4）；API Key 走环境变量 / gitignored `.env`（docs/07 §2.4 Key 存放）。
 
 Novelist 是多 Agent 长篇小说撰写系统。设计文档先行，当前处于**按 M0–M4 里程碑推进实现**阶段（M0–M2 已完成，M3 进行中）。
 
@@ -24,7 +26,10 @@ Novelist 是多 Agent 长篇小说撰写系统。设计文档先行，当前处�
 - `forge/`：构建层（`docs/10`）。`state`（Blueprint/provenance）、`slots`（槽位与缺口）、`ask` + `io_console`
   （分轮商讨协议与终端通道）、`seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、
   `genres`（类型包 Genre Pack 数据）、`validate` + `report`（契约校验与构建报告）。
-- `providers/`：`openai`（OpenAI 兼容，含审核拦截识别）、`deepseek`、`lmstudio`、`fake`（测试替身）。
+- `providers/`：`openai`（OpenAI 兼容基类，含审核拦截识别）、`deepseek`（生成通道）、
+  `qwen`/`kimi`/`glm`/`anthropic`/`ollama`/`vllm`/`custom`（PRESETS 预设）、`fake`（测试替身）、
+  `secrets`（.env + key）。**单轨注册**：实例化统一走 `providers.create(name, **kw)`（P0-2 已闭环）。
+  云端服务器与本地 LM-Studio 均已停用删码；默认生成走 DeepSeek API（deepseek-v4-flash）。
 - `storage/`：`workspace`（沙箱 + 原子写）、`checkpoint`（双轨快照）、`indexdb`（SQLite 辅助索引）、`models`（Schema 校验）。
 - `tools/`：`filesys` / `writing` / `memory_tools` / `governance`，经 `build_registry()` 装配。
 - `cli.py`（click）、`server.py`（FastAPI）、`config.py`（TOML 配置）。

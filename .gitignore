@@ -50,6 +50,11 @@ screen1.png
 # DeepSeek API key（明文，绝不入库）
 novel_workspace/_harness/.deepseek_key
 
+# 多服务商 API key 集中存放（方案 A，明文；一行 KEY=VAL，绝不入库）
+# 搜索路径见 providers/secrets.py load_env_files
+novel_workspace/.env
+.env
+
 # 新书 5 章测试运行日志
 novel_workspace/_harness/firstbook5_log.jsonl
 
