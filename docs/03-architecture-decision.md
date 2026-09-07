@@ -591,6 +591,77 @@
   orchestrator 推进卷/章的接线按 docs/11 §13 结合真机验证阶段一起做**，避免在整改区叠债务。
 - **实现（2026-09-06）**：`core/tasks.py`；测试 `tests/test_m23_tasks.py` 8 例全绿。
 
+### ADR-029 设定集人工反馈通道（人工意见 → 字段级定位 → 审批 → 原子写回 · 设计定稿 2026-09-07，**批次A M3z**）
+
+> 背景：创作方向确定为"系统撰写初稿、人工修改得正文"。但 bible 迄今只允许受控补喂（character_enrich），
+> 人工想**按自己口径修正设定**时，没有"把自由语意见精确落到对应 JSON 字段"的一等通道；直接手改 JSON
+> 会绕过 schema 校验、provenance 与 covenant 门禁。本 ADR 借鉴 character_enrich"提案→pending→入档"
+> 范式，但**复用 ApprovalQueue 作为唯一人工确认队列**（2026-09-07 拍板）。
+
+- **形态**：`core/bible_feedback.py`。一条修改请求 = `EditOp`：`{id, file, path, op(add|edit|delete|rename),
+  value, reason, sensitive, status(draft|pending|applied|rejected), created_at}`。
+- **目标文件白名单**：`file` 必须是 `core/context.load_bible()` 枚举出的 bible 文件（世界观/人物/文风/地点/
+  线索/道具/技能/设定/世界状态等）；`path` 必须命中 **bible 可改性字段清单**（`bible_editable`：声明每类
+  文件允许人工改的字段 + 只读保护区）。**只读保护区仅锁结构性身份/派生字段与实然状态**（id、is_protagonist、
+  登场记录、主角约束、time 轴）——这些真不能改；**世界铁律/已提交线索属 covenant 而非只读**，是"可改但标
+  sensitive 强制人工确认"（见敏感检测），保证"最终设定集与用户一致"不被只读锁死。
+- **解析**：`FeedbackParser` 收人工自由语 → LLM（判断任务、开 thinking，遵循 providers 单轨纪律）拆成 op 集 →
+  确定性校验（文件名白名单 + 路径可改性 + 值类型）→ 生成 `EditOp`；解析输出无 JSON/坏 JSON 视为抖动自动重试，
+  结构性错误（空意见/审核拦截）直接报错——解析不出就明确提示用户补述，不静默跳过。
+- **审批队列（复用 ApprovalQueue）**：每个 op 以 `tool="bible_feedback"、params={op_id,...}` 提交到
+  `ApprovalQueue`（persist_dir=项目 `workspace/feedback`，pending_approvals.json 持久化）；**批次A 一律待人工确认**
+  （最小风险），后续再逐步开放平凡改动的 auto-apply 白名单。
+- **敏感检测**：op 命中 covenant 承诺账本（世界铁律 worldview.rules / 已提交情节线 thread.status、committed /
+  time 轴 / 任意 delete）→ 标 `sensitive`，人工确认时高亮提示——落实"触碰 covenant 承诺账本必须人工 approval"
+  的硬约束（ADR-026 衔接）。
+- **写回**：`feedback --apply <id>` → 先 `ApprovalQueue.decide(allow=True)` 成功 → 再执行 `Workspace.write_json`
+  原子写（临时文件 + rename，docs/06 §7）+ 写入幂等（已 applied 不重写）；失败回滚并留 error 标记；
+  `--deny <id>` 标记 rejected、不写。provenance 落在 ops.json 审计（每条写回记录 origin=feedback）。
+- **CLI**：`feedback <dir>`（交互收意见或 `--opinion`）/ `--apply <id>` / `--deny <id>` / `--list`；
+  解析走 `--provider`（复用 providers 单轨 + api-key/base/model 透传），写回不调 LLM。
+- **实现（批次A，M3z，2026-09-07）**：`core/bible_feedback.py` + `cli feedback` + bible 可改性字段清单
+  + `tests/test_m3z_feedback.py`（17 例全绿）。
+
+### ADR-030 草稿溯源（Draft Provenance · 设计定稿 2026-09-07，**批次B 待编码**）
+
+> 背景：批次 C 需要"识别用户改了什么"，前提是知道"这份草稿当时基于什么生成的"。现 `build_system_prompt`/
+> `build_chapter_context`（core/context.py）已返回 `ChapterContext.meta={vol, ch, cast_ids}`，只要把它扩展成
+> **生成时快照清单**落盘即可，不新增抽象。
+
+- **形态**：每章草稿一份源清单 `drafts/chapters/<vol>-<ch>.src.json`，或并入细纲前言的 front-matter。
+  记载 `{vol, ch, gist_hash, cast_ids(出场人物卡), thread_ids(注入的线索), rules_injected(世界铁律条数),
+  memory_ids(召回记忆), props/style_refs, target_floor, provider, model, prompt_hash, event_seq, ts}`。
+- **时机**：`produce_chapter` 生成正文时，把 `ChapterContext.meta` + 实际注入项写一份快照（原子写）。
+- **用途**：① 向用户汇报"本章基于哪些内容生成"（CLI `draft show <vol:ch> --sources`）；② 批次 C 的
+  diff 基线与归因数据源；③ 续写时保证"下一章承认上一章已发生的事实"。
+- **实现（批次B）**：`core/draft_provenance.py` + 在 `chapter`/事件循环写草稿处接线 + CLI 汇报。复用
+  forge Blueprint 的 provenance 思路（ADR-017/018），但不侵入正文文件本身。
+
+### ADR-031 人工修订识别 + 归因回写（Edit Attribution & Writeback · 设计定稿 2026-09-07，**批次C 待编码**）
+
+> 背景：人工把草稿改成了正文，系统需要知道"这些改动哪些影响设定/事实/记忆"，再决定是否回写。不识别就丢
+> 失了人工改动的唯一权威信号（人改过的地方就是该落定的 canon）。
+
+- **形态**：`draft revise <vol:ch>`——以该章草稿源清单（ADR-030）为基线，对人工改后正文做**段落级 diff**
+  （difflib.SequenceMatcher），把改动聚成 `ChangeSet`：每段 `{kind: added|removed|modified, text,
+  attribution}`。
+- **归因**：LLM（判断任务、开 thinking）把每段改动分类并映射到目标文件——
+  a) 纯文风润色（不触发回写）；b) 剧情/事实变更（回写 memory，ADR-013 路径）；
+  c) 新增/改写设定（**复用 ADR-029 的 EditOp 管线**进审批：新人物→characters.json add，改口风→style 等）；
+  d) 线索状态变化（更新 plot_threads，敏感）。
+- **门禁**：命中 covenant（world rules / 已提交 thread / 记忆冲突）→ 复用 ApprovalQueue 强制人工确认；
+  平凡防抖类（纯排版）直接忽略。每条回写同样走 ADR-029 的原子写 + 审计。
+- **实现（批次C）**：`core/draft_revise.py`（diff + 归因 + 复用 bible_feedback.apply）+ `cli draft revise`；
+  diff 与归因结果需可审（ChangeSet 落 `workspace/revise/<vol>-<ch>.json`）。耦合点：改草稿不受门禁，
+  **回写到圣经/记忆才受门禁**，与 ADR-029 一致。
+
+###（草稿占位）用户画像 memory（User-Profile Memory · Backlog，待立项）
+
+> 方向（延续批次 B/C 的输出）：跨项目的用户级记忆，沉淀文风、修改偏好、工具使用习惯；批次 C 的修订历史中
+> 反复人工改的行为可蒸馏成该用户的 craft 偏好/禁用词，特定场景可固化为可注入的 skill（对应 `craft/cards/*.md`
+> 注入机制）。落点：**全局 gitignored 用户级目录**（`~/.novelist/user_profile/`，跨项目），与项目工作区里的
+> 设定集分开；实现前单独立项评估 schema 与隐私边界。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |

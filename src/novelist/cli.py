@@ -523,6 +523,123 @@ def grant(ctx: click.Context, directory: str | None, approve_id: str | None, den
         click.echo(f"    params={r.params}")
 
 
+def _feedback_preview(value) -> str:
+    try:
+        s = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = str(value)
+    return s[:80] + ("…" if len(s) > 80 else "")
+
+
+def _print_feedback_ops(store, queue) -> None:
+    ops = store.list_ops()
+    pending_params = {r.params.get("op_id"): r.id for r in queue.list_pending()}
+    if not ops and not pending_params:
+        click.echo("（暂无设定集反馈 op）")
+        return
+    for op in ops:
+        apv = pending_params.get(op.id, "")
+        click.echo(f"op {op.id}  {op.status}" + (" [①pending→审批]" if apv else "")
+                   + (f"  审批:{apv}" if apv else "")
+                   + (f"  [敏感]" if op.sensitive else "")
+                   + f"  {op.file} {op.op} {op.target}"
+                   + (f".{op.field}" if op.field else "")
+                   + (f" → {_feedback_preview(op.value)}" if op.op in ("edit", "add") else "")
+                   + (f"  ·{op.reason}" if op.reason else "")
+                   + (f"  ✗{op.error}" if op.error else ""))
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="fake",
+              help="LLM provider：fake/scripted/deepseek/...（意见拆解用）")
+@click.option("--opinion", "opinion", default=None,
+              help="设定修改意见（自由语；不传则交互录入）")
+@click.option("--list", "do_list", is_flag=True, default=False,
+              help="列出本项目的反馈 op 与待决审批")
+@click.option("--apply", "apply_id", default=None,
+              help="审批通过并原子写回指定 op id")
+@click.option("--deny", "deny_id", default=None,
+              help="拒绝指定 op id（不写回）")
+@_apply_provider_conn
+@click.pass_context
+def feedback(ctx: click.Context, directory: str | None, provider: str,
+             opinion: str | None, do_list: bool, apply_id: str | None,
+             deny_id: str | None, api_key: str | None, api_base: str | None,
+             model: str | None) -> None:
+    """设定集人工反馈通道（ADR-029·批次A M3z）：意见→字段级定位→审批→原子写回。
+
+    解析用 LLM（需 --provider），可结合 --api-key/--api-base/--model 指定厂商；
+    写回不调 LLM。敏感改动（世界铁律/已提交线索/删除）强制人工确认。
+    """
+    from .core.approval import ApprovalQueue
+    from .core.bible_feedback import (FeedbackError, FeedbackParser, apply_feedback,
+                                      feedback_persist_dir, load_store)
+
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
+    store = load_store(ws, project_id)
+    persist = feedback_persist_dir(ws, project_id)
+    queue = ApprovalQueue.load_persisted(persist_dir=persist)
+    _session = type("S", (), {"agent": "cli"})()
+
+    if do_list:
+        _print_feedback_ops(store, queue)
+        return
+
+    if apply_id or deny_id:
+        target = apply_id or deny_id
+        allow = bool(apply_id)
+        if store.get(target) is None:
+            raise click.ClickException(f"feedback op {target} not found in store")
+        req = next((r for r in queue.list_pending() if r.params.get("op_id") == target), None)
+        if req is not None:
+            queue.decide(req.id, allow=allow)
+        elif allow:
+            queue.decide(target, allow=True)
+        if allow:
+            op = store.get(target)
+            try:
+                applied = apply_feedback(ws, project_id, op)
+            except FeedbackError as e:
+                store.mark(target, "rejected", error=str(e))
+                raise click.ClickException(f"feedback 写回失败（已拒绝并留痕）：{e}") from e
+            store.mark(target, "applied", applied_at=applied.applied_at)
+            click.echo(f"applied {target}: {op.file} {op.op} {op.target}"
+                       + (f"  [敏感·已人工确认]" if op.sensitive else ""))
+        else:
+            store.mark(target, "rejected")
+            click.echo(f"rejected {target}")
+        return
+
+    if opinion is None:
+        opinion = click.prompt("请输入设定修改意见", type=str) or ""
+    opinion = str(opinion).strip()
+    if not opinion:
+        raise click.ClickException("意见为空")
+    prov = _make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model)
+    parser = FeedbackParser(prov)
+    try:
+        ops = parser.parse(opinion)
+    except FeedbackError as e:
+        raise click.ClickException(f"意见解析失败：{e}") from e
+    if not ops:
+        click.echo("未能从意见拆出可执行的设定修改（写作/排版类意见会被忽略）。")
+        return
+    for op in ops:
+        queue.submit(
+            tool="bible_feedback", session=_session,
+            params={"op_id": op.id, "file": op.file, "op": op.op, "target": op.target,
+                    "field": op.field, "value": _feedback_preview(op.value), "reason": op.reason},
+            reason=f"[bible_feedback] {op.file} {op.op} {op.target}"
+                   + (f".{op.field}：{op.reason}" if op.reason else ""),
+        )
+        op.status = "pending"
+    store.add(ops)
+    click.echo(f"拆出 {len(ops)} 条修改，已提交审批（用 feedback <dir> --apply <id> 写回，"
+               f"--deny <id> 拒绝）：")
+    _print_feedback_ops(store, queue)
+
+
 @cli.command()
 @click.argument("directory", required=False, default=None)
 @click.option("--format", "fmt", type=click.Choice(["markdown", "docx"]), default="markdown",

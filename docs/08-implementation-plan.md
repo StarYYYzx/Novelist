@@ -956,6 +956,33 @@ fame5 10 份实测干净且幂等（fixed=0），tests/test_gist_normalize.py 5 
   `can_start` 只做依赖就绪（确定性）；`precheck` 注入承接 covenant gate（不内置 LLM）。
 - 测试 8 例全绿。ADR-028 见 docs/03；docs/06 §4.1 数据设计已补任务层。
 
+### M3z — 设定集人工反馈通道（ADR-029 · 2026-09-07 拍板 / ✅ 批次A 代码+测试完成）
+
+**需求**：创作方向定为"系统写初稿、人工改正文"。设定圣经需有一条"人工自由语意见 → 精确落到对应 JSON
+字段"的一等通道，且经 covenant 门禁（复用 ApprovalQueue）。ADR-030（草稿溯源）/ADR-031（人工修订识别+
+归因回写）是同方向的后续批次 B/C，与此共享 EditOp 管线。
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| A1 | `core/bible_feedback.py`：可改性字段清单 `BIBLE_EDITABLE`（只读锁=结构性身份/实然状态；世界铁律/已提交线索=covenant 非只读） + `EditOp` + 确定性校验/定位 + 敏感判定 | ✅ |
+| A2 | `FeedbackParser`（LLM 判断开 thinking，providers 单轨）意见→op 集；无 JSON/坏 JSON 自动重试；结构性错误明确报错不静默跳过 | ✅ |
+| A3 | `FeedbackStore`（`workspace/feedback/ops.json` 持久化 + 审计留痕）+ ApprovalQueue 接入（persist_dir 复用） | ✅ |
+| A4 | 原子写回 `apply_op`/`apply_feedback`（临时文件+rename、幂等、回滚留 error）+ provenance | ✅ |
+| A5 | CLI `feedback`：parse（`--opinion`/交互）· `--list` · `--apply` · `--deny`，--provider/api-key/base/model 透传 | ✅ |
+| A6 | 测试 `test_m3z_feedback.py`：白名单/只读拒绝/定位/嵌套/add-mint/delete/object/幂等/sensitive/解析重试/store 持久化/队列集成/CLI | ✅ 17 例全绿 |
+
+**落地记录（2026-09-07）**：批次 A 完成。关键权衡：世界铁律 ≠ 只读，而是"可改 + sensitive 强制人工确认"
+（否则"最终设定集与用户一致"被只读锁死）；值类型限定标量/扁平列表防 schema 破坏；add 自动铸 id + 软
+provenance 标记。
+
+**后续批次（ADR-030/031 + 用户画像）**：
+- **批次B（ADR-030 草稿溯源）**：每章草稿 `drafts/chapters/<vol>-<ch>.src.json` 源清单（cast/thread/memory/
+  rules/prompt hash/provider），供 `draft show --sources` 汇报 + 批次 C 基线。
+- **批次C（ADR-031 修订识别+归因回写）**：`draft revise <vol:ch>` 段落级 diff → 归因 → 复用 EditOp 管线
+  进审批回写；"改草稿不受门禁，回写圣经/记忆才受门禁"。
+- **Backlog（用户画像 memory）**：全局 gitignored 用户级目录沉淀文风/修改偏好，从批次 C 修订历史蒸馏
+  craft 偏好/skill；见 docs/03 ADR-030 尾部与 docs/08 §6。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

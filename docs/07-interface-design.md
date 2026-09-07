@@ -240,6 +240,10 @@ novelist chapter <dir> 3 5         # 生成/续写第3卷第5章
 novelist review <dir> 3 5          # 对单章做一致性审查
 novelist status <dir>              # 进度与统计
 novelist grant <dir>               # 处理待决门禁(审批/拒绝)
+novelist feedback <dir>            # 设定集人工反馈：意见→字段级定位→审批→原子写回（ADR-029）
+novelist feedback <dir> --list     # 列出本项目的反馈 op 与待决审批
+novelist feedback <dir> --apply <id>  # 审批通过并原子写回该 op
+novelist feedback <dir> --deny <id>   # 拒绝该 op（不写回）
 novelist export <dir> --format md  # 导出发布包
 novelist forge seed <dir> ...      # 模式一：一句话/已有稿子 → bible+大纲+细纲
 novelist forge build <dir> ...     # 模式二：已有稿子/设定 → 精修
@@ -257,6 +261,15 @@ novelist server                    # 启动 HTTP 服务
 或接任意中转网关 `--provider openai --api-base https://gw/... --model gpt-4o`；
 自定义端点 `--provider custom --api-base <url> --api-key <key> --model <model>`。
 未给 `--api-key` 时会回退环境变量 / `.env`（见 §2.4 Key 存放）。
+
+**设定集人工反馈（ADR-029 · M3z 批次A）**：`feedback` 把自由语意见拆成字段级修改指令（`EditOp`），
+经 `ApprovalQueue` 审批后原子写回 bible，确保"最终设定集与用户一致"不绕过 schema/门禁。
+- 解析走 `--provider/--api-key/--api-base/--model`（判断任务开 thinking）；写回不调 LLM。
+- 可改性白名单 `BIBLE_EDITABLE`（core/bible_feedback.py）：只读锁结构性身份/实然状态（id、
+  is_protagonist、主角约束、time 轴）；世界铁律/已提交线索=covenant，可改但 `sensitive` 强制人工确认。
+- 每条写回留 provenance 审计（`workspace/feedback/ops.json`）；失败回滚并在 op 留 error。
+- 例：`novelist feedback <dir> --provider deepseek "把苏晚改成20岁，性格再稳重点"` →
+  列出 ops → `novelist feedback <dir> --apply <id>` 写回 / `--deny <id>` 拒绝。
 
 ### 6.2 HTTP REST（第二形态，Web 应用）
 ```
