@@ -34,6 +34,10 @@
   broadcast 重试循环（异常/blocked/空 content/空 cast）兜底，不要删。
 - 生成预算经验值：正文 6000 token 起；云端同款 ctx 16384 的预算夹击问题（思考吃光 vs OOM）随云端停用基本消解。
 
+## 1.5 命令手册
+
+全部 CLI/forge/docx 命令、参数与全链路示例：**`docs/命令手册.md`**。
+
 ## 2. 运行环境（Windows 本机）
 
 ```bash
