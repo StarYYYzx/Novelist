@@ -461,6 +461,61 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
+@click.argument("chapter", required=False, default=None)
+@click.option("--text", "show_text", is_flag=True, default=False,
+              help="额外打印草稿正文")
+@click.pass_context
+def draft(ctx: click.Context, directory: str | None, chapter: str | None,
+          show_text: bool) -> None:
+    """查看单章草稿的源清单（ADR-030，M3z 批次 B，F2.6）。
+
+    汇报该草稿生成时依赖的源：人物卡 / 线索 / 世界规则 / 设定 / 记忆基线 /
+    prompt 指纹 / 血统 provider。加 `--text` 连草稿正文一起打印。
+
+    不传 CHAPTER（缺省）时列出项目已有全部源清单所在章节。
+    CHAPTER 形如 `1-3` 或 `1:3`.
+    """
+    import json as _json
+
+    from novelist.core.draft_provenance import read_source_list, render_source_report
+
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
+    if not chapter:
+        # 无参数：列全部已有源清单章节
+        chunks = ws.project_dir(project_id) / "drafts" / "chapters"
+        rows = []
+        if chunks.exists():
+            for f in sorted(chunks.glob("*.src.json")):
+                src = _json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+                rows.append((f.stem.replace(".src", ""),
+                             src.get("generated_at"), src.get("content_chars")))
+        if not rows:
+            click.echo("（无任何草稿源清单）")
+            return
+        click.echo("已有草稿源清单：")
+        for key, ts, n in rows:
+            click.echo(f"  {key} · 生成于 {ts} · {n} 字符")
+        return
+
+    chapter = chapter.strip().replace(":", "-")
+    parts = chapter.split("-")
+    if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+        raise click.ClickException(f"章号应为 `卷-章` 或 `卷:章`，收到 {chapter!r}")
+    vol, ch = int(parts[0]), int(parts[1])
+
+    src = read_source_list(ws, project_id, vol, ch)
+    click.echo(render_source_report(src))
+    if show_text:
+        draft = ws.draft_path(project_id, vol, ch)
+        if draft.exists():
+            click.echo("\n---- 草稿正文 ----")
+            click.echo(draft.read_text(encoding="utf-8"))
+        else:
+            click.echo("\n（草稿文件不存在，仅源清单）")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
 @click.option("--provider", default="deepseek",
               help="审校用的 LLM provider；默认 deepseek（fake/scripted 均可用）。")
 @_apply_provider_conn

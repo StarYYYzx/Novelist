@@ -2539,6 +2539,22 @@ def produce_chapter(
                             world_now=pending_tick.get("now"),
                             rel_pairs=rel_pairs, rel_proposals=rel_proposals)
 
+    # ---- ADR-030（M3z 批次 B，F2.6）：成稿后落草稿源清单快照 ----
+    # 依赖"生成时装配的 prompt 指纹 + 本章最终正文"，供人工改稿后修订归因（ADR-031）。
+    # 单独 try：溯源失败绝不影响草稿已落盘（H1 增强层纪律）。
+    try:
+        if final or draft.exists():
+            from .draft_provenance import build_source_list, write_source_list
+
+            _final_txt = final if mode == "direct" else (
+                draft.read_text(encoding="utf-8") if draft.exists() else final)
+            _src = build_source_list(ws, project_id, vol, ch, content=_final_txt,
+                                     system_prompt=system_prompt or "", goal=goal,
+                                     provider=provider, mode=mode)
+            write_source_list(ws, project_id, vol, ch, _src)
+    except Exception:  # noqa: BLE001 - 溯源失败不影响成稿
+        pass
+
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
                             completeness=comp, polish=polish_res, chronicle=chronicle,

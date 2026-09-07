@@ -622,20 +622,25 @@
 - **实现（批次A，M3z，2026-09-07）**：`core/bible_feedback.py` + `cli feedback` + bible 可改性字段清单
   + `tests/test_m3z_feedback.py`（17 例全绿）。
 
-### ADR-030 草稿溯源（Draft Provenance · 设计定稿 2026-09-07，**批次B 待编码**）
+### ADR-030 草稿溯源（Draft Provenance · 设计定稿 2026-09-07，**批次B 已完成编码**）
 
 > 背景：批次 C 需要"识别用户改了什么"，前提是知道"这份草稿当时基于什么生成的"。现 `build_system_prompt`/
 > `build_chapter_context`（core/context.py）已返回 `ChapterContext.meta={vol, ch, cast_ids}`，只要把它扩展成
 > **生成时快照清单**落盘即可，不新增抽象。
 
-- **形态**：每章草稿一份源清单 `drafts/chapters/<vol>-<ch>.src.json`，或并入细纲前言的 front-matter。
-  记载 `{vol, ch, gist_hash, cast_ids(出场人物卡), thread_ids(注入的线索), rules_injected(世界铁律条数),
-  memory_ids(召回记忆), props/style_refs, target_floor, provider, model, prompt_hash, event_seq, ts}`。
-- **时机**：`produce_chapter` 生成正文时，把 `ChapterContext.meta` + 实际注入项写一份快照（原子写）。
-- **用途**：① 向用户汇报"本章基于哪些内容生成"（CLI `draft show <vol:ch> --sources`）；② 批次 C 的
+- **形态**：每章草稿一份源清单 `drafts/chapters/<vol>-<ch>.src.json`（与 `<vol>-<ch>.md` 同目录平行）。
+  实际结构（`core/draft_provenance.py`，只读事实源 + 确定性重算 cast，**零额外 LLM**）：
+  `{version, chapter:"<vol>-<ch>", vol, ch, generated_at, content_chars, mode, provider, model,
+  prompt_fingerprint(sha256=systep+goal+正文), characters[{id,name}], plot_threads[{id,name,status}],
+  world_rules[{id,text}], power_system_levels, settings[], memory{recent_events, fragment_count,
+  this_chapter_refs}}`。
+- **时机**：`produce_chapter` 成功出口（正文落盘后）原子写一份快照；单独 try——溯源失败绝不影响草稿已落盘。
+- **用途**：① 向用户汇报"本章基于哪些内容生成"（CLI `draft [DIR] [vol:ch] [--text]`）；② 批次 C 的
   diff 基线与归因数据源；③ 续写时保证"下一章承认上一章已发生的事实"。
-- **实现（批次B）**：`core/draft_provenance.py` + 在 `chapter`/事件循环写草稿处接线 + CLI 汇报。复用
-  forge Blueprint 的 provenance 思路（ADR-017/018），但不侵入正文文件本身。
+- **实现（批次B）**：`core/draft_provenance.py`（build/write/read/render）+ `produce_chapter` 接线 +
+  CLI `draft`；复用 forge Blueprint 的 provenance 思路（ADR-017/018），但不侵入正文文件本身。
+- **测试（批次B）**：`tests/test_m3zb_draft_provenance.py`——聚合/指纹变化/空工作区健壮/往返路径/渲染/接线
+  成稿自动落源清单，共 8 例全绿。
 
 ### ADR-031 人工修订识别 + 归因回写（Edit Attribution & Writeback · 设计定稿 2026-09-07，**批次C 待编码**）
 

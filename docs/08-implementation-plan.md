@@ -976,10 +976,12 @@ fame5 10 份实测干净且幂等（fixed=0），tests/test_gist_normalize.py 5 
 provenance 标记。
 
 **后续批次（ADR-030/031 + 用户画像）**：
-- **批次B（ADR-030 草稿溯源）**：每章草稿 `drafts/chapters/<vol>-<ch>.src.json` 源清单（cast/thread/memory/
-  rules/prompt hash/provider），供 `draft show --sources` 汇报 + 批次 C 基线。
+- **批次B（ADR-030 草稿溯源）✅ 完成**：`core/draft_provenance.py`（build/write/read/render）+ `produce_chapter`
+  成功出口原子落 `drafts/chapters/<vol>-<ch>.src.json`（cast/thread/world_rules/settings/memory 基线/
+  provider/model/prompt_fingerprint+正文，零额外 LLM）+ CLI `draft [DIR] [vol:ch]` 汇报（缺省列全部、`--text`
+  连正文）。测试 `test_m3zb_draft_provenance.py` 8 例全绿；全量 901 通过。
 - **批次C（ADR-031 修订识别+归因回写）**：`draft revise <vol:ch>` 段落级 diff → 归因 → 复用 EditOp 管线
-  进审批回写；"改草稿不受门禁，回写圣经/记忆才受门禁"。
+  进审批回写；"改草稿不受门禁，回写圣经/记忆才受门禁"。基线即批次 B 的 src.json。
 - **Backlog（用户画像 memory）**：全局 gitignored 用户级目录沉淀文风/修改偏好，从批次 C 修订历史蒸馏
   craft 偏好/skill；见 docs/03 ADR-030 尾部与 docs/08 §6。
 
