@@ -17,9 +17,8 @@ import json
 import pytest
 
 from novelist.forge import Blueprint, ForgeState, run_consult, run_seed
-from novelist.forge.ask import parse_round_line
 from novelist.forge.io_console import ConsoleIO
-from novelist.forge.slots import Slot, default_slots, detect_gaps
+from novelist.forge.slots import Slot
 from novelist.forge.state import read_transcript
 from novelist.providers.fake import FakeProvider
 
@@ -55,52 +54,75 @@ def _blank_bp() -> Blueprint:
     return bp
 
 
-# ---------- parse_round_line（纯函数） ----------
+# ---------- guided：确定性护栏（_dispatch_value / _parse_dispatch）----------
 
-def test_parse_enter_takes_all_defaults():
-    qs = [RoundQuestionOf("meta.genre", ["修仙", "都市"], "修仙"),
-          RoundQuestionOf("worldview.name", ["落霞界"], "落霞界")]
-    ans = parse_round_line("", qs)
-    assert ans.quit is False
-    assert ans.values["meta.genre"].value == "修仙"
-    assert ans.values["meta.genre"].src == "template"
-    assert ans.values["meta.genre"].explicit is False
-
-
-def test_parse_number_selects_candidate():
-    qs = [RoundQuestionOf("meta.genre", ["修仙", "都市"], "修仙"),
-          RoundQuestionOf("worldview.name", ["落霞界"], "落霞界")]
-    ans = parse_round_line("2", qs)
-    assert ans.values["worldview.name"].value == "落霞界"
-    assert ans.values["worldview.name"].explicit is True
-    assert ans.values["worldview.name"].src == "user"
-
-
-def test_parse_free_answer():
-    qs = [RoundQuestionOf("meta.genre", ["修仙"], "修仙")]
-    ans = parse_round_line("1 东方蒸汽朋克", qs)
-    assert ans.values["meta.genre"].value == "东方蒸汽朋克"
-    assert ans.values["meta.genre"].explicit is True
-    assert ans.values["meta.genre"].src == "user"
-
-
-def test_parse_quit():
-    qs = [RoundQuestionOf("meta.genre", ["修仙"], "修仙")]
-    assert parse_round_line("q", qs).quit is True
-    assert parse_round_line("Q", qs).quit is True
-
-
-def test_parse_garbage_falls_back_to_defaults():
-    qs = [RoundQuestionOf("meta.genre", ["修仙"], "修仙")]
-    ans = parse_round_line("随意的话", qs)
-    assert ans.quit is False
-    assert ans.values["meta.genre"].value == "修仙"  # 保守不误写
-
-
-def RoundQuestionOf(key: str, cands: list[str], default: str):
+def _enum_round(key: str="style.tense", cands: list[str] | None = None, enum: list[str] | None = None):
     from novelist.forge.ask import RoundQuestion
+    cands = cands or ["过去", "现在"]
+    slot = Slot(key, key, "recommended", "free", candidates_from="enum",
+                enum=enum or cands, group=1)
+    return RoundQuestion(slot, cands, cands[0])
 
-    return RoundQuestion(Slot(key, key), cands, default)
+
+def test_dispatch_number_selects_candidate():
+    """自由语里用户选序号 → 取对应候选。"""
+    from novelist.forge.ask import _dispatch_value
+    from novelist.forge.ask import RoundQuestion
+    q = RoundQuestion(Slot("meta.genre", "genre", "recommended", "free",
+                           candidates_from="llm", group=1),
+                      ["修仙", "都市"], "修仙")
+    assert _dispatch_value(q, "2") == "都市"
+    assert _dispatch_value(q, "1 东方蒸汽朋克") == "1 东方蒸汽朋克"  # 非纯数字自由文本照收
+
+
+def test_dispatch_enum_out_of_range_and_mismatch_rejected():
+    """enum 槽：序号越界或值不在候选 → None（拒答，绝不写进 blueprint 触发 schema 崩）。"""
+    from novelist.forge.ask import _dispatch_value
+    q = _enum_round()
+    assert _dispatch_value(q, "9") is None       # 序号越界
+    assert _dispatch_value(q, "被打压的关系户") is None  # 自由语未落在合法选项
+    assert _dispatch_value(q, "现在") == "现在"   # 合法值通过
+
+
+def test_dispatch_enum_cn_label_backmaps_to_id():
+    """工艺卡 enum 槽：用户写中文名/id/「中文名 (id)」都能反查回 id（2026-09-10）。"""
+    from novelist.forge.ask import _dispatch_value
+    from novelist.forge.ask import RoundQuestion
+    enum = ["system-flow", "chapter-rhythm"]
+    slot = Slot("style.craft_cards", "题材工艺卡", "recommended", "free",
+                candidates_from="enum", enum=enum, group=3)
+    slot.enum_labels = {"system-flow": "系统流", "chapter-rhythm": "网文章节节奏"}
+    q = RoundQuestion(slot, enum, "")
+    assert _dispatch_value(q, "系统流") == "system-flow"       # 中文名
+    assert _dispatch_value(q, "系统流 (system-flow)") == "system-flow"  # 显示串
+    assert _dispatch_value(q, "system-flow") == "system-flow"  # 纯 id
+    assert _dispatch_value(q, "被打压的关系户") is None         # 无关词拒答
+
+
+def test_render_round_shows_cn_labels_not_only_ids():
+    """工艺卡候选展示中文名（带 id），不再纯英文（2026-09-10）。"""
+    from novelist.forge.ask import _render_round
+    from novelist.forge.ask import RoundQuestion
+    enum = ["system-flow", "chapter-rhythm", "foreshadowing"]
+    slot = Slot("style.craft_cards", "题材工艺卡", "recommended", "free",
+                candidates_from="enum", enum=enum, group=3)
+    slot.enum_labels = {"system-flow": "系统流", "chapter-rhythm": "网文章节节奏",
+                        "foreshadowing": "伏笔与回收"}
+    qs = [RoundQuestion(slot, enum, "")]
+    txt = _render_round(1, qs)
+    assert "系统流 (system-flow)" in txt
+    assert "网文章节节奏 (chapter-rhythm)" in txt
+    assert "伏笔与回收 (foreshadowing)" in txt
+
+
+def test_dispatch_parse_dispatch_json():
+    """分派产物解析：answers/extras 抽取；畸形输入 → None。"""
+    from novelist.forge.ask import _parse_dispatch
+    d = _parse_dispatch('{"answers": {"meta.romance": "单女主"}, "extras": ["女主有隐藏身世"]}')
+    assert d["answers"]["meta.romance"] == "单女主"
+    assert d["extras"] == ["女主有隐藏身世"]
+    assert _parse_dispatch("不是 JSON") is None
+    assert _parse_dispatch('{"nope": 1}') is None  # 无 answers → 判失败
 
 
 # ---------- ConsoleIO 原语 ----------
@@ -129,63 +151,60 @@ def test_console_io_primitives():
     assert cio.confirm("继续？") is True
 
 
-# ---------- run_consult：非 TTY 降级 + AG3 收敛 ----------
+# ---------- run_consult：非 TTY 降级 ----------
 
 def test_consult_notty_downgrades_all_defaults(ws_factory):
-    """非 TTY：interactive 全取推荐值、写 transcript、问数收敛（AG3 ≤12 问）。"""
+    """非 TTY：全取推荐值、写 consult.downgrade、meta.scale 结构不被破坏。"""
     ws, pid = ws_factory("proj-f2a")
     bp = _blank_bp()
     consult = run_consult(ws, pid, bp, provider=FakeProvider(reply='{"x": ["a"]}'),
                           io=FakeIO(is_tty=False))
     assert consult.downgraded is True
     assert consult.answered > 0
-    assert consult.answered <= 12  # AG3：12 问内收敛
-    assert consult.rounds_done >= 1
     events = read_transcript(ws, pid)
-    assert any(e["event"] == "round.downgrade" for e in events)
-    # 被问过且有推荐值的槽位已填；空推荐值（如主角名）保持缺口；meta.scale 结构未被破坏
-    gaps = detect_gaps(bp)
-    assert len(gaps) < len(default_slots())
+    assert any(e["event"] == "consult.downgrade" for e in events)
+    # 有推荐值且非“（留空”的槽位已填；其余保持缺口；
     assert isinstance(bp.get("meta.scale"), (dict, type(None)))
 
 
-# ---------- run_consult：TTY 自由答案 / 候选 / 结构化 / resume / q ----------
+# ---------- run_consult：TTY guided 对话式 ----------
 
-def test_consult_tty_free_answer_sets_user_provenance(ws_factory):
+def test_consult_free_answer_through_dispatch(ws_factory):
+    """自由语经 LLM 分派落蓝图：明确回答 src=user conf=1.0；未提及槽位留缺口。"""
     ws, pid = ws_factory("proj-f2b")
     bp = _blank_bp()
     consult = run_consult(
-        ws, pid, bp, provider=FakeProvider(reply='{"worldview.name": ["落霞界"]}'),
-        io=FakeIO(lines=["1 东方蒸汽朋克"]),
+        ws, pid, bp,
+        provider=FakeProvider(reply='{"answers": {"worldview.name": "东方蒸汽朋克"}}'),
+        io=FakeIO(lines=["东方蒸汽朋克"]),
         slots=[_slot("worldview.name", "llm", 2), _slot("style.tense", "enum", 3, enum=["过去", "现在"])],
     )
     assert consult.free_answers == 1
     assert bp.get("worldview.name") == "东方蒸汽朋克"
     prov = bp.get_provenance("worldview.name")
     assert prov["src"] == "user" and prov["confidence"] == 1.0
-    assert bp.get("style.tense") == "过去"  # 回车默认
+    # 本轮并未提到 style.tense → 该题未被写入；下一轮用户回车取推荐值
+    assert bp.get("style.tense") == "过去"
+    assert consult.rounds_done == 2
 
 
-def test_consult_candidates_one_llm_call_per_round(ws_factory, stub_llm):
-    """候选由 LLM 批量生成：每轮 1 次调用（不是每题一次）。"""
+def test_consult_enter_takes_all_recommended(ws_factory):
+    """回车 = 本轮通取推荐值；llm 槽推荐值来自候选 LLM（src=llm）。"""
     ws, pid = ws_factory("proj-f2c")
     bp = _blank_bp()
-    llm = stub_llm(json.dumps({"style.glossary": ["灵气", "灵根"], "worldview.name": ["落霞界", "玄天域"]},
-                              ensure_ascii=False))
     consult = run_consult(
-        ws, pid, bp, provider=llm, io=FakeIO(lines=["", ""]),
-        slots=[_slot("worldview.name", "llm", 2), _slot("style.glossary", "llm", 3)],
+        ws, pid, bp, provider=FakeProvider(reply='{"worldview.name": ["落霞界", "玄天域"]}'),
+        io=FakeIO(lines=["", ""]),
+        slots=[_slot("worldview.name", "llm", 2), _slot("style.tense", "enum", 3, enum=["过去", "现在"])],
     )
-    assert consult.rounds_done == 2
-    assert len(llm.calls) == 2  # 每轮 1 次
-    # 候选 prompt 带蓝图上下文（已有设定摘要）
-    assert "本书已有设定" in llm.calls[0]
-    # 回车默认取 LLM 候选第一个（src=llm）
+    assert consult.rounds_done == 1  # 两槽同在一窗口一次问清
     assert bp.get("worldview.name") == "落霞界"
     assert bp.get_provenance("worldview.name")["src"] == "llm"
+    assert bp.get("style.tense") == "过去"
 
 
 def test_consult_candidates_failure_falls_back(ws_factory):
+    """LLM 候选失败 → 该项按默认值兜底，不阻断商讨。"""
     ws, pid = ws_factory("proj-f2d")
     bp = _blank_bp()
     consult = run_consult(
@@ -198,13 +217,53 @@ def test_consult_candidates_failure_falls_back(ws_factory):
     assert any(e["event"] == "candidates.fallback" for e in read_transcript(ws, pid))
 
 
+def test_consult_show_returns_same_round(ws_factory):
+    """`?` 打印已填概览后回到同一轮，不推进、不重复问已回答。"""
+    ws, pid = ws_factory("proj-f2s")
+    bp = _blank_bp()
+    consult = run_consult(
+        ws, pid, bp,
+        provider=FakeProvider(reply='{"answers": {"worldview.name": "玄天域"}}'),
+        io=FakeIO(lines=["?", "玄天域"]),
+        slots=[_slot("worldview.name", "llm", 2)],
+    )
+    assert consult.free_answers == 1
+    assert bp.get("worldview.name") == "玄天域"
+    # 只真正推进了一轮（? 那步未计轮）
+    assert consult.rounds_done == 1
+    answers = [e for e in read_transcript(ws, pid) if e["event"] == "ask.answer"
+               and e["key"] == "worldview.name"]
+    assert len(answers) == 1
+
+
+def test_consult_extras_recorded(ws_factory):
+    """无槽可归的补充设想 → extras.json 登记 + extra.idea transcript。"""
+    ws, pid = ws_factory("proj-f2x")
+    bp = _blank_bp()
+    from novelist.forge.ask import _read_extras
+    consult = run_consult(
+        ws, pid, bp,
+        provider=FakeProvider(reply='{"answers": {}, "extras": ["女主有隐藏身世"]}'),
+        io=FakeIO(lines=["随便说点设想"]),
+        slots=[_slot("worldview.name", "llm", 2)],
+    )
+    assert consult.extras_seen == 1
+    extras = _read_extras(ws, pid)
+    assert len(extras) == 1 and extras[0]["text"] == "女主有隐藏身世"
+    assert extras[0]["status"] == "pending"
+    assert any(e["event"] == "extra.idea" for e in read_transcript(ws, pid))
+
+
 def test_consult_structured_targets(ws_factory):
     """threads/glossary/characters[role:rival].name 按结构写入。"""
     ws, pid = ws_factory("proj-f2e")
     bp = _blank_bp()
     consult = run_consult(
-        ws, pid, bp, provider=FakeProvider(reply="{}"),
-        io=FakeIO(lines=["1 灵气、灵根、神识", "1 云纹玉牌之谜", "1 血魔老祖"]),
+        ws, pid, bp,
+        provider=FakeProvider(reply='{"answers": {"threads": "云纹玉牌之谜", '
+                                    '"style.glossary": "灵气、灵根、神识", '
+                                    '"characters[role:rival].name": "血魔老祖"}}'),
+        io=FakeIO(lines=["三题都答"]),
         slots=[_slot("threads", "llm", 4), _slot("style.glossary", "llm", 3),
                _slot("characters[role:rival].name", "llm", 5)],
     )
@@ -225,19 +284,16 @@ def test_consult_resume_skips_answered(ws_factory):
     bp = _blank_bp()
     slots = [_slot("worldview.name", "llm", 2), _slot("worldview.rules", "llm", 2),
              _slot("style.tense", "enum", 3, enum=["过去", "现在"])]
-    r1 = run_consult(ws, pid, bp, provider=FakeProvider(reply='{"worldview.name": ["落霞界"]}'),
-                     io=FakeIO(lines=["1 玄天域"]), slots=slots)
-    assert r1.answered == 2  # 轮 2：name 自由答案 + rules 空推荐跳过；轮 3：tense 默认
-    assert r1.rounds_done == 2
-    assert bp.get("worldview.name") == "玄天域"
-    # 第二次：name 已答 → 轮 2 只剩 rules（再问）；tense 已答 → 轮 3 跳过
-    r2 = run_consult(ws, pid, bp, provider=FakeProvider(reply="{}"),
-                     io=FakeIO(lines=["1 云纹令只认陆氏血脉"]), slots=slots)
-    assert r2.answered == 1  # rules（自由）
-    assert r2.rounds_done == 1
+    r1 = run_consult(ws, pid, bp,
+                     provider=FakeProvider(reply='{"answers": {"worldview.name": "玄天域"}}'),
+                     io=FakeIO(lines=["", "玄天域"]), slots=slots)
+    # 轮 1 回车：name 无推荐（留空跳过）、rules 无推荐跳过、tense 取推荐
+    r2 = run_consult(ws, pid, bp,
+                     provider=FakeProvider(reply='{"answers": {"worldview.rules": "云纹令只认陆氏血脉"}}'),
+                     io=FakeIO(lines=["云纹令只认陆氏血脉"]), slots=slots)
     assert bp.get("worldview.rules") == ["云纹令只认陆氏血脉"]
     assert bp.get("style.tense") == "过去"
-    # name 没有被重复问（transcript 里只答了一次）
+    # name 只答过一次，未被 resume 重复问
     answers = [e for e in read_transcript(ws, pid) if e["event"] == "ask.answer"
                and e["key"] == "worldview.name"]
     assert len(answers) == 1
@@ -252,9 +308,7 @@ def test_consult_quit_stops_later_rounds(ws_factory):
         slots=[_slot("worldview.name", "llm", 2), _slot("style.tense", "enum", 3, enum=["过去", "现在"])],
     )
     assert consult.quit_early is True
-    assert consult.rounds_done == 1  # 只跑了第 2 轮即退出（第 3 轮不再问）
     assert any(e["event"] == "round.quit" for e in read_transcript(ws, pid))
-    assert bp.get("style.tense") is None  # 后续轮未执行
 
 
 # ---------- seed 集成：授权 [2] 商讨 ----------

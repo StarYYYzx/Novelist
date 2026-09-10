@@ -59,6 +59,33 @@ def _new_project_id() -> str:
 
 
 @cli.command()
+@click.option("--dir", "directory", default=None,
+              help="工作区根（默认 novel_workspace）；console 内项目文件均在此下达")
+@click.option("--provider", default="deepseek", help="生成通道（openai/qwen/...）")
+@click.option("--api-key", default=None, help="API Key；缺省读 DEEPSEEK_API_KEY / .env")
+@click.option("--api-base", default=None, help="覆盖 API base URL")
+@click.option("--model", default=None, help="覆盖模型名")
+@click.option("--smoke", is_flag=True, help="seed 仅提炼不构建（测试用）")
+def console(directory: str | None, provider: str, api_key: str | None,
+            api_base: str | None, model: str | None, smoke: bool) -> None:
+    """项目交互中枢（2026-09-10）：一行启动进常驻 REPL，集项目导航与完整操作。
+
+    projects/new/open/show/seed/build/resume/shell/chapter 都在此进入。
+    与 claude 那种"进入终端即全功能"对应。
+    """
+    from novelist.forge.console import run_console
+
+    run_console(
+        workspace_root=directory or None,
+        provider=provider,
+        api_key=api_key,
+        api_base=api_base,
+        model=model,
+        smoke=smoke,
+    )
+
+
+@cli.command()
 @click.argument("directory", required=False, default=None)
 @click.option("--title", default=None, help="书名")
 @click.pass_context
@@ -1084,9 +1111,12 @@ _FAKE_SEED_REPLY = json.dumps({
 @click.option("--volumes", type=int, default=None, help="卷数（缺省由提炼/模板定）")
 @click.option("--chapters-per-volume", type=int, default=None, help="每卷章数")
 @click.option("--target-words", type=int, default=None, help="每章目标字数")
-@click.option("--max-calls", type=int, default=60, help="构建分阶段配额（build 卷 1 默认 60）")
+@click.option("--max-calls", type=int, default=None,
+              help="构建分阶段配额；不传则按 N/K/M 规模推导（ADR-033 B）")
 @click.option("--max-depth", type=int, default=4, help="递归最大深度")
-@click.option("--max-width", type=int, default=4, help="子节点宽度上限")
+@click.option("--max-width", type=int, default=4, help="子节点宽度上限（条目型）")
+@click.option("--max-width-list", type=int, default=12,
+              help="列表型长尾（人物/体系/设定条目）宽度上限（ADR-033 A）")
 @click.option("--smoke", is_flag=True, default=False, help="冒烟：只提炼 + 建蓝图，不跑构建")
 @click.pass_context
 def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
@@ -1094,7 +1124,8 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
                genre_pack: str | None,
                volumes: int | None, chapters_per_volume: int | None,
                target_words: int | None,
-               max_calls: int, max_depth: int, max_width: int, smoke: bool) -> None:
+               max_calls: int | None, max_depth: int, max_width: int, max_width_list: int,
+               smoke: bool) -> None:
     """模式一：一句话创意 → 种子提炼 + 授权询问 → 全权构建（F1）。
 
     产出：workspace/forge/blueprint.json + bible/* + outline/volumes.json +
@@ -1118,6 +1149,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
                    genre_pack=genre_pack, volumes=volumes,
                    chapters_per_volume=chapters_per_volume, target_words=target_words,
                    max_calls=max_calls, max_depth=max_depth, max_width=max_width,
+                   max_width_list=max_width_list,
                    smoke=smoke)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
@@ -1146,7 +1178,10 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 @click.option("--provider", default="fake",
               help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
 @_apply_provider_conn
-@click.option("--max-calls", type=int, default=60, help="构建分阶段配额")
+@click.option("--max-calls", type=int, default=None,
+              help="构建分阶段配额；不传则按 N/K/M 规模推导（ADR-033 B）")
+@click.option("--max-width-list", type=int, default=12,
+              help="列表型长尾（人物/体系/设定条目）宽度上限（ADR-033 A）")
 @click.option("--no-deepen", is_flag=True, default=False,
               help="退化为 F1 最小树（跳过旁支递归深化与 arc/beat 层）")
 @click.option("--diff", is_flag=True, default=False,
@@ -1154,7 +1189,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
 @click.pass_context
 def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
                 api_key: str | None, api_base: str | None, model: str | None,
-                max_calls: int, no_deepen: bool, diff: bool) -> None:
+                max_calls: int | None, max_width_list: int, no_deepen: bool, diff: bool) -> None:
     """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
 
     默认拒绝已有 chapters/ 的项目（先写正文或 ingest 的项目）；--force 放行。
@@ -1181,7 +1216,8 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
         if plan.rebuild_all:
             click.echo("  [info] 结构级变更（worldview/style/volumes/arcs）→ 全量重建")
     res = build(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
-                max_calls=max_calls, resume=False, deepen=not no_deepen)
+                max_calls=max_calls, resume=False, deepen=not no_deepen,
+                max_width_list=max_width_list)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     if res.gate_halted:
@@ -1332,6 +1368,46 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
                f"卷={res.volumes_written} 章={res.chapters_written}")
     if not res.ok and not res.interrupted:
         raise click.ClickException("续跑未完成，见上方 warnings")
+
+
+@forge.command("shell")
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="deepseek",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
+@_apply_provider_conn
+@click.option("--max-calls", type=int, default=None,
+              help="构建分阶段配额；不传则按规模推导（ADR-033 B）")
+@click.pass_context
+def forge_shell(ctx: click.Context, directory: str | None, provider: str,
+                api_key: str | None, api_base: str | None, model: str | None,
+                max_calls: int | None) -> None:
+    """常驻会话壳（P1）：进入终端模式谈设定，/build 触发构建，/exit 退出。
+
+    与 `resume` 的区别：resume 是缺口收敛即退出的一次性续跑；shell 是常驻
+    REPL——自由语回答缺口 / 补充设想（登记 extras），缺口收敛与否由你 /build
+    决定。命令：/exit /show /help /build /save。后续阶段（读章/修订）在此接线。
+    """
+    from novelist.forge import Blueprint, run_shell
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        bp = Blueprint.load(ws, project_id)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"{project_id}: 尚无蓝图——先跑 `forge seed` 或 `forge ingest`"
+        ) from None
+    res = run_shell(ws, project_id, bp,
+                    provider=_make_cli_provider(provider, api_key=api_key,
+                                                api_base=api_base, model=model),
+                    max_calls=max_calls)
+    for w in res.warnings:
+        click.echo(f"  [warn] {w}", err=True)
+    click.echo(f"shell done: 采纳 {res.answered} / 补充设想 {res.extras_seen} / "
+               f"构建触发 {res.build_triggered}")
+    if res.quit_early:
+        click.echo(f"下一步：`novelist forge shell --dir {project_id}` 续会话，"
+                   f"或 `forge build --dir {project_id}` 直接构建。")
 
 
 @forge.command("ingest")

@@ -15,6 +15,8 @@ from .ingest import IngestResult, run_ingest
 from .io_console import AnswerIO, ConsoleIO
 from .report import render_report, write_reports
 from .seed import SeedResult, SeedSpec, run_seed
+from .shell import ShellResult, run_shell
+from .console import ConsoleState, run_console
 from .slots import Slot, detect_gaps, default_slots, group_slots, slots_for_genre
 from .snapshot import (latest_snapshot, restore_snapshot, snapshots_dir,
                        take_snapshot)
@@ -51,6 +53,8 @@ __all__ = [
     "ConsoleIO",
     "ConsultResult",
     "run_consult",
+    "ShellResult",
+    "run_shell",
     "ValidateResult",
     "validate_project_full",
     "render_report",

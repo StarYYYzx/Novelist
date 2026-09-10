@@ -70,6 +70,25 @@ class Workspace:
             raise WorkspaceError(f"invalid project_id: {project_id!r}")
         return self._abs(project_id)
 
+    def list_projects(self) -> list[str]:
+        """列出沙箱根下所有已登记项目（含 project.json 的子目录），升序返回 id。
+
+        用 project.json 存在性判定（而非仅目录存在），避免把 workshop 骨架目录
+        （建完但尚未立项/或残留）误判为可操作项目。
+        """
+        root = Path(self.root)
+        if not root.is_dir():
+            return []
+        out: list[str] = []
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            if not PROJECT_ID_RE.match(child.name):
+                continue
+            if child.joinpath("project.json").is_file():
+                out.append(child.name)
+        return sorted(out)
+
     def create_project(self, project_id: str) -> Path:
         """新建项目工作区骨架（docs/07 §6.1 init，UC-01）。"""
         root = self.project_dir(project_id)

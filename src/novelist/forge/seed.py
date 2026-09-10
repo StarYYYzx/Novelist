@@ -308,7 +308,8 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
              provider, mode: str = "auto", genre_pack: str | None = None,
              volumes: int | None = None, chapters_per_volume: int | None = None,
              target_words: int | None = None,
-             max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
+             max_calls: int | None = None, max_depth: int = 4, max_width: int = 4,
+             max_width_list: int = 12,  # ADR-033 A
              craft: list[str] | None = None,
              smoke: bool = False, deepen: bool = True, gate: bool = True,
              ask_fn: Callable[[Blueprint, SeedSpec, str], str] | None = None) -> SeedResult:
@@ -427,6 +428,7 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
 
     build_res = build(ws, project_id, provider=provider,
                       max_calls=max_calls, max_depth=max_depth, max_width=max_width,
+                      max_width_list=max_width_list,
                       deepen=deepen, gate=gate)
     if not build_res.ok and not warnings and not build_res.warnings:
         warnings.append("构建未完成，见 build.warnings")

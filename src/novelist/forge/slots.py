@@ -36,6 +36,11 @@ class Slot:
     group: int = 1  # 第几轮问
     why: str = ""
     confidence_threshold: float = 0.6  # provenance 低于此值视为低置信缺口
+    enum_labels: dict[str, str] = field(default_factory=dict)  # 末尾追加：不破坏位置参数构造
+
+    def _with_enum_labels(self, labels: dict[str, str]) -> "Slot":
+        self.enum_labels = labels or {}
+        return self
 
 
 def _craft_ids() -> list[str]:
@@ -46,6 +51,16 @@ def _craft_ids() -> list[str]:
         return valid_ids()
     except Exception:      # 卡目录缺失/损坏不应拖垮槽位表
         return []
+
+
+def _craft_labels() -> dict[str, str]:
+    """卡 id → 中文名（enum_labels 用，让英文 id 以可读名展示）。"""
+    try:
+        from ..craft.loader import list_cards
+
+        return {c.id: c.name for c in list_cards() if c.name}
+    except Exception:
+        return {}
 
 
 def _char_slot(role: str, sub: str) -> str:
@@ -111,7 +126,8 @@ def default_slots() -> list[Slot]:
         Slot("style.craft_cards", "题材工艺卡", "recommended", "free",
              "启用哪些题材工艺卡？（多选用顿号/逗号分隔；直接回车=不启用）",
              "enum", _craft_ids(), "", 3,
-             "style.craft_cards，规范'怎么呈现'（如系统流的【】发言、单章节奏、伏笔分级）", 0.6),
+             "style.craft_cards，规范'怎么呈现'（如系统流的【】发言、单章节奏、伏笔分级）", 0.6)
+        ._with_enum_labels(_craft_labels()),
         # 轮 4：人物与伏笔
         # 2026-09-06 用户拍板：感情线先问模式再问对象（原槽位直接问"对象是谁"，
         # 模式不选 → cast 节点自作主张加/不加感情戏）。

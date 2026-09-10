@@ -282,6 +282,64 @@ SeedSpec（流派/卖点/主角雏形/规模）        │ I2 LLM 抽取（每�
 构建结束后**必须**出一份 review 清单（缺口 + 低置信项），用户可直接编辑 `blueprint.json`
 再 `forge build` 重跑。这样"全权"不是黑箱，只是把交互挪到了后面。
 
+### 5.5 常驻会话壳（`forge shell`，P1 · 2026-09-10）
+
+`seed/ingest` 之后的商讨是"缺口收敛即退出"的一次性问答（§5.3）。**常驻会话壳**
+`forge shell` 把它升级成 CLI 里"进入即持续对话"的终端模式（Claude Code 式体验）：
+进入后缺口动态推进，用户**自由语回答 / 补充设想直到显式 `/exit`**，缺口是否收敛
+不再自动终止会话，而是由用户 `/build` 决定是否进入构建。
+
+**与 `resume` 的分工**：`resume` = 断点续跑（一次性收敛就返回）；`shell` = 常驻
+REPL（`/exit` 才退出）。二者共享 `detect_gaps` + transcript，阶段推进一致。
+
+**命令**（引擎外键盘映射，不授予 LLM 任何自主控制权，ADR-032 延续）：
+
+| 命令 | 行为 |
+| --- | --- |
+| `/exit` | 退出：无缺口 → `seeded`；仍有缺口 → 保持 `consulting`（待 resume/shell 续） |
+| `/show` | 打印已填设定概览 + 未填缺口 + extras 登记状态 |
+| `/help` | 命令帮助 |
+| `/build` | 触发构建；required 缺口未满时先补齐推荐值并 confirm（默认 y），再调构建引擎 |
+| `/save` | 立即落盘 blueprint（每轮已有自动保存，此处为手动保险） |
+| 自由语 | 单次 LLM 分派为回答 + extras；非法值由确定性护栏拒绝重答（复用 ask） |
+| 空回车 | 默认取推荐值推进；**无默认槽不卡死**——先跳过（说明"本轮回车跳过，连续跳过将由系统补设定供审核"），连续空回车到重试上限后由系统按 LLM 推断补一个**低置信值（src=llm conf=0.4）**注册为 `low_confidence` 缺口，出现在 `/show` 的"仍待补"里供用户审核/修改（方案2，2026-09-10） |
+
+> **无默认槽循环防护**：`run_consult` 与 `shell` 的空回车/fallback 共用 `_settle_round` 门卫——
+> 无默认槽先跳过，反复跳过触发 `_autoset_slot` 系统自动设定（低置信待审核），
+> 从根本上杜绝"无默认 llm 槽空回车 → 永远写不上 → 死循环"。
+
+**渐进接入**：P1 只打通"谈设定 + /build"。P2（读已写章节）、P3（修订建议链）、
+P4（大纲/细纲生成后审核确认与修改、全链路闭环）在同一会话壳上逐步接线，模块间
+零耦合。
+
+### 5.6 项目交互中枢（`novelist console` · 2026-09-10）
+
+一行启动进常驻 REPL，集**项目导航 + 完整操作**于一体（对应"Claude Code 那种进终端即全功能"）：
+
+```bash
+novelist console [--dir <工作区根>] [--provider deepseek] [--api-key …] [--smoke]
+```
+
+> 默认工作区根 `novel_workspace`（可用 `NOVELIST_WORKSPACE` 覆盖），且需先注入
+> `PYTHONPATH=<项目根>/src`（`novelist` 包在 `src/`）。API Key 走环境变量 `DEEPSEEK_API_KEY`。
+
+| 命令 | 作用 | 底层命令 |
+| --- | --- | --- |
+| `projects` / `ls` | 列出工作区全部项目（id+标题+阶段） | `Workspace.list_projects()` |
+| `new <标题>` | 新建项目并自动切入 | `init` |
+| `open <id>` | 选定当前项目 | — |
+| `show` | 查看当前项目进度（已填/缺口/extras） | `forge show` |
+| `seed "<一句话>"` | 一句话创意 → 建蓝图 + 构建 | `forge seed` |
+| `build` | 蓝图已有时重跑构建 | `forge build` |
+| `resume` | 断点续跑（商讨/构建） | `forge resume` |
+| `shell` | 进入设定会话（缺口/补设想） | `forge shell` |
+| `chapter <卷> <章>` | 写正文 | `chapter` |
+| `help` / `exit` / `quit` / `q` | 帮助 / 退出 | — |
+
+**设计纪律**：`console` 不复制任何业务逻辑——每个命令经 `CliRunner.invoke` 复调现有
+click 命令，保证与命令行行为逐字一致；`Workspace.list_projects()` 以 `project.json` 存在性
+判定"已登记项目"（避免把骨架目录误判为可操作）。`--smoke` 时 `seed` 仅提炼不构建（测试用）。
+
 ---
 
 ## 6. 模式二 `ingest`：已有稿子 → 蓝图（+ 接着写）

@@ -708,6 +708,29 @@
 > 注入机制）。落点：**全局 gitignored 用户级目录**（`~/.novelist/user_profile/`，跨项目），与项目工作区里的
 > 设定集分开；实现前单独立项评估 schema 与隐私边界。
 
+### ADR-033 Forge 硬边界规模适配：宽度分级 + 调用预算规模推导（· 拍板定稿 2026-09-10，**已实现 A/B**）
+
+**背景/问题**：从总大纲拆长篇小说时，既有硬边界对**广度与调用量**不足——`max_width=4` 单一值
+对所有节点类型生效，`character_group→character`/`worldview→system` 这类**列表型长尾**会被硬截到 4
+（长篇角色二三十个、体系五六个，直接漏人/漏体系）；`max_calls=60/40` 是固定"单次运行配额"，不随
+卷数 N、每卷章数 K、角色数 M 自适应，大 N/K 靠多次 `resume` 续跑（慢闭环）；且**无"规模达成出口
+谓词"**，宽度/预算耗尽时静默缺料只靠 warnings。
+
+**决策**：
+- **A · 宽度分级**：`character/system/setting_entry`（长尾列表型）放宽到 `max_width_list`（默认
+  **12**），条目型（`volume→arc`、`chapter→beat`）维持 `max_width=4`。按父 kind 经 `CHILD_KIND`
+  判定（`_child_width`）。经 `forge seed/build --max-width-list N` 覆盖。
+- **B · 调用预算规模推导**：`max_calls` 不显式给时按 `max(12 + N*3 + K*2 + min(M,24), 12)` 推导
+  （`_build_call_budget`），卷数/章数取自 `bp.meta.scale`、角色数取 `bp.characters`；`--max-calls`
+  显式给则直接采用、不再推导。N=5/K=30/M=30 → 111，超出旧固定 60。
+- **C · 出口完整性检查**（**待定·未实现**）：非 LLM 校验"每卷章数、角色数 ≥ blueprint 承诺"，缺口
+  显式暴露而非静默缺料。列为后续项。
+- **D · 人工大纲审核门**（**建议方向·待拍板**）：构建后把大纲骨架交用户审阅，**由用户决定是否细化/
+  深化**到哪一层（批注深化指令/停止），而非全由深度参数代拍。属"人工决策点"增强，贴合本系统"以
+  人工决策为核心"的基调（与 ADR-029 反馈、Forge 商讨 ask 一脉相承）。形态与触发点待立项拍板。
+
+**验收**：`tests/test_m3aa_forge_scale.py` 7 例 + `test_m17_forge_f4.py` 截断用例改写；全量 933 passed。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |

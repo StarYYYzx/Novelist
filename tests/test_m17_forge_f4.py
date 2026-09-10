@@ -172,9 +172,10 @@ def test_max_width_truncation_warning(ws_factory, capsys):
     for i in range(1, 5):
         script[1 + i] = _reply({"title": f"d{i}", "kind": "power",
                                 "settings": [{"id": f"set:d{i}", "keywords": ["k"], "text": "t"}]})
-    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False)
+    r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False,
+              max_width_list=3)  # ADR-033 A：宽类压到 3，6 个子节点仍被截断
     assert r.ok
-    assert any("超出 max_width=4" in w for w in r.warnings)
+    assert any("超出 max_width=3" in w for w in r.warnings)
     capsys.readouterr()
 
 

@@ -22,7 +22,7 @@ from novelist.core.motif import MotifLedger
 from novelist.core.orchestrator import _prev_chapter_loc
 from novelist.core.polish import polish_chapter
 from novelist.core.volume_facts import load_prev_facts
-from novelist.forge.ask import RoundQuestion, parse_round_line
+from novelist.forge.ask import _dispatch_value, RoundQuestion
 from novelist.forge.nodes import _merge_protected_section
 from novelist.forge.slots import Slot, group_slots
 from novelist.forge.state import Blueprint
@@ -207,12 +207,14 @@ def test_group_slots_overflow_extends_rounds():
     assert flat == [f"k{i}" for i in range(5)]  # 第 5 个顺延，不再被丢弃
 
 
-def test_parse_round_line_out_of_range_warns():
-    q = RoundQuestion(slot=Slot(key="a", label="q", level="required", group=1),
-                      candidates=["x", "y"], default="推荐")
-    ans = parse_round_line("5 我想要的答案", [q])
-    assert ans.note  # 显式告警，不再静默
-    assert ans.values["a"].value == "推荐"
+def test_dispatch_enum_out_of_range_and_mismatch_rejected():
+    """enum 槽：序号越界或值不在候选 → None（拒答，绝不写进 blueprint 触发 schema 崩）。"""
+    slot = Slot(key="style.tense", label="时态", level="recommended", kind="free",
+                candidates_from="enum", enum=["过去", "现在"], group=1)
+    q = RoundQuestion(slot, ["过去", "现在"], "过去")
+    assert _dispatch_value(q, "9") is None          # 序号越界
+    assert _dispatch_value(q, "被打压的关系户") is None  # 自由语未落在合法选项
+    assert _dispatch_value(q, "现在") == "现在"       # 合法值通过
 
 
 # ---------------------------------------------------------------- volume_facts（H7）

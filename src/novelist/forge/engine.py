@@ -127,8 +127,33 @@ def _node_done(ws: Workspace, project_id: str, node_id: str) -> bool:
     return ws._abs(f"{project_id}/workspace/forge/nodes/{fname}").exists()  # noqa: SLF001
 
 
+def _build_call_budget(n_volumes: int, k_per_volume: int, n_characters: int,
+                       override: int | None) -> int:
+    """ADR-033 B：调用预算按规模推导（max_calls 不显式给出时）。
+
+    量级估算（每项一次 provider 调用上下）：书 1 + 卷主线 N + 卷1 章节 K*2
+    （每章细纲 ~1 次、可含 beat/审查） + 设定/体系 ~8 + 人物取 min(M, 24)。
+    `override`（`--max-calls`）非空则直接采用，不再推导。
+    """
+    if override is not None:
+        return int(override)
+    return max(12 + n_volumes * 3 + k_per_volume * 2 + min(n_characters, 24), 12)
+
+
+# ADR-033 A：合法长尾的"子 kind"（worldview→system、system→setting_entry、
+# character_group→character）可享有更大宽度；条目型（volume→arc、chapter→beat）
+# 维持 `max_width`。子类型按父 kind 经 CHILD_KIND 判定。
+_WIDE_TARGETS = {"character", "system", "setting_entry"}
+
+
+def _child_width(parent_kind: str, max_width: int, max_width_list: int) -> int:
+    target = CHILD_KIND.get(parent_kind)
+    return max_width_list if target in _WIDE_TARGETS else max_width
+
+
 def build(ws: Workspace, project_id: str, *, provider,
-          max_calls: int = 60, max_depth: int = 4, max_width: int = 4,
+          max_calls: int | None = None, max_depth: int = 4, max_width: int = 4,
+          max_width_list: int = 12,  # ADR-033 A：列表型长尾（character/system/setting_entry）宽度上限
           spec: Any = None, pack: dict | None = None,
           resume: bool = False, deepen: bool = True,
           gate: bool = True,
@@ -161,6 +186,9 @@ def build(ws: Workspace, project_id: str, *, provider,
         raise ValueError(f"{project_id}: 蓝图缺 meta.scale——先跑 `forge seed`")
     N = int(scale.get("volumes", 3))
     K = int(scale.get("chapters_per_volume", 20))
+    # ADR-033 B：未显式给 --max-calls 时按 N/K/M 推导预算（不再固定 60）
+    n_chars = len(bp.get("characters") or []) or 8
+    max_calls = _build_call_budget(N, K, n_chars, max_calls)
     pack = pack or _pack_for_bp(bp)
     state = ForgeState.load(ws, project_id)
     state.stage = "build"
@@ -309,9 +337,10 @@ def build(ws: Workspace, project_id: str, *, provider,
                     return
                 if ck is None or leaf or depth >= max_depth:
                     return
-                if len(res.children) > max_width:
-                    warnings.append(f"{nid}: children {len(res.children)} 个超出 max_width={max_width}，截断")
-                for i, raw in enumerate(res.children[:max_width], 1):
+                width = _child_width(kind, max_width, max_width_list)
+                if len(res.children) > width:
+                    warnings.append(f"{nid}: children {len(res.children)} 个超出 max_width={width}，截断")
+                for i, raw in enumerate(res.children[:width], 1):
                     item = raw if isinstance(raw, dict) else {"brief": str(raw)}
                     item.setdefault("id", f"{ck}{i}")
                     _branch(ck, depth + 1, child=item)

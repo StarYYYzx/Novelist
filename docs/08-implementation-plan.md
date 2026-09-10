@@ -998,11 +998,15 @@ provenance 标记。
 | F2 | reviewer Agent 化（`consistency/reviewer_agent.py`）：证据环取证（`query_memory`/`read_file`）后出 `ReviewIssue` 工单（输出契约不变，下游零改动）；证据环失败回退单发；事件级接入，`--agentic-review` | ✅ 已完成 |
 | F3 | 全量回归（922 passed）+ 文档补录（ADR-032 + 命令手册/接口） | ✅ 已完成（文档/回归）· 提交待办 |
 | F4 | 取证预算 CLI 可配（`--agentic-{chronicle,review}-rounds`，默认收紧 6/8）+ ADR-032 补“编排判据 丙+乙/保真 A/B/预算”三决策 | ✅ 已完成 |
+| F5 | Forge 硬边界规模适配（ADR-033 A/B）：`max_width` 宽度分级（长尾 `--max-width-list=12`）+ `max_calls` 规模推导 | ✅ 已完成 |
 | 后续 | A/B 双轨差异审计命令（抽查级·默认关）：旧直出 vs 新 Agent 化比对 `report.written`/issues + `evidence` 差分 | ⬜ 待编码（ADR-032 已拍板） |
+| 后续 | Forge 出口完整性检查（ADR-033 C）：非 LLM 校验卷章数/角色数≥承诺，缺口显式暴露 | ⬜ 待定 |
+| 后续 | Forge 人工大纲审核门（ADR-033 D）：构建后交用户审大纲、决定是否/何层细化 | ⬜ 待拍板形态 |
 
 **验收**：①基座单测决策注入不真调 LLM；②chronicler 冲突场景：仲裁的"保持/忽略/改写/提请"记录留 evidence
 轨迹，落库由确定性闸门背书；③reviewer 同一章产出带证据的告警可解释，契约不变；④全量非 slow 926 全绿；
-⑤取证预算默认收紧可被 CLI 覆盖（`tests/test_m3aa_budget.py` 验证预算不足走回退、充足走 agent）。
+⑤取证预算默认收紧可被 CLI 覆盖（`tests/test_m3aa_budget.py` 验证预算不足走回退、充足走 agent）；
+⑥Forge 尺度（ADR-033）宽度分级与规模预算由 `tests/test_m3aa_forge_scale.py` 覆盖，全量 933 全绿。
 
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
