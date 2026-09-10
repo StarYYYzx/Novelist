@@ -174,7 +174,7 @@ class Console:
 
     def _need_project(self) -> bool:
         if self.state.project_id is None:
-            self.io.output("[!] 未选定项目：`open <id>` 或 `new <标题>` 先建/选一个。")
+            self.io.output("[!] 未选定项目：`/open <id>` 或 `/new <标题>` 先建/选一个。")
             return False
         return True
 
@@ -216,7 +216,7 @@ class Console:
     def cmd_projects(self, args: str) -> None:
         ids = self._ws.list_projects()
         if not ids:
-            self.io.output("（尚无项目——`new <标题>` 新建。）")
+            self.io.output("（尚无项目——`/new <标题>` 新建。）")
             return
         rows = []
         for i, pid in enumerate(ids, 1):
@@ -244,15 +244,15 @@ class Console:
             self.state.project_id = pid
             self.io.output(f"=> 已切入 {pid}")
         else:
-            self.io.output("[!] 未能解析新建项目 id——用 `projects` 查看")
+            self.io.output("[!] 未能解析新建项目 id——用 `/projects` 查看")
 
     def cmd_open(self, args: str) -> None:
         pid = args.strip()
         if not pid:
-            self.io.output("[!] 用法：open <id>")
+            self.io.output("[!] 用法：/open <id>")
             return
         if pid not in self._ws.list_projects():
-            self.io.output(f"[!] 未找到项目 {pid!r}（`projects` 查看）")
+            self.io.output(f"[!] 未找到项目 {pid!r}（`/projects` 查看）")
             return
         self.state.project_id = pid
         title, stage = self._meta(pid)
@@ -264,7 +264,7 @@ class Console:
     def cmd_seed(self, args: str) -> None:
         brief = args.strip()
         if not brief:
-            self.io.output("[!] 用法：seed \"一句话创意\"")
+            self.io.output('[!] 用法：/seed "一句话创意"')
             return
         if not self._need_project():
             return
@@ -306,21 +306,21 @@ class Console:
     def cmd_roll(self, args: str) -> None:
         vol = args.strip().split()[0] if args.strip() else None
         if not vol or not vol.isdigit():
-            self.io.output("[!] 用法：roll <卷号>")
+            self.io.output("[!] 用法：/roll <卷号>")
             return
         self._proj_run("roll", [vol])
 
     def cmd_roll_window(self, args: str) -> None:
         vol = args.strip().split()[0] if args.strip() else None
         if not vol or not vol.isdigit():
-            self.io.output("[!] 用法：roll-window <宽>")
+            self.io.output("[!] 用法：/roll-window <宽>")
             return
         self._proj_run("roll-window", [vol])
 
     def cmd_ingest(self, args: str) -> None:
         parts = args.strip().split()
         if not parts:
-            self.io.output("[!] 用法：ingest <源目录/文件>")
+            self.io.output("[!] 用法：/ingest <源目录/文件>")
             return
         source = parts[0]
         if not self._need_project():
@@ -337,7 +337,7 @@ class Console:
     def cmd_lines_replay(self, args: str) -> None:
         parts = args.strip().split()
         if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
-            self.io.output("[!] 用法：lines-replay <卷> <章>")
+            self.io.output("[!] 用法：/lines-replay <卷> <章>")
             return
         if not self._need_project():
             return
@@ -357,7 +357,7 @@ class Console:
     def cmd_fr_approve(self, args: str) -> None:
         module = args.strip()
         if not module:
-            self.io.output("[!] 用法：fr-approve <模块> [--remember]")
+            self.io.output("[!] 用法：/fr-approve <模块> [--remember]")
             return
         if not self._need_project():
             return
@@ -366,7 +366,7 @@ class Console:
     def cmd_fr_revise(self, args: str) -> None:
         module = args.strip()
         if not module:
-            self.io.output('[!] 用法：fr-revise <模块> "<修改建议>"')
+            self.io.output('[!] 用法：/fr-revise <模块> "<修改建议>"')
             return
         if not self._need_project():
             return
@@ -382,7 +382,7 @@ class Console:
     def cmd_chapter(self, args: str) -> None:
         parts = args.strip().split()
         if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
-            self.io.output("[!] 用法：chapter <卷> <章>")
+            self.io.output("[!] 用法：/chapter <卷> <章>")
             return
         if not self._need_project():
             return
@@ -471,8 +471,11 @@ class Console:
         line = line.strip()
         if not line:
             return False
+        if not line.startswith("/"):
+            self.io.output(f"[!] 命令必须以 / 开头（输入 {line!r}）——/help 查看。")
+            return False
         # 拆出首词（命令名，可含连字符/下划线），其余整串作 args 保留
-        m = re.match(r"(\S+)\s*(.*)$", line, re.S)
+        m = re.match(r"/(\S+)\s*(.*)$", line, re.S)
         name, args = m.group(1), m.group(2)
         table = {
             "projects": self.cmd_projects,
@@ -514,11 +517,11 @@ class Console:
         }
         if name in table:
             return bool(table[name](args))
-        self.io.output(f"[!] 未知命令 {name!r}——`help` 查看。")
+        self.io.output(f"[!] 未知命令 /{name}——/help 查看。")
         return False
 
     def run(self) -> ConsoleState:
-        self.io.output("Novelist 控制台。`help` 看全部命令；`q` 退出。")
+        self.io.output("Novelist 控制台。`/help` 看全部命令；`/exit` 退出。")
         while True:
             prompt = f"novelist({self.state.project_id or 'no-project'})> "
             line = self.io.input(prompt)
@@ -571,60 +574,62 @@ def _compose_argv(s: Console, argv: list[str]) -> list[str]:
     return out
 
 
-HELP_TEXT = """Novelist 控制台 —— 全命令列表
+HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 
 项目导航：
-  projects / ls                列出全部项目（序号 标题 编号）
-  new <标题>                   新建项目并切入
-  open <id>                    选定当前项目
+  /projects | /ls              列出全部项目（序号 标题 编号）
+  /new <标题>                  新建项目并切入
+  /open <id>                   选定当前项目
 
 构建链（forge）：
-  seed "<一句话创意>"           一句话 → 提炼 + 建蓝图 + 构建（--smoke 只提炼）
-  show                         查看当前项目进度（已填设定/缺口/extras）
-  shell                        进入常驻会话，谈设定缺口 / 补设想（/build 触发构建）
-  build                        蓝图已有时重跑构建
-  resume                       断点续跑（商讨/构建，幂等）
-  roll <卷号>                  滚动细纲（每卷）
-  roll-window <宽>             未来窗口滚动
-  ingest <源目录/文件>          已有稿子 → 蓝图+正文+记忆初始化
-  validate                     契约校验（forge validate）
-  craft                        列题材工艺卡（无 LLM）
-  covenant                     查看承诺账本（伏笔兑付/卷主线/核心人设）
-  lines-replay <卷> <章>       细纲修订转正（人工改细纲后重放线索）
+  /seed "<一句话创意>"          一句话 → 提炼 + 建蓝图 + 构建（--smoke 只提炼）
+  /show                        查看当前项目进度（已填设定/缺口/extras）
+  /shell                       进入常驻会话，谈设定缺口 / 补设想（/build 触发构建）
+  /build                       蓝图已有时重跑构建
+  /resume                      断点续跑（商讨/构建，幂等）
+  /roll <卷号>                 滚动细纲（每卷）
+  /roll-window <宽>            未来窗口滚动
+  /ingest <源目录/文件>         已有稿子 → 蓝图+正文+记忆初始化
+  /validate                    契约校验（forge validate）
+  /craft                       列题材工艺卡（无 LLM）
+  /covenant                    查看承诺账本（伏笔兑付/卷主线/核心人设）
+  /lines-replay <卷> <章>      细纲修订转正（人工改细纲后重放线索）
 
 构建期审核（forge review 系列）：
-  fr-review [模块]             查看待审模块（无参列 pending，给模块看全文）
-  fr-approve <模块>            审核通过该模块
-  fr-revise <模块> "<建议>"    按建议重生成模块并展示差异
-  fr-switches [模块 on|off]    查看/设置模块审核开关
+  /fr-review [模块]             查看待审模块（无参列 pending，给模块看全文）
+  /fr-approve <模块>            审核通过该模块
+  /fr-revise <模块> "<建议>"    按建议重生成模块并展示差异
+  /fr-switches [模块 on|off]    查看/设置模块审核开关
 
 正文/流水线（顶层）：
-  chapter <卷> <章>            串行写一章（圣经注入→生成→润色→回写）
-  run [工序或--to 工序]         跑流水线到指定工序；审查阶段做一致性检查
-  status                       查询进度与统计
-  draft [卷-章]                查看单章草稿源清单（--text 连正文）
-  export                       导出发布包(markdown)
-  stats                        统计
+  /chapter <卷> <章>            串行写一章（圣经注入→生成→润色→回写）
+  /run [工序或--to 工序]         跑流水线到指定工序；审查阶段做一致性检查
+  /status                       查询进度与统计
+  /draft [卷-章]                查看单章草稿源清单（--text 连正文）
+  /export                       导出发布包(markdown)
+  /stats                        统计
 
 审核/一致性（顶层）：
-  review                       对已写正文做一次性一致性审查（只读报告）
-  feedback "<修改意见>"         把设定修改意见拆成审批项
-  grant                        处理待决门禁审批（--approve/--deny）
+  /review                       对已写正文做一次性一致性审查（只读报告）
+  /feedback "<修改意见>"         把设定修改意见拆成审批项
+  /grant                        处理待决门禁审批（--approve/--deny）
 
 角色/设定待办（顶层）：
-  characters-enrich            批量丰富群像人物卡
-  enrich-pending               处理角色丰富待办
-  settings-pending [--allow x] 查看/处理设定待决项
-  validate                     顶层欠约束一致性检查
+  /characters-enrich            批量丰富群像人物卡
+  /enrich-pending               处理角色丰富待办
+  /settings-pending [--allow x] 查看/处理设定待决项
+  /validate                     顶层欠约束一致性检查
 
 其他：
-  help                         此帮助
-  exit / quit / q              退出
+  /help                         此帮助
+  /exit | /quit | /q            退出
 
 提示：
-  · 顶层正文一致性审查用 `review`；构建期模块待审用 `fr-review`（二者不同）。
-  · `run`/`status`/`craft`/`show` 等无 LLM，不注入 provider。
-  · `seed`/`build`/`chapter` 等调 LLM，provider 在启动时指定（默认 deepseek）。
+  · 所有命令必须以 / 开头。
+  · 顶层正文一致性审查用 /review；构建期模块待审用 /fr-review（二者不同）。
+  · /shell 会话内命令同样以 / 开头（如 /show /build /review /approve /revise）。
+  · /run /status /craft /show 等无 LLM，不注入 provider。
+  · /seed /build /chapter 等调 LLM，provider 在启动时指定（默认 deepseek）。
 """
 
 

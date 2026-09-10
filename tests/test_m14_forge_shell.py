@@ -221,3 +221,55 @@ def _new_consult_result():
     from novelist.forge.ask import ConsultResult
 
     return ConsultResult(ok=True)
+
+
+# ---------- 审核命令 /review /approve /revise（build gate 拦截时处置）----------
+
+def _mark_pending(ws: Workspace, pid: str, module: str):
+    """在 review.json 落一条 pending（直接调 review 底层，未真调 LLM）。"""
+    from novelist.forge.state import Blueprint
+    from novelist.forge.review import mark_pending
+
+    bp = Blueprint.load(ws, pid)
+    mark_pending(ws, pid, bp, [module], log_fn=lambda t: None)
+
+
+def test_shell_review_lists_and_shows_pending(tmp_path):
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    _mark_pending(ws, pid, "outline_volume")
+    io = FakeIO(lines=["/review", "/review outline_volume", "/exit"])
+    res = run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    assert "outline_volume" in "\n".join(io.out)
+
+
+def test_shell_approve_clears_pending(tmp_path):
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    _mark_pending(ws, pid, "outline_volume")
+    io = FakeIO(lines=["/approve outline_volume", "/exit"])
+    res = run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    from novelist.forge.review import load_review
+    assert "outline_volume" not in (load_review(ws, pid).get("pending") or {})
+    joined = "\n".join(io.out)
+    assert "已通过" in joined
+
+
+def test_shell_approve_unknown_module_warns(tmp_path):
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    io = FakeIO(lines=["/approve nope", "/exit"])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    assert any("无此待审模块" in ln for ln in io.out)
+
+
+def test_shell_review_empty_pending_prompts(tmp_path):
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    io = FakeIO(lines=["/review", "/exit"])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    assert any("无待审模块" in ln for ln in io.out)

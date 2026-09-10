@@ -96,6 +96,13 @@ novelist/
 └── docs/
 ```
 
+> **§2 结构图为设计蓝图（前瞻），非逐项均已实现的清单**。实际落地以各里程碑的
+> 落地记录（下方 ✅/⏳ 标注）与源码为准；图中部分文件尚未编码，显式未实现项包括：
+> `core/subagent.py`、`permission.py`、`budget.py`、`memory/` 子目录（实际在 `core/`）、
+> `tools/{setting,outline,takes,consistency}.py`（其中 `takes.py` 的 `write_take` 角色演员
+> 未编码）、`providers/{anthropic,ollama,vllm}.py`（真实厂商经 `PRESETS` factory，无独立文件）、
+> `consistency/semantic.py`、`agents/*.md` 提示词目录。读到图上某文件请以其里程碑落地记录为准。
+
 ## 3. 里程碑路线图
 
 ### M0 — 骨架与契约（1 周）✅ 已完成
@@ -121,7 +128,7 @@ novelist/
 - **记忆子系统初版** ✅：`core/writeback.py` `commit_event` 真实写入 `memory/`（人物经历/剧情事件）+ 契约校验（引用完整性），关键词检索 `query_memory` 降级可用；冲突双检/语义检索随 M3 完整化。
 - **DeepSeek 真实适配器** ✅：`providers/deepseek.py`（`DeepSeek-API-KEY` 环境变量），真实 API 集成测试 `test_deepseek_live_completion` 通过。
 
-### M3 — 治理与交付（进行中）
+### M3 — 治理与交付（核心完成，仅余 M3x.R3 / M3y.T3 编排层接线）
 
 #### M3a — 门禁与交付 ✅ 已完成
 - danger 级门禁流程完整（CLI `grant` 审批 + 策略文件 `PermissionGate.from_policy_file`）。
@@ -1023,10 +1030,12 @@ provenance 标记。
 **需求**：系统可接入多家 LLM 厂商的 api-key，用全量主流大模型（国内外云厂商 + 本地）进行小说撰写——
 生成/提炼/候选/抽取全流程均可在厂商与模型间切换，不绑定某一家。
 
-**为什么单列**：现有 `providers/` 仅 openai（OpenAI 兼容）/ deepseek / lmstudio / fake 四家，其中
-openai 与 deepseek 均为 OpenAI 兼容 SDK，无 Anthropic / Gemini / 智谱 / Kimi 等原生厂商适配器；
-`ProviderConfig`（config.py:15-22）无 api-key 字段，密钥散落在环境变量、无统一管理；
-且 docs/11 P0-2 记载 `REGISTRY`（providers/__init__.py:16-57）是死代码——`cli.py:354
+**为什么单列**：`providers/` 实际文件仅 4 个——`openai.py`（OpenAI 兼容基类 + 拦截识别）、
+`deepseek.py`（实测适配器）、`fake.py`（测试替身，非 OpenAI 兼容）、`secrets.py`（密钥注入），
+其中实测适配器 openai/deepseek 均为 OpenAI 兼容，无 Anthropic / Gemini / 智谱 / Kimi 等原生厂商
+独立适配文件（真实厂商经 `PRESETS`
+factory 复用基类，见 X2）；`ProviderConfig`（config.py:15-22）无 api-key 字段，密钥散落在环境变量、
+无统一管理；且 docs/11 P0-2 记载 `REGISTRY`（providers/__init__.py:16-57）是死代码——`cli.py:354
 _make_cli_provider` 用 if/elif 自行装配，未走注册表。多厂商接入必须先清偿 P0-2（Provider 双轨制）。
 
 **排序**：排在当前未做完工作（M3l F3–F5、M3m T4、M4、docs/11 §13 P0/P1 整改清单）之后，不插队。

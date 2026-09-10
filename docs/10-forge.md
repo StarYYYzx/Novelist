@@ -292,25 +292,34 @@ SeedSpec（流派/卖点/主角雏形/规模）        │ I2 LLM 抽取（每�
 **与 `resume` 的分工**：`resume` = 断点续跑（一次性收敛就返回）；`shell` = 常驻
 REPL（`/exit` 才退出）。二者共享 `detect_gaps` + transcript，阶段推进一致。
 
-**命令**（引擎外键盘映射，不授予 LLM 任何自主控制权，ADR-032 延续）：
+**命令**（引擎外键盘映射，一律以 `/` 开头；不授予 LLM 任何自主控制权，ADR-032 延续）：
 
 | 命令 | 行为 |
 | --- | --- |
 | `/exit` | 退出：无缺口 → `seeded`；仍有缺口 → 保持 `consulting`（待 resume/shell 续） |
 | `/show` | 打印已填设定概览 + 未填缺口 + extras 登记状态 |
-| `/help` | 命令帮助 |
+| `/review [模块]` | 处置审核闸门：无参列出 pending 模块；给模块名显示其评审稿全文 |
+| `/approve <模块> [--remember]` | 审核通过该模块（写入账本/设定；`--remember` 永久关该模块把关） |
+| `/revise <模块> "<建议>"` | 按建议重生成模块并展示差异（仍待审，需再 `/approve`） |
 | `/build` | 触发构建；required 缺口未满时先补齐推荐值并 confirm（默认 y），再调构建引擎 |
 | `/save` | 立即落盘 blueprint（每轮已有自动保存，此处为手动保险） |
-| 自由语 | 单次 LLM 分派为回答 + extras；非法值由确定性护栏拒绝重答（复用 ask） |
+| `/help` | 命令帮助 |
+| 自由语 | **非 `/` 开头的输入**：单次 LLM 分派为回答 + extras；非法值由确定性护栏拒绝重答（复用 ask） |
 | 空回车 | 默认取推荐值推进；**无默认槽不卡死**——先跳过（说明"本轮回车跳过，连续跳过将由系统补设定供审核"），连续空回车到重试上限后由系统按 LLM 推断补一个**低置信值（src=llm conf=0.4）**注册为 `low_confidence` 缺口，出现在 `/show` 的"仍待补"里供用户审核/修改（方案2，2026-09-10） |
+
+> **命令前缀纪律（2026-09-11）**：shell 与 console 的统一交互均要求命令以 `/` 开头，
+> 其余输入一律视为自由语。shell 与顶层 click 命令行（`forge approve`）是两种入口，
+> 语义一致、前缀不同：shell 内用 `/review /approve /revise`；命令行用 `forge review/approve/revise`。
+> 首次 build 被 gate 拦截时，shell 会直接提示对应的 `/review m → /approve m` 会话命令。
 
 > **无默认槽循环防护**：`run_consult` 与 `shell` 的空回车/fallback 共用 `_settle_round` 门卫——
 > 无默认槽先跳过，反复跳过触发 `_autoset_slot` 系统自动设定（低置信待审核），
 > 从根本上杜绝"无默认 llm 槽空回车 → 永远写不上 → 死循环"。
 
-**渐进接入**：P1 只打通"谈设定 + /build"。P2（读已写章节）、P3（修订建议链）、
-P4（大纲/细纲生成后审核确认与修改、全链路闭环）在同一会话壳上逐步接线，模块间
-零耦合。
+**渐进接入**：P1 只打通"谈设定 + /build"。P1.5（2026-09-11）在会话内直连审核闸门
+（`/review /approve /revise`，不再需要退出到命令行处置 pending）。P2（读已写章节）、
+P3（修订建议链）、P4（大纲/细纲生成后审核确认与修改、全链路闭环）在同一会话壳上逐步接线，
+模块间零耦合。
 
 ### 5.6 项目交互中枢（`novelist console` · 2026-09-10）
 
@@ -325,16 +334,19 @@ novelist console [--dir <工作区根>] [--provider deepseek] [--api-key …] [-
 
 | 命令 | 作用 | 底层命令 |
 | --- | --- | --- |
-| `projects` / `ls` | 列出工作区全部项目（id+标题+阶段） | `Workspace.list_projects()` |
-| `new <标题>` | 新建项目并自动切入 | `init` |
-| `open <id>` | 选定当前项目 | — |
-| `show` | 查看当前项目进度（已填/缺口/extras） | `forge show` |
-| `seed "<一句话>"` | 一句话创意 → 建蓝图 + 构建 | `forge seed` |
-| `build` | 蓝图已有时重跑构建 | `forge build` |
-| `resume` | 断点续跑（商讨/构建） | `forge resume` |
-| `shell` | 进入设定会话（缺口/补设想） | `forge shell` |
-| `chapter <卷> <章>` | 写正文 | `chapter` |
-| `help` / `exit` / `quit` / `q` | 帮助 / 退出 | — |
+| `/projects` / `/ls` | 列出工作区全部项目（序号 标题 编号） | `Workspace.list_projects()` |
+| `/new <标题>` | 新建项目并自动切入 | `init` |
+| `/open <id>` | 选定当前项目 | — |
+| `/show` | 查看当前项目进度（已填/缺口/extras） | `forge show` |
+| `/seed "<一句话>"` | 一句话创意 → 建蓝图 + 构建 | `forge seed` |
+| `/build` | 蓝图已有时重跑构建 | `forge build` |
+| `/resume` | 断点续跑（商讨/构建） | `forge resume` |
+| `/shell` | 进入设定会话（缺口/补设想） | `forge shell` |
+| `/chapter <卷> <章>` | 写正文 | `chapter` |
+| `/help` / `/exit` / `/quit` / `/q` | 帮助 / 退出 | — |
+
+> **命令前缀（2026-09-11）**：console 与 shell 全部命令要求以 `/` 开头；无 `/` 输入提示
+> "命令必须以 / 开头"。`/shell` 会话内的命令同样带 `/`（如 `/show /build /review /approve`）。
 
 **设计纪律**：`console` 不复制任何业务逻辑——每个命令经 `CliRunner.invoke` 复调现有
 click 命令，保证与命令行行为逐字一致；`Workspace.list_projects()` 以 `project.json` 存在性
@@ -682,6 +694,12 @@ src/novelist/forge/
   validate.py      # ✅ V1–V6 契约校验（V4 可写冒烟 FakeProvider，零真调）—— F5（docs/08 F5 落地记录）
   report.py        # ✅ report.md 渲染 + 双写（全量+摘要）—— F5
   snapshot.py      # ✅ 快照 / 恢复 / diff 基线（双快照：前置 + 结果态）—— F5
+  review.py        # ✅ 分模块审核闸门（ADR-024 v1）：switches/pending/history → approve/revise 处置
+  covenant.py      # ✅ 承诺账本（2026-09-06 定稿）："恒定 vs 可变"边界，滚动修订不触碰承诺
+  coherence.py     # ✅ 细纲连读审查（2026-09-05）：跨章母题/因果链/时间线/节奏 → coherence-v{vol}.json + 人读评审稿
+  textnorm.py      # ✅ 角色名防污染归一（ask 槽位 / 节点卡 / 引擎治愈共用）
+  console.py       # ✅ 项目交互中枢 `novelist console`（2026-09-10 常驻 REPL，命令面全接 CLI）
+  shell.py         # ✅ 常驻会话壳（P1 探讨设定 + /build；命令分发在引擎外的键盘映射，LLM 无自主控制权）
 ```
 
 ---

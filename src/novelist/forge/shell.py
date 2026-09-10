@@ -22,17 +22,24 @@ from .ask import (  # noqa: PLC2701 - 复用 ask 的已有护栏/分派，避免
     _extras_banner, _fill_one_recommended, _llm_dispatch, _record_extras,
     _render_bp_overview, _render_round, _RETRY_LIMIT, _settle_round)
 from .io_console import AnswerIO, ConsoleIO
+from .review import (
+    load_review, resolve_pending, stage_pending_for_revise,
+)
 from .slots import Slot, default_slots, detect_gaps
 from .state import Blueprint, ForgeState, append_transcript
 
 _MAX_WINDOW = 3
 
-HELP_TEXT = """会话命令：
-  /exit         退出会话（未收敛缺口保留，退到 consulting 待 resume）
-  /show         查看已填设定概览 + 补充设想登记状态
-  /help         本帮助
-  /build        触发构建（仍缺 required 时先补齐推荐值并确认再构建）
-自由语（其余输入）：回答本轮缺口 / 补充设想（落不到槽位会登记 extras）。
+HELP_TEXT = """会话命令（一律以 / 开头）：
+  /exit           退出会话（未收敛缺口保留，退到 consulting 待 resume）
+  /show           查看已填设定概览 + 补充设想登记状态
+  /review [模块]   查看待审模块（无参列 pending，给模块名看全文）
+  /approve 模块   审核通过该模块（写入账本/设定）
+  /revise 模块"建议"  按建议重生成并经审批（仍待审）
+  /build          触发构建（仍缺 required 时先补齐推荐值并确认再构建）
+  /save           手动保存蓝图
+  /help           本帮助
+自由语（非 / 开头的输入）：回答本轮缺口 / 补充设想（落不到槽位会登记 extras）。
 空回车 = 本轮取推荐值推进。"""
 
 
@@ -91,56 +98,155 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
         if line is None:
             line = "/exit"
 
-        cmd = line.strip().lower()
+        raw = line.strip()
         # ---- 命令分发（确定性，无 LLM 控制权）----
-        if cmd in ("/exit", "/quit", ":q"):
-            if gaps:
-                state.stage = "consulting"
-                state.save(ws, project_id)
-                result.quit_early = True
-                result.warnings.append(
-                    "会话结束：仍有未收敛缺口（stage=consulting）。"
-                    "继续用 `novelist shell` 或 `forge resume`，或直接 `forge build`。"
-                )
-            else:
-                state.touch_stage(ws, project_id, "seeded")
-            return result
-        if cmd in ("/help", "/h", "?", "help"):
-            io.notify(HELP_TEXT)
-            continue
-        if cmd in ("/show", "@show", "show"):
-            io.notify(_render_bp_overview(bp, slots) + _extras_banner(ws, project_id))
-            continue
-        if cmd in ("/build", "build"):
-            _maybe_build(ws, project_id, bp, provider, io, state, gaps, slots,
-                         max_calls, result)
-            continue
-        if cmd in ("/save", "save"):
-            bp.save(ws, project_id)
-            io.notify("[shell] 蓝图已保存。")
+        # 会话命令一律以 / 开头；其余输入/空回车一律视为自由语（回答或补充设想）。
+        if raw.startswith("/"):
+            # 统一斜杠前缀：/exit /show /build /save /review /approve /revise /help
+            key, _, arg = raw[1:].partition(" ")
+            key = key.lower().strip()
+            arg = arg.strip()
+            if key in ("exit", "quit"):
+                if gaps:
+                    state.stage = "consulting"
+                    state.save(ws, project_id)
+                    result.quit_early = True
+                    result.warnings.append(
+                        "会话结束：仍有未收敛缺口（stage=consulting）。"
+                        "继续用 `novelist shell` 或 `forge resume`，或直接 `forge build`。"
+                    )
+                else:
+                    state.touch_stage(ws, project_id, "seeded")
+                return result
+            if key in ("help", "h"):
+                io.notify(HELP_TEXT)
+                continue
+            if key in ("show",):
+                io.notify(_render_bp_overview(bp, slots) + _extras_banner(ws, project_id))
+                continue
+            if key in ("build",):
+                _maybe_build(ws, project_id, bp, provider, io, state, gaps, slots,
+                             max_calls, result)
+                continue
+            if key in ("save",):
+                bp.save(ws, project_id)
+                io.notify("[shell] 蓝图已保存。")
+                continue
+            if key in ("review",):
+                _cmd_review(ws, project_id, io, arg)
+                continue
+            if key in ("approve",):
+                _cmd_approve(ws, project_id, io, arg)
+                continue
+            if key in ("revise",):
+                if not provider:
+                    io.notify("[shell] revise 需要 LLM（provider 未配置）")
+                    continue
+                _cmd_revise(ws, project_id, provider, io, arg)
+                continue
+            io.notify(f"[shell] 未知命令 /{key}——/help 查看。")
             continue
 
         # ---- 自由语（含空回车=取推荐值）----
         if not window:
             # 无缺口（或全部已答）：无法分派到槽，直接登记为补充设想
-            if line.strip():
-                added = _record_extras(ws, project_id, [line.strip()])
+            if raw:
+                added = _record_extras(ws, project_id, [raw])
                 result.extras_seen += added
                 io.notify(f"[shell] 已登记 {added} 条补充设想（extras 待确认）。")
             continue
-        if not line.strip():
+        if not raw:
             _settle_round(bp, qs, provider, io, ws, project_id, result,
                           answered_keys, attempts, round_no, "ask.default")
             bp.save(ws, project_id)
             result.rounds_done += 1
             continue
-        ok = _dispatch_free_text(bp, qs, line, provider, ws, project_id,
+        ok = _dispatch_free_text(bp, qs, raw, provider, ws, project_id,
                                  attempts, result, round_no, io, answered_keys)
         if not ok:
             _settle_round(bp, qs, provider, io, ws, project_id, result,
                           answered_keys, attempts, round_no, "dispatch.fallback")
         bp.save(ws, project_id)
         result.rounds_done += 1
+
+
+def _cmd_review(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
+    """/review [模块]：无参列 pending；给模块名显示该模块评审稿全文路径。"""
+    cfg = load_review(ws, project_id)
+    pending = cfg.get("pending") or {}
+    if not arg:
+        if not pending:
+            io.notify("[shell] 无待审模块（pending 为空）。")
+            return
+        io.notify("[shell] 待审模块：")
+        for name in sorted(pending):
+            entry = pending[name]
+            io.notify(f"  - {name}（{entry.get('vol','')}卷/{entry.get('ch','')}章，"
+                      f"{entry.get('file','')}）")
+        io.notify("  /review <模块名> 看全文；/approve <模块> 通过；/revise <模块> \"建议\"。")
+        return
+    if arg not in pending:
+        io.notify(f"[shell] 无此待审模块 {arg!r}（/review 查看 pending）。")
+        return
+    entry = pending[arg]
+    md = ws._abs(f"{project_id}/{entry['file']}")
+    try:
+        text = md.read_text(encoding="utf-8")
+    except OSError as e:  # noqa: BLE001
+        io.notify(f"[shell] 读取评审稿失败：{e}")
+        return
+    io.notify(f"=== /review {arg}（{md}）===")
+    io.notify(text)
+
+
+def _cmd_approve(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
+    """/approve 模块 [--remember]：通过审核模块。"""
+    if not arg:
+        io.notify('[shell] 用法：/approve <模块> [--remember]')
+        return
+    parts = arg.split()
+    module = parts[0]
+    remember = "--remember" in parts[1:]
+    cfg = load_review(ws, project_id)
+    if module not in (cfg.get("pending") or {}):
+        io.notify(f"[shell] 无此待审模块 {module!r}（/review 查看 pending）。")
+        return
+    try:
+        resolve_pending(ws, project_id, module, decision="approve",
+                        remember=remember, note="shell approve")
+    except ValueError as e:  # noqa: BLE001
+        io.notify(f"[shell] {e}")
+        return
+    io.notify(f"[shell] 已通过审核：{module}"
+              + ("（永久关闭该模块把关）" if remember else "") + "。")
+
+
+def _cmd_revise(ws: Workspace, project_id: str, provider, io: AnswerIO,
+                arg: str) -> None:
+    """/revise 模块 "建议"：按建议重生成模块并展示差异（仍待审）。"""
+    first = arg.split(None, 1)
+    if len(first) < 2:
+        io.notify('[shell] 用法：/revise <模块> "<修改建议>"')
+        return
+    module = first[0]
+    suggestions = first[1].strip()
+    from .engine import revise_module  # 延迟导入，避免顶层循环
+
+    cfg = load_review(ws, project_id)
+    try:
+        diffs = revise_module(ws, project_id, module, suggestions, provider,
+                              log_fn=lambda t: io.notify(f"  {t}"))
+    except Exception as e:  # noqa: BLE001
+        io.notify(f"[shell] revise 失败：{e}")
+        return
+    if not diffs:
+        io.notify(f"[shell] {module} 无改动内容。")
+        return
+    io.notify(f"[shell] {module} 已按建议重生成，差异如下（仍待审，/approve 通过）：")
+    for d in diffs:
+        io.notify(f"  {d}")
+    if cfg.get("pending", {}).get(module):
+        stage_pending_for_revise(ws, project_id, module, suggestions)
 
 
 def _dispatch_free_text(bp: Blueprint, qs: list[Any], line: str, provider,
@@ -224,9 +330,9 @@ def _maybe_build(ws: Workspace, project_id: str, bp: Blueprint, provider,
     for w in res.warnings:
         io.notify(f"  [warn] {w}")
     if res.gate_halted:
-        io.notify("审核闸门：以下模块待处置后再续跑 build/resume：")
+        io.notify("审核闸门：以下模块待处置后再续跑 build/resume（会话内命令）：")
         for m in res.pending_review:
-            io.notify(f"  - {m}（forge review {m} → approve / revise）")
+            io.notify(f"  - {m}（/review {m} 看全文 → /approve {m} 通过 或 /revise {m} \"建议\"）")
         return
     io.notify(f"[shell] build done: calls={res.calls_used} 卷={res.volumes_written} "
               f"章={res.chapters_written}")
