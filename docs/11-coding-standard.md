@@ -143,8 +143,9 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
 
 - **R11.1 提交信息**：conventional commits + 中文摘要——`feat(<scope>): …` / `fix(<scope>): …` /
   `docs: …` / `test(<scope>): …`；scope 用模块名（entity/budget/phase/orchestrator/forge…）。
-- **R11.2 ruff**：pyproject 配置见 §13 P2-9；新增代码必须过 `ruff check`；
-  行宽 100（现状最长 124，存量超宽行逐步收）。
+- **R11.2 ruff**：**已落地**（`pyproject.toml` 的 `[tool.ruff]`，2026-09-12 / ADR-034；
+  口径与后续提标路径见 §13 P2-9）。新增代码必须过 `ruff check`，由门禁 G1 强制（`scripts/check.py`）。
+  行宽 100（E501 暂未 select，故目前只对 `ruff format` 生效；存量最长 124，逐步收）。
 - **R11.3 mypy（宽松起步）**：`ignore_missing_imports = true`，先只对 `core/` 新增文件启用，
   存量按模块逐步纳入。
 - **R11.4 死依赖零容忍**：声明进 pyproject 的依赖必须被使用（现状 structlog 零使用，§13 P2-8 清理）。
@@ -245,22 +246,26 @@ gate/approvals/reg/emb），各命令一行取用。命令函数降到 ≤40 行
 可选导入，就从 dependencies 挪到 optional（或反向：删 try/except 当硬依赖）。推荐前者（现状实际
 不依赖 pydantic 也能跑）。
 
-**P2-9 工具链接入**：pyproject 追加：
+**P2-9 工具链接入**：**`[tool.ruff]` 已落地（2026-09-12，ADR-034）**，配置以 `pyproject.toml` 为准，
+此处不再复述以免两处漂移。
+
+落地口径是**锁定现状**（`select = ["E4","E7","E9","F"]`，与 ruff 默认一致，当前 0 告警），
+而不是一步提到 `["E","F","W","I","B","UP","SIM"]` —— 后者会立刻产生数百条新告警，
+把"锁状态"和"提标准"混在一次提交里必然失控。
+
+**后续独立批次（未实现）**：先把下面这组目标规则的告警清零，再合入 `pyproject.toml`：
 
 ```toml
-[tool.ruff]
-line-length = 100
-target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 ignore = ["E501"]   # 存量长行渐进收，先不 block
-[tool.mypy]
-python_version = "3.11"
-ignore_missing_imports = true
-check_untyped_defs = false   # 宽松起步，随 P1-7 收紧
 ```
 
-dev 依赖加 `ruff>=0.4`、`mypy>=1.10`。
+`[tool.mypy]` **仍未落地**（`python_version = "3.11"`、`ignore_missing_imports = true`、
+`check_untyped_defs = false` 宽松起步），dev 依赖需加 `mypy>=1.10`。
+
+> 注意：`ruff` 必须锁版本（当前 **0.12.0**）——不锁的话规则集随版本默认值漂移，
+> 会出现"昨天全绿、升级后一片红"。CI 里显式 `pip install "ruff==0.12.0"`。
 
 **P2-10 长函数跟进**（不阻断，各批次顺路）：`tools/memory_tools.py:31 tools()` 113 行（按工具拆
 builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STATE/R-TIME 扩展时拆）。
@@ -275,7 +280,10 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | P1-4 异常归位 | 待做 | 独立 refactor（低风险） |
 | P1-5 conftest | 🔶 部分（conftest 已建，夹具未统一） | 新测试接入 |
 | P1-6 CLI 装配 | 待做 | 与 P0-2 同批 |
-| P2-8/9/10 | 待做 | 顺路 |
+| P2-8 依赖清理（structlog） | 待做 | 顺路 |
+| P2-9 `[tool.ruff]` | ✅ 已完成（2026-09-12，ADR-034；锁定现状 `E4/E7/E9/F`） | 见本节 P2-9 |
+| P2-9 `[tool.mypy]` + 扩规则 | 待做 | 独立批次（先清告警再合入） |
+| P2-10 长函数跟进 | 待做 | 顺路 |
 
 ---
 
@@ -300,15 +308,16 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | ruff 告警 | 未测 | **0**（本批从 125 清零：F401 87 / F841 24 / F541 6 / E741 4 / E402 2 / F811 1 / E731 1） | 保持 0 |
 | 死代码 | providers REGISTRY、base.py | **已清** ✅（REGISTRY 已投用、`providers/base.py` 已删）；`core/scene_tools.py` 保留（文档记为待接入预留件） | 归零 |
 | 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
-| `[tool.ruff]` / `[tool.mypy]` | 无 | **仍无**（P2-9 未做；pyproject 无 `[tool.ruff]`/`[tool.mypy]`） | 落地 |
+| `[tool.ruff]` / `[tool.mypy]` | 无 | **`[tool.ruff]` 已落（锁定现状，0 告警）；`[tool.mypy]` 仍无**（P2-9 部分完成，ADR-034） | 落地 |
 | 测试 | 22 文件 4128 行 220 用例，无 conftest | **87 文件 17136 行；969 收集**（967 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
 | schemas / docs | — | **24 个 schema；docs 20 文件 7024 行** | — |
 | 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
 | 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |
 
-> 复测命令（无第三方依赖）：
+> 复测命令（**已门禁化**：本表数字由 `scripts/check.py` 的 G5 逐格校验，不一致即 CI 红）：
 > ```bash
-> C:/Python314/python.exe -c "..."   # AST 统计见 .workbuddy/memory/2026-09-12.md 记录
-> E:/python/ana/Scripts/ruff.EXE check src tests scripts
-> C:/Python314/python.exe -m pytest tests/ -q --collect-only   # 969 收集
+> python scripts/check.py --docs-baseline   # 只重算并比对本表
+> python scripts/check.py --all             # 完整门禁（ruff + 密钥 + 卫生 + 全量回归 + 本表）
 > ```
+> 代码变更导致本表数字变动时，**更新本表的「实测」列**，不要改脚本去迁就文档。
+> 裸 except / TODO / FIXME 在 `src/` 的扫描口径为字面量计数（当前均为 0）。

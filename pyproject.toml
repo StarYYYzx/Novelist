@@ -48,5 +48,24 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-m 'not slow'"
 markers = [
-    "slow: 慢速真实集成测试（本地 LM-Studio 长文本生成），用 -m slow 显式运行",
+    "slow: 慢速真实外部 API / 长文本集成测试，用 -m slow 显式运行（默认套件禁真调外部服务）",
 ]
+
+[tool.ruff]
+# 显式锁定规则集与目标版本：不写的话两者都会随 ruff 版本默认值漂移，
+# 出现"昨天全绿、升级后一片红"。本节的 select 就是当前的实际状态（0 告警）。
+# 注意：`ruff check --fix --unsafe-fixes` 处理 F841 会留下无意义表达式（裸 lambda、孤立调用），
+# 必须 --diff 预览后手工处理 —— 见 .ai/skills/python-repo-quality-remediation/SKILL.md。
+target-version = "py311"          # 与 requires-python 下限一致；也是能抓到 PEP 701 类问题的版本
+line-length = 100                 # 与 docs/11 R11.2 一致；E501 未 select，故只对 ruff format 生效
+extend-exclude = [
+    "novel_workspace",
+    "tests/test_noval",
+    ".ai",
+    ".git_wiped_20260905",
+]
+
+[tool.ruff.lint]
+# 与 ruff 默认一致：只锁定，不扩张。想加 I（isort）/ B（bugbear）时请单独开一批，
+# 先把新增告警清零再合入，别把"锁状态"和"提标准"混在一次提交里。
+select = ["E4", "E7", "E9", "F"]

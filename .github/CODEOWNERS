@@ -1,0 +1,21 @@
+# Novelist CODEOWNERS
+#
+# 规范与技能的改动会改变**每个人的 AI agent 行为**（等价于生产配置），因此需要 owner review。
+# 语法：<路径模式> <@用户名或邮箱>  —— 用户名不对时 GitHub 只是不生效，不会报错。
+
+# AI 协作规范与桥接（唯一规范源在 AGENTS.md，别让桥接文件悄悄长内容）
+/AGENTS.md                        @StarYYYzx
+/CLAUDE.md                        @StarYYYzx
+/.github/                         @StarYYYzx
+
+# 技能（随 git 分发，团队共用）
+/.ai/skills/                      @StarYYYzx
+
+# 门禁本体与 hook：改它等于改"什么算合格"
+/scripts/check.py                 @StarYYYzx
+/scripts/ai_bootstrap.py          @StarYYYzx
+/.githooks/                       @StarYYYzx
+
+# 编码规范与架构决策
+/docs/11-coding-standard.md       @StarYYYzx
+/docs/03-architecture-decision.md @StarYYYzx

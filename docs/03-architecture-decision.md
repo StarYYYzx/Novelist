@@ -731,6 +731,51 @@
 
 **验收**：`tests/test_m3aa_forge_scale.py` 7 例 + `test_m17_forge_f4.py` 截断用例改写；全量 933 passed。
 
+### ADR-034 跨工具 AI 规范与技能分发：单一源 + 薄桥接 + 机械门禁（· 拍板定稿 2026-09-12，**已实现**）
+
+> 背景/问题：本项目大量依赖 AI 编码 agent 推进，但"约定"此前散落在 `AGENTS.md`、`docs/13`、
+> 人机对话、以及各自的本机记忆里。实测后果有三：① 同一事实多处不一致（ADR 编号止于 031/019、
+> 测试数 5 处不同、`broadcast_casting` 默认值自相矛盾）；② 文档基线失效无人察觉
+> （`docs/11` 写 src 8047 行，实际 29031，差 3.6 倍）；③ 一个未标 `slow` 的用例长期在默认套件里
+> 真调外部 API。**根因不是"没写规范"，而是规范只是文本、靠自觉执行**。
+> 同时团队其他成员用不同 agent（Claude Code / Cursor / Copilot / Codex），而本机目录
+> （`.workbuddy/`、`.claude/`）不入 git → **规范与技能传不出去**。
+
+**决策**：
+
+- **A · 单一源**：规范唯一源 = 仓库根 `AGENTS.md`（跨工具事实标准，Linux Foundation 治理，
+  Codex/Copilot/Cursor/Cline/Zed/Amp/Jules 原生读取）；技能唯一源 = `.ai/skills/<name>/SKILL.md`
+  （Agent Skills 开放标准，与 Claude Code 同构）。**两者都入库**。
+- **B · 薄桥接**：`CLAUDE.md` 写 `@AGENTS.md`、`.github/copilot-instructions.md` 写指针，各 1–5 行，
+  **禁止复制规范正文**——同一事实写两处必然漂移。
+- **C · 原生装载**：`.workbuddy/skills` 与 `.claude/skills` 用**目录联接（junction）**指向 `.ai/skills`，
+  由 `scripts/ai_bootstrap.py` 幂等建立：**一份源、两处原生可见、零复制零漂移、无需管理员权限**。
+  （不支持联接的环境可 `--copy` 降级，但会引入漂移风险，属例外而非常态。）
+- **D · 三层门禁**（本 ADR 的核心主张：**每条约定配一个机械检查；文本规范会腐烂，门禁不会**）：
+  - L1 CI `.github/workflows/ci.yml` —— **Python 3.11**（`requires-python` 下限，也是能抓到
+    PEP 701 类问题的版本；`forge/nodes.py` 真出过这个 bug）；
+  - L2 `scripts/check.py --quick`（<3s，经 `core.hooksPath=.githooks` 挂 pre-commit）；
+  - L3 `scripts/check.py --all`（+ pytest 全量与文档基线；提交前与 CI **共用同一条命令**）。
+  - 沙箱环境变量（`CODEBUDDY_SAFE_DELETE_*`）由 `check.py` 注入 —— 让"该设的环境变量"只有一个来源。
+- **E · 边界（刻意不做）**：门禁项**宁可少而稳**。不做零引用/死代码扫描（零引用 ≠ 该删，
+  `core/scene_tools.py` 是设计预留件）与全库"测试数"正则扫描（里程碑历史数字本不该报警）。
+- **F · 治理**：规范与技能等价于"生产配置"——改动影响每个人的 agent 行为，故走 PR，
+  见 `.github/CODEOWNERS`。
+
+**实现**：`AGENTS.md`（唯一规范源，§0–§9）| `CLAUDE.md` / `.github/copilot-instructions.md`（桥接）|
+`.ai/skills/`（技能源 + README）| `scripts/ai_bootstrap.py` | `scripts/check.py`（G1–G5）|
+`.githooks/pre-commit` | `.github/workflows/ci.yml` | `pyproject.toml` 的 `[tool.ruff]`（锁定现状）；
+`docs/11` §13 P2-9 改为"ruff 已落 / mypy 与扩规则留独立批次"。
+
+**已知边界**：`git config core.hooksPath` 是**本机配置、不随 git 分发**，故每个 clone 需跑一次
+`ai_bootstrap.py`（已写进 `AGENTS.md` §0，agent 读到会代为执行）。CI **刻意用 windows-latest**：
+本项目尚未验证 Linux 可移植性，门禁的职责是"因真实缺陷变红"而非"因平台差异变红"，
+待可移植性验证后再加 Linux job。
+
+**验收**（2026-09-12）：`python scripts/check.py --all` → **G1–G5 五项全绿**；
+全量回归 **967 passed · 1 skipped · 1 deselected**（80.22s）；G5 的 9 项基线指标与 `docs/11`
+逐格一致；`ai_bootstrap.py` 建链后两个工具的目录各可见 2 个技能。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |

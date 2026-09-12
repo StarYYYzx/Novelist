@@ -1,0 +1,47 @@
+#!/bin/sh
+# Novelist pre-commit —— 层A 快速门禁（ruff + 密钥扫描 + 卫生检查，<3s）。
+#
+# 完整门禁（含 pytest 全量与文档基线）请在提交前手动跑：
+#     python scripts/check.py --all
+# CI 也会跑 --all，所以本地漏了不会漏到远端。
+#
+# 紧急跳过：SKIP_CHECK=1 git commit ...（请在 PR 里说明原因）
+set -u
+
+if [ "${SKIP_CHECK:-0}" = "1" ]; then
+  echo "[pre-commit] SKIP_CHECK=1，跳过快检"
+  exit 0
+fi
+
+[ -f scripts/check.py ] || exit 0
+
+# 解释器探测：NOVELIST_PYTHON > .git/novelist-hook-python（ai_bootstrap 写入）> PATH
+# 只用 shell 内建（read / command / [），不依赖 cat 等外部命令 —— 本机 coreutils 可能缺失。
+PY=""
+if [ -n "${NOVELIST_PYTHON:-}" ]; then
+  PY="$NOVELIST_PYTHON"
+elif [ -f .git/novelist-hook-python ]; then
+  IFS= read -r PY < .git/novelist-hook-python || PY=""
+fi
+
+if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+  PY=""
+  for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
+  done
+fi
+
+if [ -z "$PY" ]; then
+  echo "[pre-commit] 未找到 python，跳过层A门禁。" >&2
+  echo "             请手动跑：python scripts/check.py --quick" >&2
+  exit 0
+fi
+
+if ! "$PY" scripts/check.py --quick; then
+  echo "" >&2
+  echo "[pre-commit] 层A门禁未通过。" >&2
+  echo "             修好后重试；确需跳过：SKIP_CHECK=1 git commit ..." >&2
+  exit 1
+fi
+
+exit 0

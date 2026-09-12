@@ -17,6 +17,16 @@ novel_workspace/*
 
 # 会话记忆（本项目工作日志，非源码）
 .workbuddy/
+# 注：技能的唯一源在 .ai/skills/（入库）；.workbuddy/skills 与 .claude/skills
+# 是指向它的目录联接，由 scripts/ai_bootstrap.py 建立，不入库。
+.claude/
+
+# 根目录临时脚本与输出（一律 _ 前缀）：提交前由 scripts/check.py 的 G3 拦截
+/_*.py
+/_*.txt
+/_*.md
+/_*.json
+/_*.log
 
 # WorkBuddy 桌面端话题元数据（会话管理自动产物，非源码）
 .reasonix/
