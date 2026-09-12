@@ -94,11 +94,15 @@ def _setup_hook() -> None:
             pass
 
     # 记录本机解释器，供 hook 使用（不入库）
+    # 必须写成**正斜杠**形式：hook 由 Git 自带的 sh 执行，反斜杠路径在
+    # `[ -x "$PY" ]` 判定下会失败，导致静默回退到 PATH 上碰到的任意 python。
     py_file = ROOT / HOOK_PY_REL
     try:
         py_file.parent.mkdir(parents=True, exist_ok=True)
-        py_file.write_text(sys.executable, encoding="utf-8")
-        print(f"{OK} 记录本机解释器给 hook：{sys.executable}")
+        # newline="\n" 必须显式指定：Windows 上 write_text 默认写 CRLF，
+        # hook 里 `read` 会读进尾随 \r，路径判定随即失败并静默回退 PATH。
+        py_file.write_text(Path(sys.executable).as_posix(), encoding="utf-8", newline="\n")
+        print(f"{OK} 记录本机解释器给 hook：{Path(sys.executable).as_posix()}")
     except OSError as e:
         print(f"{WARN} 无法记录解释器（{e}）；hook 将自行探测 python")
 

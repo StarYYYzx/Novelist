@@ -1,0 +1,34 @@
+# 统一换行：仓库内一律 LF，避免跨机 / 跨 OS clone 时 diff 噪声与 shebang 失效。
+# 背景：本机 core.autocrlf=true，若不锁定，.githooks/pre-commit 会被检出成 CRLF；
+# 虽然 Git for Windows 的 sh 能容忍带 \r 的 shebang，但 WSL / Linux 下直接 `sh .githooks/pre-commit`
+# 会读进尾随 \r，且 hook 读取记录解释器的文件时的 \r 曾导致真实的静默回退 bug。
+* text=auto eol=lf
+
+# 明确文本类（显式声明，避免 auto 误判）
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.jsonl text eol=lf
+
+# shell 脚本与 hook：必须 LF
+*.sh         text eol=lf
+.githooks/*  text eol=lf
+
+# Windows 脚本类保持 CRLF（当前仓库无此类文件，预置以防将来加入）
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制（不参与换行转换）
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.db   binary
+*.pyc  binary
+*.zip  binary

@@ -16,16 +16,24 @@ fi
 [ -f scripts/check.py ] || exit 0
 
 # 解释器探测：NOVELIST_PYTHON > .git/novelist-hook-python（ai_bootstrap 写入）> PATH
-# 只用 shell 内建（read / command / [），不依赖 cat 等外部命令 —— 本机 coreutils 可能缺失。
+# 只用 shell 内建，不依赖 cat 等外部命令 —— 本机 coreutils 可能缺失。
 PY=""
 if [ -n "${NOVELIST_PYTHON:-}" ]; then
   PY="$NOVELIST_PYTHON"
 elif [ -f .git/novelist-hook-python ]; then
-  IFS= read -r PY < .git/novelist-hook-python || PY=""
+  # 注意：**不要**写成 `read ... || PY=""` —— 文件末尾无换行时 read 返回非 0
+  # （POSIX 语义），那个 `||` 会把刚读成功的值清空，于是静默回退到 PATH 上碰到的
+  # 任意 python（本项目实测踩过：回退到了没装 pytest 的 3.13）。
+  IFS= read -r PY < .git/novelist-hook-python
+  PY="${PY%$(printf '\r')}"   # 容错：文件若被写成 CRLF，read 会带出尾随 \r
 fi
 
-if [ -z "$PY" ] || [ ! -x "$PY" ]; then
+# 不可用则回退 PATH 探测
+if [ -n "$PY" ] && [ ! -x "$PY" ] && ! command -v "$PY" >/dev/null 2>&1; then
+  echo "[pre-commit] 记录的解释器不可用（$PY），回退到 PATH 探测 python" >&2
   PY=""
+fi
+if [ -z "$PY" ]; then
   for c in python3 python py; do
     if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
   done
