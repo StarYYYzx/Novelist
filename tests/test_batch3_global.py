@@ -58,7 +58,6 @@ def test_blueprint_review_parses_and_persists(tmp_path):
     ws = _ws(tmp_path)
     pid = "p-bp"
     ws.create_project(pid)
-    from novelist.forge.state import Blueprint
 
     bp = Blueprint.blank()
     bp.data["worldview"] = {"rules": ["灵气复苏"]}

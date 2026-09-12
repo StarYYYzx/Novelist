@@ -19,7 +19,6 @@ except ImportError:  # pragma: no cover - 可选依赖
 
 from ..core.errors import ProviderError
 from ..core.llm import (
-    LLMMessage,
     LLMRequest,
     LLMResult,
     ProviderCapabilities,

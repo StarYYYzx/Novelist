@@ -204,7 +204,6 @@ def validate_op(op: EditOp, *, existing: list[dict] | None = None) -> None:
 
     if spec["kind"] == "list":
         fields = set(spec["edit"])
-        readonly = set(spec["readonly"])
         if op.op in ("edit", "delete"):
             if not op.target:
                 raise FeedbackError("edit/delete 必须指定 target(id 或 name)")

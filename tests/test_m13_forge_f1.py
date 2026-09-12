@@ -23,7 +23,6 @@ from novelist.forge.engine import build
 from novelist.forge.nodes import (
     NodeContext,
     render_gist_md,
-    run_node,
     sync_bible,
     synthesize_worldstate,
     _parse_node_reply,
@@ -134,7 +133,6 @@ def test_seed_spec_parse_tolerates_prose_wrapper():
 # ---- seed：run_seed（smoke，不构建）----
 def test_run_seed_smoke_builds_blueprint(ws_factory):
     ws, pid = ws_factory("proj-f1s")
-    provider = FakeProvider(reply=SEED_REPLY)
 
     # 直接验证 seed 的提炼+蓝图部分（build 拆开测）
     from novelist.forge.seed import _init_blueprint

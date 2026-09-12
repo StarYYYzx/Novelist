@@ -55,6 +55,8 @@ __all__ = [
     "run_consult",
     "ShellResult",
     "run_shell",
+    "ConsoleState",
+    "run_console",
     "ValidateResult",
     "validate_project_full",
     "render_report",

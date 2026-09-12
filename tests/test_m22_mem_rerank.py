@@ -54,12 +54,20 @@ _QUERY = "玉佩的下落与断玉其来历"
 _REASON = "藏宝图牵出密室失窃真相，与断玉出处同源"
 
 
-def test_default_no_rerank_is_old_behavior_and_calls_nothing(ws_factory, write_json):
+def test_default_no_rerank_is_old_behavior_and_calls_nothing(
+        ws_factory, write_json, monkeypatch):
     ws, pid = ws_factory("proj-rr-ff")
     _write_mem(ws, pid, write_json)
     ret = MemoryRetriever(_idx(ws, pid), embedding=KeywordEmbedding())
+    # 真正接线：把 _rerank 换成探针，证明「不传 reranker」时该增强层零触发
+    # （原实现只定义了一个从未传入的 lambda，assert 恒真、形同虚设）
     called: list[int] = []
-    spy = lambda q, cand: (called.append(1) or [])
+
+    def _spy(self, q, scored):
+        called.append(1)
+        return scored
+
+    monkeypatch.setattr(MemoryRetriever, "_rerank", _spy)
 
     # 不传 reranker —— 旧版路径，缓存命中与否都应零触发
     hits = ret.query(MemoryQuery(query=_QUERY, top_k=3))

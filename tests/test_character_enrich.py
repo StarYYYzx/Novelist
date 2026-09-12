@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import json
 
-from novelist.core.character_enrich import (apply_pending, check_proposal, list_pending,
-                                            load_pending, needs_enrichment, propose)
+from novelist.core.character_enrich import (apply_pending, check_proposal, load_pending, needs_enrichment, propose)
 from novelist.storage.checkpoint import Checkpoint
 from novelist.storage.workspace import Workspace
-from tests.conftest import StubLLM
 
 
 def _project(tmp_path, pid="proj-enr"):

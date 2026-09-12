@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from novelist.consistency.reviewer import Reviewer, ReviewIssue
+from novelist.consistency.reviewer import ReviewIssue
 from novelist.core.llm import LLMResult
 from novelist.core.session import SessionInfo
 from novelist.storage.checkpoint import Checkpoint
@@ -177,7 +177,7 @@ def test_event_review_revises_block_and_sinks_lessons(tmp_path):
     # 经验沉淀
     lessons = json.loads(ws._abs(f"{pid}/bible/review_lessons.json").read_text(encoding="utf-8"))
     assert res.lessons_added >= 1
-    assert any("战力越级" in l["category"] for l in lessons)
+    assert any("战力越级" in x["category"] for x in lessons)
 
 
 def test_lessons_injected_into_next_context(tmp_path):
@@ -190,7 +190,7 @@ def test_lessons_injected_into_next_context(tmp_path):
                           suggestion="不得让低境界者凭空碾压高境界者")]
     assert _append_lessons(ws, pid, issues, 1, 1) == 1
     lines = _lesson_lines(ws, pid)
-    assert lines and any("战力越级" in l for l in lines)
+    assert lines and any("战力越级" in x for x in lines)
 
     # RAG 化后（M3i）：教训不再进 system，由知识层按事件相关性检索注入
     from novelist.core.knowledge import KnowledgeBase
@@ -198,4 +198,4 @@ def test_lessons_injected_into_next_context(tmp_path):
     kb = KnowledgeBase(ws, pid)
     hits = kb.retrieve("叶岚修为越级碾压筑基高手")
     lesson_lines = kb.lines(hits, "lesson")
-    assert lesson_lines and any("碾压" in l for l in lesson_lines)
+    assert lesson_lines and any("碾压" in x for x in lesson_lines)

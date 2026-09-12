@@ -12,12 +12,9 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import pytest
-import jsonschema
 
 from novelist.core.bible import BIBLE_CONTRACT, parse_gist, validate_project
 from novelist.storage.models import SchemaError, SchemaRegistry

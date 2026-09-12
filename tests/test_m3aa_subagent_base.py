@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from novelist.core.agent_runner import AgentLoopError, AgentRunner
-from novelist.core.llm import LLMMessage, LLMRequest, LLMResult, ToolCall, Usage
+from novelist.core.llm import LLMRequest, LLMResult
 from novelist.core.session import SessionInfo
 from novelist.core.tools import PermissionGate, Tool, ToolRegistry
 from novelist.providers.fake import ScriptedProvider

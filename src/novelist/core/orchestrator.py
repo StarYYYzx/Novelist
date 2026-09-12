@@ -24,6 +24,8 @@ import os
 import re
 
 from .llm import LLMMessage, LLMRequest
+from .session import Budget, SessionInfo
+from .writeback import LandedEvent, commit_event
 
 
 def _env_int(name: str, default: int) -> int:
@@ -35,8 +37,6 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
-from .session import Budget, SessionInfo
-from .writeback import LandedEvent, commit_event
 
 
 class ProductionResult:
@@ -1550,9 +1550,9 @@ def produce_chapter(
     agentic_chronicle_rounds: int = 6,  # F1 取证预算（取证轮次上限，宁漏勿误杀，CLI 可配，ADR-032）
     agentic_review_rounds: int = 8,     # F2 取证预算上限（ADR-032）
     # ---- ADR-021 世界广播选角（一致性栈第 0 层：先定"谁该在场"，N3 调度才有意义）----
-    broadcast_casting: bool = True,    # 事件级选角 LLM 推理（v1 默认关；B1 验收已过→转 True：
-                                       # flash+16000 批跑 18 事件 degrade=0/miss=0/增益 21 全
-                                       # 合理，见 docs/问题总账 B1 与 ADR-021）
+    broadcast_casting: bool = True,    # 事件级选角 LLM 推理（默认开；B1 验收已过，flash+max_tokens
+                                       # 16000 批跑 18 事件 degrade=0/miss=0/增益 21 全合理，
+                                       # 见 docs/问题总账 B1 与 ADR-021）
     # ---- 批次三（2026-09-05 用户拍板 1/2/3/4 全做）----
     seam_review: bool = False,     # 方案2：事件接缝 LLM 复述审查（strip_seam_overlap 的语义层）
     volume_facts: bool = False,    # 方案3：卷末章生成后自动产"本卷事实清单"（LLM 通读本卷）

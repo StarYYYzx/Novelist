@@ -120,13 +120,13 @@ class KnowledgeBase:
                     keywords=[str(t.get("id") or "")], payload={"desc": str(t.get("desc") or "")}))
 
         # 历史教训（review_lessons.json，M3h）
-        for l in read("bible/review_lessons.json"):
-            if isinstance(l, dict) and l.get("rule"):
+        for rec in read("bible/review_lessons.json"):
+            if isinstance(rec, dict) and rec.get("rule"):
                 self._items.append(KnowledgeItem(
-                    kind="lesson", id=str(l.get("_key") or ""),
-                    text=f"{l.get('category', '')} {l.get('rule', '')}",
-                    keywords=[str(l.get("category") or "")],
-                    payload={"rule": str(l.get("rule") or "")[:120]}))
+                    kind="lesson", id=str(rec.get("_key") or ""),
+                    text=f"{rec.get('category', '')} {rec.get('rule', '')}",
+                    keywords=[str(rec.get("category") or "")],
+                    payload={"rule": str(rec.get("rule") or "")[:120]}))
 
         # 势力（worldview.factions）
         wv = read("bible/worldview.json")

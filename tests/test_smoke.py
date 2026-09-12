@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from novelist.core.errors import DeniedError
 from novelist.core.events import EventBus
 from novelist.core.llm import LLMMessage, LLMRequest
 from novelist.core.pipeline import PipelineStateMachine, PipelineStateError

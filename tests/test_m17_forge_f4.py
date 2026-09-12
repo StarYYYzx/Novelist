@@ -18,7 +18,6 @@ from click.testing import CliRunner
 
 from novelist.cli import cli
 from novelist.core.bible import parse_gist
-from novelist.forge import Blueprint
 from novelist.forge.engine import build, roll
 from novelist.forge.genres import load_pack_for
 from novelist.forge.seed import _init_blueprint, _parse_seed_spec

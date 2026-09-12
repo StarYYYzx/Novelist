@@ -10,18 +10,16 @@ FastAPI REST，封装 CLI/核心能力：项目状态、流水线推进、串行
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 
 from .config import load_config
 from .core.approval import ApprovalQueue
-from .core.errors import NovelistError
 from .core.session import SessionInfo
-from .core.tools import APPROVAL_ASK, PermissionGate
+from .core.tools import PermissionGate
 from .storage.checkpoint import Checkpoint
-from .storage.workspace import Workspace, WorkspaceError
+from .storage.workspace import Workspace
 from .tools import build_registry
 
 app = FastAPI(title="Novelist API", version="0.1.0")
@@ -84,8 +82,8 @@ def run_pipeline(project_id: str, to: str = Query("正文")):
         st = PipelineStateMachine()
         cur = project.get("pipeline_state") or "立项"
         want = to if to in PIPELINE_STAGES else "正文"
-        # 直接跳到目标（HTTP 简化：允许一次性推进）
-        if want != st.current:
+        # 直接跳到目标（HTTP 简化：允许一次性推进）；已在目标态则跳过
+        if want != cur:
             _advance(st, want)
     except PipelineStateError as e:
         raise HTTPException(400, f"cannot advance: {e}") from e

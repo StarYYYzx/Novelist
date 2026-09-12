@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from novelist.forge.console import (
     Console,
-    ConsoleState,
     FilterableIO,
     _compose_argv,
 )
@@ -108,7 +107,7 @@ def test_console_q_exits_clean(tmp_path):
 def test_console_seed_builds_blueprint_and_show_gaps(tmp_path):
     c, io = _console(str(tmp_path), lines=["/new 种子书", "/seed 少年觉醒", "/show", "/q"],
                      smoke=True)
-    st = c.run()
+    c.run()
     joined = "\n".join(io.out)
     assert "seed done" in joined           # seed(fake) 提炼建蓝图成功
     assert "缺口:" in joined               # show 打印缺口概览
@@ -124,7 +123,6 @@ def test_console_seed_requires_brief(tmp_path):
 # ---------- _compose_argv provider 透传 ----------
 
 def _console_obj(ws_root: str) -> Console:
-    from click.testing import CliRunner
     c = Console(io=FilterableIO(), workspace_root=ws_root, provider="deepseek",
                 api_key="k", api_base="b", model="m")
     return c
@@ -163,7 +161,7 @@ def test_console_projects_lists_seq_title_id(tmp_path):
     c, io = _console(str(tmp_path), lines=["/projects", "/q"])
     c.run()
     joined = "\n".join(io.out)
-    assert f" 1 第一本 proj-aaa" in joined or "第一本" in joined
+    assert " 1 第一本 proj-aaa" in joined or "第一本" in joined
     assert "proj-aaa" in joined
 
 
@@ -209,7 +207,7 @@ def test_console_shell_enters_and_exits(tmp_path):
         lines=["/new shell书", "/seed 少年觉醒", "/shell", "/show", "/exit", "/q"],
         smoke=True,
     )
-    st = c.run()
+    c.run()
     joined = "\n".join(io.out)
     assert "shell" in joined          # shell 会话已启动
     assert "已退出控制台" in joined     # 最终回到 console 并退出

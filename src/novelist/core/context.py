@@ -158,7 +158,6 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     banned = st.get("forbidden_words") or []
     modern = wv.get("modern_words") or []  # 世界观层现代词禁令（forge 产出，装配补读）
     glossary = st.get("glossary") or []
-    threads = bible.get("plot_threads") or []
     volumes = bible.get("volumes") or []
 
     L: list[str] = []

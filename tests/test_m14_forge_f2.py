@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from novelist.forge import Blueprint, ForgeState, run_consult, run_seed
 from novelist.forge.io_console import ConsoleIO
@@ -284,11 +283,11 @@ def test_consult_resume_skips_answered(ws_factory):
     bp = _blank_bp()
     slots = [_slot("worldview.name", "llm", 2), _slot("worldview.rules", "llm", 2),
              _slot("style.tense", "enum", 3, enum=["过去", "现在"])]
-    r1 = run_consult(ws, pid, bp,
+    run_consult(ws, pid, bp,
                      provider=FakeProvider(reply='{"answers": {"worldview.name": "玄天域"}}'),
                      io=FakeIO(lines=["", "玄天域"]), slots=slots)
     # 轮 1 回车：name 无推荐（留空跳过）、rules 无推荐跳过、tense 取推荐
-    r2 = run_consult(ws, pid, bp,
+    run_consult(ws, pid, bp,
                      provider=FakeProvider(reply='{"answers": {"worldview.rules": "云纹令只认陆氏血脉"}}'),
                      io=FakeIO(lines=["云纹令只认陆氏血脉"]), slots=slots)
     assert bp.get("worldview.rules") == ["云纹令只认陆氏血脉"]

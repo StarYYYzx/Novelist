@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from novelist.core import lines as L
 from novelist.forge.nodes import (_OPENING_RULE, _PACE_VOLUME_HINT,

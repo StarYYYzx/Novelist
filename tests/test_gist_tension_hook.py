@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import json
 
 from novelist.forge import Blueprint
 from novelist.forge.nodes import NodeContext, _chapter_prompt, render_gist_md

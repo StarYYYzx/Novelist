@@ -16,7 +16,6 @@ import json
 
 from novelist.config import load_config
 from novelist.core.orchestrator import produce_chapter
-from novelist.core.session import SessionInfo
 from novelist.providers.fake import FakeProvider
 from novelist.storage.checkpoint import Checkpoint
 from novelist.storage.workspace import Workspace

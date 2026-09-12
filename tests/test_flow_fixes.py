@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import json
 
 from novelist.core import timeline as tl
 from novelist.core.chronicler import _chapter_window
@@ -254,7 +253,7 @@ def test_bp_section_does_not_clobber_dict_section(tmp_path):
 
     bp = Blueprint.blank()
     bp.data["worldview"] = {"name": "深渊怪谈界", "rules": ["规则一"]}
-    wv = bp.section("worldview")  # 旧实现此处返回 [] 且毁掉原值
+    bp.section("worldview")  # 旧实现此处返回 [] 且毁掉原值
     assert bp.data["worldview"] == {"name": "深渊怪谈界", "rules": ["规则一"]}
     # list 段行为不变：缺省建空、可变
     chars = bp.section("characters")

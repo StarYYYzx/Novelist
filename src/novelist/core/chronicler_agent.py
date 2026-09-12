@@ -165,7 +165,6 @@ def agentic_chronicle(
     语义（新路径绝不比旧路径更差才沿用）。真正的写入始终走 `Chronicler.commit` 的
     确定性闸门——**仲裁只改候选集，不写库**。
     """
-    from .chronicler import ChroniclerReport
 
     base = chronicler.extract(chapter_text, max_events=max_events)
     arb = arbitrate(chronicler, base, chapter_text, provider=provider,

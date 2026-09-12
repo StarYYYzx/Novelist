@@ -35,7 +35,6 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from .state import Blueprint
 from .review import REVIEW_MODULES  # noqa: F401  # 仅用于 source→模块名映射的文档说明

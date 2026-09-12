@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from novelist.core import broadcast as bc
 from novelist.core.chronicler import Chronicler

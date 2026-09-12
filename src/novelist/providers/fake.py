@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from ..core.llm import (
-    LLMMessage,
     LLMRequest,
     LLMResult,
     ProviderCapabilities,

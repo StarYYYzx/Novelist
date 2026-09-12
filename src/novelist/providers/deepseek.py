@@ -15,7 +15,6 @@ DeepSeek 提供 OpenAI 兼容的 chat/completions 协议。本适配器是 OpenA
 
 from __future__ import annotations
 
-import os
 
 from .openai import OpenAICompatibleProvider, parse_completion
 from .secrets import resolve_api_key

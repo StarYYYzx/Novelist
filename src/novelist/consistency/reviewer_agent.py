@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
 from ..core.agent_runner import AgentRunner
@@ -68,7 +67,6 @@ def agentic_review(
     但允许取证后出工单。失败/无问题 → `mode="fallback"` 回退单发 `Reviewer.review`，
     绝不比旧路径更差。
     """
-    from ..core.context import load_bible
     from ..tools import evidence_registry
     from .reviewer import Reviewer, _bible_brief
 

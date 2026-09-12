@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from novelist.consistency.reviewer_agent import AgenticReview, agentic_review
+from novelist.consistency.reviewer_agent import agentic_review
 from novelist.core.session import SessionInfo
 from novelist.providers.fake import FakeProvider, ScriptedProvider
 from novelist.storage.workspace import Workspace
@@ -68,7 +68,6 @@ def test_agentic_review_empty_text_no_llm(tmp_path):
 def test_agentic_review_fallback_on_error(tmp_path):
     """证据环抛错/流程异常 → 回退单发 Reviewer.review，绝不出空工单。"""
     ws = _ws(tmp_path)
-    prov = FakeProvider(reply="block | 人设漂移 | 苏晚言行不符人物卡 | 收敛语气")
 
     class BoomProvider(FakeProvider):
         _first = True

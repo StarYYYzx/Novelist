@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
-from novelist.consistency import run_consistency
 from novelist.consistency.rules import run_lexicon_checks, run_state_checks
 from novelist.core.llm import LLMResult
 from novelist.core.orchestrator import (
@@ -24,7 +22,7 @@ from novelist.core.orchestrator import (
     is_expanded_event,
     parse_cast_decl,
 )
-from novelist.core.polish import TONE_TEMPLATES, build_polish_prompt, measure
+from novelist.core.polish import TONE_TEMPLATES, build_polish_prompt
 from novelist.core.session import SessionInfo
 from novelist.storage.checkpoint import Checkpoint
 from novelist.storage.workspace import Workspace

@@ -23,7 +23,7 @@ from typing import Any
 
 from .memory import MemoryConflictError, MemoryWriter
 from .session import SessionInfo
-from ..storage.workspace import Workspace, WorkspaceError
+from ..storage.workspace import Workspace
 
 
 @dataclass

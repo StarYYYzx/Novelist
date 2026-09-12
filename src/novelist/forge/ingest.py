@@ -29,13 +29,11 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from ..core.llm import LLMMessage, LLMRequest
 from ..storage.workspace import Workspace
 from . import genres as _genres
 from .ask import ConsultResult, run_consult
-from .engine import BuildResult
 from .slots import slots_for_genre
 from .state import Blueprint, ForgeState, append_transcript
 from .io_console import AnswerIO
@@ -526,7 +524,6 @@ def merge_characters(bp: Blueprint, extracts: list[dict], det_names: Counter,
                 result["protagonist"] = card["id"]
     # 无明示主角 → 最高频者
     if not result["protagonist"] and freq_sorted:
-        top = freq_sorted[0][1]
         cid = cid_gen(freq_sorted[0][0])
         found = next((c for c in bp.section("characters")
                       if c.get("id") == cid or c.get("name") == freq_sorted[0][0]), None)
@@ -843,7 +840,7 @@ def run_ingest(ws: Workspace, project_id: str, source: str, *,
                                       calls_used=calls_used, max_chars=max_chars)
     calls_used += mem_used
     warnings += mem_warns
-    warm = warmup_entities(ws, project_id, chapters, chapters_per_volume)
+    warmup_entities(ws, project_id, chapters, chapters_per_volume)
     # worldstate：Chronicler 逐章推进的 time/pending 是事实源（「时间：/约定：」行，
     # 约定 due 以各章当时 day 锚定——ADR-019「预计完成时间」语义，用户 2026-09-01 拍板）。
     # 本步只把蓝图合成的人物初始态合并进去，**不覆盖时间轴**

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from novelist.consistency.rules import run_rule_checks, run_state_checks
 from novelist.core.chronicler import Chronicler

@@ -50,7 +50,7 @@ def test_apply_drops_dangling_thread_ref(ws_factory):
 
 def test_apply_keeps_empty_when_no_threads_touched(ws_factory):
     ws, proj, _, ctx = _mk_ctx(ws_factory, "proj-d4c")
-    warns = _APPLY["chapter"](ctx, {"artifact": {
+    _APPLY["chapter"](ctx, {"artifact": {
         "title": "安静章", "key_events": ["日常"], "characters": [],
         "threads_involved": [], "after_days": 0}})
     assert "伏笔" not in ws.outline_chapter_path(proj, 1, 1).read_text(encoding="utf-8")

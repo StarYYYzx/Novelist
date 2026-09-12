@@ -24,7 +24,6 @@ from novelist.core.bible_feedback import (
     EditOp,
     FeedbackError,
     FeedbackParser,
-    FeedbackStore,
     apply_feedback,
     apply_op,
     feedback_persist_dir,

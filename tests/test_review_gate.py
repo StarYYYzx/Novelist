@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 
-from novelist.forge import Blueprint, run_seed
 from novelist.forge.engine import build, revise_module
 from novelist.forge.nodes import revise_book_section
 from novelist.forge.review import (REVIEW_MODULES, diff_section, load_review,
@@ -17,7 +16,7 @@ from novelist.forge.review import (REVIEW_MODULES, diff_section, load_review,
 from novelist.forge.seed import _init_blueprint, _parse_seed_spec
 from novelist.providers.fake import ScriptedProvider
 
-from test_m13_forge_f1 import (BOOK_ARTIFACT, SEED_REPLY, _build_script,
+from test_m13_forge_f1 import (SEED_REPLY, _build_script,
                                _chapter_artifact, _node_reply, _volume_artifact)
 
 

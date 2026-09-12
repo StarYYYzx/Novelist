@@ -8,13 +8,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from novelist.storage.checkpoint import Checkpoint
 from novelist.consistency.rules import run_state_checks
 from novelist.core.orchestrator import _live_state_block
-from novelist.core.worldstate import (apply_delta, init_from_bible, load,
-                                      save)
+from novelist.core.worldstate import (apply_delta, init_from_bible, load)
 from novelist.storage.workspace import Workspace
 
 

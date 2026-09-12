@@ -7,7 +7,6 @@ B：max_calls 未显式给时按 N/K/M 规模推导（不再固定 60）。
 
 from __future__ import annotations
 
-from novelist.forge import engine
 from novelist.forge.engine import _build_call_budget, _child_width
 
 

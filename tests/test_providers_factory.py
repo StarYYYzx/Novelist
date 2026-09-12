@@ -15,7 +15,6 @@ import os
 
 import pytest
 
-import novelist.providers as P
 from novelist.providers import PRESETS, REGISTRY, create, get_provider, list_providers
 from novelist.providers.deepseek import DeepSeekProvider
 from novelist.providers.fake import FakeProvider, ScriptedProvider

@@ -439,7 +439,7 @@ def test_pending_dedup_same_chapter_near_name(ws_factory, write_json):
         "事件：测试 | discovery | 叶蓝\n约定：叶岚渡劫｜+90日",  # run4 (1,3) 跨章不同动作→登记
     ]))
     c.run("正文略", 1, 1)
-    r2 = c.run("正文略", 1, 2)
+    c.run("正文略", 1, 2)
     r3 = c.run("正文略", 1, 2)   # 同章第二次（模拟每事件编纂重复抽同一约定）
     r4 = c.run("正文略", 1, 3)
     st = worldstate.load(ws, pid)

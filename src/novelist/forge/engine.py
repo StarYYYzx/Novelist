@@ -34,7 +34,7 @@ from .nodes import (CHILD_KIND, LEAF_KINDS, NodeContext, chapter_range_of, run_n
                     sync_bible, synthesize_worldstate, _load_json_list)
 from .covenant import affected_modules, build_covenant, touched_entries
 from .review import (REVIEW_MODULES, load_review, mark_pending, pending_modules,
-                     render_review_md, resolve_pending, stage_pending_for_revise)
+                     stage_pending_for_revise)
 from .state import Blueprint, ForgeState, append_transcript
 
 

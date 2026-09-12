@@ -9,7 +9,6 @@ Reviewer 判「战力越级/设定矛盾」block×3——爽点机制与一致�
 
 from __future__ import annotations
 
-import json
 
 from novelist.consistency.reviewer import _bible_brief
 from novelist.core.director import render_cards

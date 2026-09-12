@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import json
 
 from novelist.consistency.rules import _title_check
 from novelist.storage.checkpoint import Checkpoint

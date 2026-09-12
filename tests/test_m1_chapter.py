@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from novelist.core.orchestrator import produce_chapter
 from novelist.core.session import SessionInfo

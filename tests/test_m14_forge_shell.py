@@ -10,10 +10,9 @@
 
 from __future__ import annotations
 
-import pytest
 
 from novelist.forge.state import Blueprint
-from novelist.forge.shell import ShellResult, run_shell
+from novelist.forge.shell import run_shell
 from novelist.forge.slots import Slot
 from novelist.providers.fake import FakeProvider
 from novelist.storage.workspace import Workspace
@@ -54,7 +53,6 @@ def _blank_bp() -> Blueprint:
     bp.data["meta"] = {"title": "t", "genre": "修仙", "logline": "x",
                        "scale": {"volumes": 1, "chapters_per_volume": 1,
                                  "target_words_per_chapter": 100}}
-    ws = None
     return bp
 
 
@@ -207,7 +205,6 @@ def test_settle_round_rejects_bad_enum_never_writes(tmp_path):
     from novelist.forge.ask import _dispatch_value, RoundQuestion
 
     ws, pid = _ws(tmp_path)
-    bp = _blank_bp()
     slot = Slot("style.tense", "时态", "recommended", "free",
                 candidates_from="enum", enum=["过去", "现在"], group=1)
     q = RoundQuestion(slot, ["过去", "现在"], "过去")
@@ -240,7 +237,7 @@ def test_shell_review_lists_and_shows_pending(tmp_path):
     bp.save(ws, pid)
     _mark_pending(ws, pid, "outline_volume")
     io = FakeIO(lines=["/review", "/review outline_volume", "/exit"])
-    res = run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
     assert "outline_volume" in "\n".join(io.out)
 
 
@@ -250,7 +247,7 @@ def test_shell_approve_clears_pending(tmp_path):
     bp.save(ws, pid)
     _mark_pending(ws, pid, "outline_volume")
     io = FakeIO(lines=["/approve outline_volume", "/exit"])
-    res = run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
     from novelist.forge.review import load_review
     assert "outline_volume" not in (load_review(ws, pid).get("pending") or {})
     joined = "\n".join(io.out)

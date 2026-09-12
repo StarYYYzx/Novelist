@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from novelist.core import timeline as tl
-from novelist.core import worldstate
 from novelist.core.chronicler import Chronicler
 from novelist.core.director import (
     DirectionSheet,
@@ -71,7 +70,7 @@ def test_render_gist_md_inline_has_no_title_text(ws_factory):
             "key_events": ["系统觉醒", "绑定云曦"], "characters": ["char:yelan"],
             "after_days": 2}
     md = render_gist_md(gist, 1, 3, ["叶岚"])
-    assert f"# 第 3 章 觉醒" not in md
+    assert "# 第 3 章 觉醒" not in md
     assert "# 第 3 章\n" in md
     assert '"title": "觉醒"' in md  # front-matter 保留（parse_gist / 人读）
 
@@ -357,7 +356,7 @@ def test_strip_seam_overlap_low_sim_high_zone():
 
 def test_polish_chapter_forwards_system_prompt(ws_factory):
     """润色调用透传 system_prompt（此前无 system 是归因 P0）。"""
-    from novelist.core.llm import LLMMessage, LLMResult
+    from novelist.core.llm import LLMResult
 
     captured: list[str] = []
 

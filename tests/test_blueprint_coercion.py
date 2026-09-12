@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from novelist.forge.nodes import _coerce_str_list, _merge_style, _merge_worldview
 from novelist.forge.state import Blueprint
@@ -45,7 +44,7 @@ def test_merge_worldview_dict_civilizations_passes_schema(tmp_path):
         "rules": ["灵气稀薄，高阶法术难以持久"],
         "factions": "官方特殊事务局",
     })
-    bp.save(ws := _ws(tmp_path), "p1")  # save 内含 schema 校验，崩即失败
+    bp.save(_ws(tmp_path), "p1")  # save 内含 schema 校验，崩即失败
     wv = bp.get("worldview")
     assert wv["civilizations"] == ["社会结构：武者支柱", "科技：灵能枪械"]
     assert wv["factions"] == ["官方特殊事务局"]

@@ -21,9 +21,9 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-from ..storage.workspace import Workspace, WorkspaceError
+from ..storage.workspace import Workspace
 
 TASK_STATUSES = ("pending", "in_progress", "done", "blocked", "failed")
 TASK_KINDS = ("volume", "chapter", "event")

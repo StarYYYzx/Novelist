@@ -11,7 +11,7 @@ import json
 import pytest
 
 from novelist.storage.checkpoint import Checkpoint, CheckpointError
-from novelist.storage.models import SchemaRegistry, SchemaError
+from novelist.storage.models import SchemaRegistry
 from novelist.storage.workspace import Workspace, WorkspaceError
 
 

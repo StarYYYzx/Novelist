@@ -390,7 +390,7 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
             choice = ask(bp, spec, brief)
             mode_used = "interactive"
             if choice == "consult":
-                from .ask import ConsultResult, run_consult
+                from .ask import run_consult
                 from .io_console import ConsoleIO
                 from .slots import slots_for_genre
 

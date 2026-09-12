@@ -10,9 +10,7 @@
 
 from __future__ import annotations
 
-import json
 
-import pytest
 
 from novelist.consistency import run_consistency
 from novelist.core.llm import LLMResult
@@ -203,7 +201,6 @@ def test_event_loop_injects_pending_settings_and_verifies(tmp_path):
         broadcast_casting=False, session=SessionInfo(project_id=pid, agent="t"))
     assert res.ok, res.result
 
-    final = ws.draft_path(pid, 1, 1).read_text(encoding="utf-8")
     # 生成时注入过未交代设定（正文带出了淬体/诡异 → 章末验证置位）
     idx = SettingIndex.load(ws, pid)
     by_id = {e.id: e for e in idx.entries}

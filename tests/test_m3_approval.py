@@ -6,7 +6,7 @@ import time
 import pytest
 
 from novelist.core.approval import ApprovalQueue
-from novelist.core.session import Budget, SessionInfo
+from novelist.core.session import SessionInfo
 from novelist.core.tools import (
     APPROVAL_ASK,
     APPROVAL_DENY,
@@ -14,7 +14,6 @@ from novelist.core.tools import (
     PermissionGate,
     Tool,
     ToolRegistry,
-    ok,
 )
 from novelist.core.errors import DENIED, DeniedError
 

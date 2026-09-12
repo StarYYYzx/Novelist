@@ -89,7 +89,7 @@ def test_stage_progression_by_mentions(tmp_path):
     _seed(ws, pid)
     t = _load(ws, pid)
     assert t.entities["char:passerby"].stage == "unseen"
-    upd = t.update_from_chapter("路人甲路过。", 1, 1)
+    t.update_from_chapter("路人甲路过。", 1, 1)
     assert t.entities["char:passerby"].stage == "mentioned"   # 1 次
     t.update_from_chapter("路人甲又来了，路人甲站定。", 1, 2)  # +2 → 累计 3
     assert t.entities["char:passerby"].stage == "described"   # 3–5 次

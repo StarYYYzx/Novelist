@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from novelist.consistency import run_consistency
-from novelist.consistency.reviewer import ReviewIssue, Reviewer
+from novelist.consistency.reviewer import Reviewer
 from novelist.consistency.rules import run_lexicon_checks, run_rule_checks
-from novelist.core.chronicler import Chronicler, ExtractedEvent
+from novelist.core.chronicler import Chronicler
 from novelist.core.context import build_chapter_context, chapter_cast, load_bible
 from novelist.core.export import export_project
 from novelist.core.llm import LLMResult

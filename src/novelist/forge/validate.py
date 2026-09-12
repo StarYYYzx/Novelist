@@ -182,7 +182,7 @@ def _v1_schema(ws: Workspace, project_id: str, res: ValidateResult) -> None:
     try:
         Blueprint.load(ws, project_id)
     except FileNotFoundError:
-        res.add("V1", "block", f"无蓝图 workspace/forge/blueprint.json——先跑 `forge seed`")
+        res.add("V1", "block", "无蓝图 workspace/forge/blueprint.json——先跑 `forge seed`")
         return
     except ValueError as e:
         res.add("V1", "block", f"蓝图未过自身 schema 校验: {e}")

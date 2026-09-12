@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from ..core.session import SessionInfo
-from ..core.tools import Tool, ok
+from ..core.tools import Tool
 from ..storage.checkpoint import Checkpoint
 from ..storage.workspace import Workspace, WorkspaceError
 

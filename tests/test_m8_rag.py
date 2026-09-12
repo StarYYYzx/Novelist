@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import json
 
 from novelist.core.llm import LLMResult
 from novelist.core.session import SessionInfo

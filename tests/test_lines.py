@@ -108,7 +108,7 @@ def test_chapter_view_pins_cooldown_and_closed_ban(tmp_path):
 def test_apply_chapter_actions_open_advance_suspend_flicker_close(tmp_path):
     ws = _ws(tmp_path)
     rows = _ledger()
-    warns = L.apply_chapter_actions(ws, "proj-ln", rows, 1, 2, [
+    L.apply_chapter_actions(ws, "proj-ln", rows, 1, 2, [
         {"id": "ln:sect", "action": "open", "note": "密报送到宗门"},
         {"id": "ln:main", "action": "open", "note": "x"},   # 已 active? 不——main 未开，
     ])
@@ -252,7 +252,7 @@ def test_apply_lines_skeleton_main_unique_hard_gate(tmp_path):
     from novelist.forge.nodes import _apply_lines_skeleton
 
     bp = _blank_bp()
-    warns = _apply_lines_skeleton(bp, [
+    _apply_lines_skeleton(bp, [
         {"id": "ln:m", "desc": "主线", "kind": "main", "target": {"vol": 1, "note": "n"}},
         {"id": "ln:s", "desc": "支线", "kind": "subplot"}])
     assert bp.find_by_id("lines", "ln:m") is not None
@@ -448,7 +448,7 @@ def test_volume_audit_due_nomination_yield_share(tmp_path):
     assert L.confirm_pending(rows, "ln:paid", vol=1, ch=20)
     L.save_lines(ws, "proj-ln", rows)
     assert L.load_lines(ws, "proj-ln")[3]["status"] == "dormant"
-    assert Path(ws._abs(f"proj-ln/reports/lines-audit-vol1.md")).exists()
+    assert Path(ws._abs("proj-ln/reports/lines-audit-vol1.md")).exists()
 
 
 def test_volume_audit_yield_missing_and_share(tmp_path):

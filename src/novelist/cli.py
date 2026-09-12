@@ -639,7 +639,7 @@ def _print_feedback_ops(store, queue) -> None:
         apv = pending_params.get(op.id, "")
         click.echo(f"op {op.id}  {op.status}" + (" [①pending→审批]" if apv else "")
                    + (f"  审批:{apv}" if apv else "")
-                   + (f"  [敏感]" if op.sensitive else "")
+                   + ("  [敏感]" if op.sensitive else "")
                    + f"  {op.file} {op.op} {op.target}"
                    + (f".{op.field}" if op.field else "")
                    + (f" → {_feedback_preview(op.value)}" if op.op in ("edit", "add") else "")
@@ -703,7 +703,7 @@ def feedback(ctx: click.Context, directory: str | None, provider: str,
                 raise click.ClickException(f"feedback 写回失败（已拒绝并留痕）：{e}") from e
             store.mark(target, "applied", applied_at=applied.applied_at)
             click.echo(f"applied {target}: {op.file} {op.op} {op.target}"
-                       + (f"  [敏感·已人工确认]" if op.sensitive else ""))
+                       + ("  [敏感·已人工确认]" if op.sensitive else ""))
         else:
             store.mark(target, "rejected")
             click.echo(f"rejected {target}")
@@ -1436,7 +1436,7 @@ def forge_ingest(ctx: click.Context, source: str, directory: str | None, provide
     文风画像 → 卷章编码（chapters/<vol>-<ch>.md 已是正式章节 + 细纲 done=true）→
     chronicler 记忆初始化 + entity warm-up + worldstate 初始态。之后可 `chapter N+1` 接写。
     """
-    from novelist.forge import ForgeState, run_ingest
+    from novelist.forge import run_ingest
 
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
@@ -1545,7 +1545,6 @@ def forge_rollback(ctx: click.Context, directory: str | None, snap_name: str | N
     if snap_name:
         if snap_name not in snaps:
             raise click.ClickException(f"快照不存在：{snap_name}\n可用: {snaps}")
-        import shutil
         from pathlib import Path
 
         snap = Path(snapshots_dir(ws, project_id)) / snap_name
