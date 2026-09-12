@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass, field
 
 from .llm import LLMMessage, LLMRequest
+from .normalize import regroup_factions
 
 NEEDS_PATH = "character_needs_pending.json"   # 相对 bible/
 PER_CHAPTER_QUOTA = 2                         # 拍板 2：每章工厂新角色 ≤2
@@ -87,16 +88,17 @@ def _realm_levels(ws, project_id: str) -> list[str]:
 
 
 def _faction_names(ws, project_id: str) -> set[str]:
+    """势力名册（`power.faction` 的取值域）。
+
+    批次 2：走 `regroup_factions` 归一——原先直读 `factions[].faction`，而存量盘上
+    该字段可能是 `"name：玄剑宗"`（写侧修复前产生的逐字段拍平脏数据），于是名册里
+    全是 `name：…` / `type：…` 这类垃圾，模型无从选取、闸门也无从比对。
+    """
     wv = _read_bible(ws, project_id, "worldview.json") or {}
     out: set[str] = set()
-    for f in (wv.get("factions") or []):
-        if isinstance(f, dict):
-            if f.get("faction"):
-                out.add(str(f["faction"]))
-            if f.get("name"):
-                out.add(str(f["name"]))
-        elif f:
-            out.add(str(f))
+    for f in regroup_factions(wv.get("factions") or []):
+        if f.get("faction"):
+            out.add(str(f["faction"]))
     return out
 
 

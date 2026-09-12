@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from ..core.agent_runner import AgentRunner
 from ..core.session import SessionInfo
-from .reviewer import REVIEW_PROMPT, ReviewIssue  # noqa: F401  (REVIEW_PROMPT 复用检索上下文)
+from .reviewer import ReviewIssue  # noqa: F401  (类型标注用；上下文口径走 review_context)
 
 REVIEWER_AGENT_SYSTEM = """你是审校师。对照设定圣经、前情与细纲，审读本章/本片段正文并找问题。
 
@@ -59,29 +59,30 @@ def agentic_review(
     memories: list[str] | None = None,
     cast_ids: list[str] | None = None,
     scope: str = "",
+    chapter_scope: bool = False,
     max_rounds: int = 8,
 ) -> AgenticReview:
     """只读证据环审校（ADR-032 F2）。
 
-    复用 `REVIEW_PROMPT` 的圣经/前情/细纲/范围上下文（与单发审校同一输入口径），
-    但允许取证后出工单。失败/无问题 → `mode="fallback"` 回退单发 `Reviewer.review`，
-    绝不比旧路径更差。
+    复用 `review_context` 的圣经/前情/细纲/范围上下文（与单发审校同一输入口径，
+    批次 2 收敛为共享函数），但允许取证后出工单。`chapter_scope=True` 表示 `text`
+    是完整一章（正文走头+尾窗口）。失败/无问题 → `mode="fallback"` 回退单发
+    `Reviewer.review`，绝不比旧路径更差。
     """
     from ..tools import evidence_registry
-    from .reviewer import Reviewer, _bible_brief
+    from .reviewer import Reviewer, review_context, review_window
 
     out = AgenticReview()
     if not text.strip() or provider is None:
         return out
     reviewer = Reviewer(ws, project_id, llm=provider)
-    prompt = REVIEW_PROMPT.format(
-        bible=_bible_brief(ws, project_id, cast_ids),
-        memory="\n".join(memories or []) or "（无前情）",
-        gist=gist_text[:800] or "（无细纲）",
-        scope=scope or "【范围说明】本次审读的是完整一章。",
-    ) + text[-3000:]
-    # 蓝图里给出可读的 bible/记忆产物路径，供左撇子取证（read_file）
-    ctx = prompt + _evidence_pointer(ws, project_id)
+    # 上下文与正文窗口走 reviewer 的共享入口（批次 2）——原先此处各写一份
+    # `gist_text[:800]` / `text[-3000:]`，已与单发审校漂移过一次。
+    prompt = (review_context(ws, project_id, gist_text=gist_text, memories=memories,
+                             cast_ids=cast_ids, scope=scope)
+              + review_window(text, chapter_scope=chapter_scope))
+    # 蓝图里给出可读的 bible/记忆产物路径，供取证环（read_file）核实
+    ctx = prompt + _evidence_pointer(ws, project_id, vol, ch)
 
     reg = evidence_registry(ws, embedding=embedding)
     runner = AgentRunner(provider, session, registry=reg, max_rounds=max_rounds,
@@ -92,7 +93,8 @@ def agentic_review(
     except Exception:  # noqa: BLE001 - 证据环失败回退单发
         return AgenticReview(issues=reviewer.review(text, vol, ch, gist_text=gist_text,
                                                     memories=memories, cast_ids=cast_ids,
-                                                    scope=scope),
+                                                    scope=scope,
+                                                    chapter_scope=chapter_scope),
                              mode="fallback")
     out.rounds = run.rounds
     out.evidence = run.evidence
@@ -102,12 +104,25 @@ def agentic_review(
     return out
 
 
-def _evidence_pointer(ws, project_id: str) -> str:
-    """给证据环可读文件路径提示（bible 与记忆事实源）。"""
+def _evidence_pointer(ws, project_id: str, vol: int = 0, ch: int = 0) -> str:
+    """给证据环可读文件路径提示（bible、记忆事实源与**当前章正文**）。
+
+    批次 2：原先只给 bible/memory 路径——审校只看到正文尾部窗口，想补读章头也无从下手
+    （取证环没有章文件路径）。章文件按 chapters/ → drafts/chapters/ 的实际存在位置给。
+    """
     prefix = ws._abs(project_id)
     rel = str(prefix)
+    chapter_hint = ""
+    if vol and ch:
+        for base in ("chapters", "drafts/chapters"):
+            if (prefix / base / f"{vol}-{ch}.md").exists():
+                chapter_hint = f" · {base}/{vol}-{ch}.md（本章正文全文本，仅截断窗口的片段给了你）"
+                break
+        if not chapter_hint:
+            chapter_hint = f" · chapters/{vol}-{ch}.md（若存在则为本章正文）"
     return (
         "\n\n【可取证文件（相对项目根）】"
-        "\nbible/characters.json · bible/worldview.json · memory/plot_events.json"
+        f"\nbible/characters.json · bible/worldview.json · bible/style.json"
+        f" · memory/plot_events.json · bible/review_lessons.json{chapter_hint}"
         f"\n（工作区根：{rel}；read_file 的 path 需以项目目录开头）"
     )

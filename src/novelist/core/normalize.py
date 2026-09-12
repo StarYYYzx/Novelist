@@ -16,9 +16,19 @@ P0-3 / P0-4，`docs/prompt审计-2026-09-12.md`），既浪费 prompt 预算，�
 
 数据侧不做"同义/近义"归并（例如把「毫无疑问」族合成一条）——那需要语义判断，
 属批次 3 的生成侧治理，不能藏在确定性清洗里假装做到了。
+
+第 4 类脏数据（2026-09-12 结构化审计批次 2）是**机器字段键泄漏**：模型把世界观
+分类字段吐成 `{"social_structure": "…"}` 或逐字段拍平成 `{"faction": "name：玄剑宗"}`，
+`_coerce_str_list` 按 `f"{k}：{v}"` 字符串化后，中文 prompt 里就出现
+`social_structure：以修士为核心…`。它不是"信息错"，但**会毁掉下游的身份识别**——
+`knowledge.py` 拿 `factions[].faction` 当知识单元 id、`character_factory` 拿它当
+`power.faction` 取值表，于是势力检索与 faction 校验同时失效。故此处做两件事：
+`humanize_kv`（渲染侧剥离/翻译 ASCII 键）与 `regroup_factions`（结构侧重新分组）。
 """
 
 from __future__ import annotations
+
+import re
 
 # term 里出现这些标点 → 判定为"描述句"而非"顿号清单"，不拆分。
 # 真实反例（都不是清单，拆了就成碎片）：
@@ -80,3 +90,103 @@ def normalize_glossary(glossary) -> list[dict]:
             elif len(note_for_parts) > len(str(out[part].get("note") or "")):
                 out[part]["note"] = note_for_parts
     return list(out.values())
+
+
+# ---------------------------------------------------------------- 机器字段键
+
+# 纯 ASCII 标识符键（`social_structure` / `power_level`）。中文 prompt 里它是机器噪声，
+# 但**中文键**（`社会结构`）本身有语义（模型自己写的中文分类名），必须原样保留——
+# 这是本模块只剥 ASCII 键、不碰中文键的原因。
+_ASCII_KV = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)\s*[：:]\s*(.*)$", re.S)
+
+# 实测高频英文键 → 中文标签。取自 16 个真实项目的 worldview
+# civilizations / systems / factions 字段（2026-09-12 全量扫描）。
+_KV_LABELS: dict[str, str] = {
+    "name": "名称", "title": "名称", "desc": "描述", "description": "描述",
+    "summary": "概要", "status": "状态", "structure": "结构",
+    "social_structure": "社会结构", "cultural_norms": "文化规范",
+    "economic_system": "经济体系", "political_system": "政治体系",
+    "type": "类型", "kind": "类型", "level": "层级", "levels": "层级",
+    "faction": "势力", "alignment": "阵营", "goal": "目标", "goals": "目标",
+    "core_strength": "核心实力", "conflict": "冲突", "features": "特征",
+    "rule": "规则", "rules": "规则", "mechanic": "机制", "note": "说明",
+}
+
+# 判定"这一条是一个新势力的开头"的键名（拍平数据的唯一分组锚点）。
+_NAME_KEYS = frozenset({"name", "title", "faction"})
+
+
+def split_kv(text) -> tuple[str, str] | None:
+    """`英文键：值` → `(键, 值)`；无 ASCII 标识符键（或非字符串）返回 None。"""
+    if not isinstance(text, str):
+        return None
+    m = _ASCII_KV.match(text.strip())
+    return (m.group(1), m.group(2).strip()) if m else None
+
+
+def humanize_kv(text) -> str:
+    """剥离机器字段键：`social_structure：以修士为核心` → `社会结构：以修士为核心`。
+
+    - 已知英文键 → 中文标签；未知英文键 → **只留值**（中文 prompt 里一个裸英文标识符
+      没有信息价值，而它的值仍完整可读）；
+    - 中文键与普通句子原样返回（中文键是有语义的，不能当噪声剥掉）。
+    """
+    if not isinstance(text, str):
+        return str(text)
+    kv = split_kv(text)
+    if not kv:
+        return text.strip()
+    key, val = kv
+    if not val:
+        return _KV_LABELS.get(key.lower(), "")
+    label = _KV_LABELS.get(key.lower())
+    return f"{label}：{val}" if label else val
+
+
+def regroup_factions(items) -> list[dict]:
+    """势力条目归一 → `[{"faction": <名>, "note": <其余字段>, ...}]`。
+
+    识别"逐字段拍平"脏数据并**按 `name` 键重新分组**；不含 ASCII 键的条目走原路
+    （行为与 `forge/nodes.py` 原实现逐字一致）。
+
+    实测（2026-09-12）：模型把 3 个势力的 12 个字段吐成 12 条
+    `{"faction": "name：玄剑宗"}` / `{"faction": "type：正道宗门"}` / `{"faction": "description：…"}`，
+    逐项落盘后 `faction` = `"name：玄剑宗"` → knowledge 势力单元 id 与 character_factory
+    的 `power.faction` 取值表同时失效。此处按 name 键切分重组，其余字段合并进 `note`。
+    """
+    entries: list[tuple[dict, str]] = []
+    for it in items or []:
+        if isinstance(it, str) and it.strip():
+            entries.append(({}, it.strip()))
+        elif isinstance(it, dict) and isinstance(it.get("faction"), str) and it["faction"].strip():
+            entries.append((it, it["faction"].strip()))
+    if not any(split_kv(val) for _, val in entries):
+        # 非拍平数据：维持原行为（str → {"faction": s}；dict 原样）
+        return [dict(src) if src else {"faction": val} for src, val in entries]
+
+    groups: list[dict] = []
+    cur: dict | None = None
+    extras: list[str] = []
+
+    def close() -> None:
+        nonlocal cur, extras
+        if cur and cur.get("faction"):
+            if extras:
+                cur["note"] = "；".join(x for x in extras if x)
+            groups.append(cur)
+        cur, extras = None, []
+
+    for src, val in entries:
+        kv = split_kv(val)
+        key, value = kv if kv else ("", val)
+        if key.lower() in _NAME_KEYS:
+            close()
+            cur = {"faction": value}
+            continue
+        if cur is None:
+            cur = {"faction": ""}
+        label = _KV_LABELS.get(key.lower())
+        extras.append(f"{label}：{value}" if label and value else value)
+    close()
+    return [g for g in groups if g.get("faction")]
+

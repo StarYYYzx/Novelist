@@ -25,10 +25,17 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from .normalize import dedup_keep_order, normalize_glossary
+from .normalize import dedup_keep_order, humanize_kv, normalize_glossary
 
 GENDER_CN = {"male": "男", "female": "女", "unknown": "未知"}
 GENDER_PRONOUN = {"male": "他", "female": "她", "unknown": "他/她"}
+
+# 细纲进 prompt 的字数上限（H13，2026-09-05：1200 会截掉超长细纲尾部要点）。
+# **生成侧（下方 goal）与审校侧（consistency/reviewer）共用这一个常量**——审校原先
+# 硬编码 800，用 800 字的细纲视图去判 2400 字的细纲有没有被落实，判定基础与生成侧
+# 不一致（2026-09-12 结构化审计 P1-3）。改上限只改这里。
+GIST_MAX_CHARS = 2400
+
 
 # 输出纪律：这些是实测中真正出过问题的点，逐条对应一个已观察到的缺陷
 # 注意：「章节标题写在哪儿」**不在此处声明**——非事件模式由【输出格式】说"第一行是章节标题"，
@@ -219,10 +226,12 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             L.append(f"- 铁律：{r}")
         civs = wv.get("civilizations") or []
         if civs:
-            L.append(f"- 文明：{'、'.join(str(x) for x in civs)}")
+            # 批次 2：forge 把分类字段吐成 `social_structure：值`（`_coerce_str_list` 的
+            # `f"{k}：{v}"`），中文 prompt 里英文键是噪声 → 渲染前清洗（渲染侧不落盘）。
+            L.append(f"- 文明：{'、'.join(humanize_kv(x) for x in civs)}")
         systems = wv.get("systems") or []
         if systems:
-            L.append(f"- 体系：{'、'.join(str(x) for x in systems)}")
+            L.append(f"- 体系：{'、'.join(humanize_kv(x) for x in systems)}")
         # 势力不在此全量注入（讨论第 8 轮 RAG）：按事件相关性由知识层检索，事件级注入
         fluctuates = wv.get("realm_fluctuates") or []
         if fluctuates:
@@ -293,16 +302,20 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     L.append("【输出纪律】")
     for name, rule in DISCIPLINE:
         L.append(f"- {name}：{rule}")
-    L.append("")
-    L.append("【输出格式】直接输出正文。第一行是章节标题，形如：## 第X章 标题。"
-             "不要写卷名，不要写前言、后记、注释或任何说明文字。")
+    # 「章节标题写在哪儿」由本段唯一声明（见 DISCIPLINE 上方注释）：事件模式不写标题，
+    # 非事件模式第一行写标题。批次 2：改为选值后统一 append——原实现先 append 再 `L.pop()`
+    # 替换，依赖"最后一个元素恰好是它"的隐式假设（中间任何插入都会静默改错行）。
     if event_loop:
         # H8 修复（2026-09-05）：事件循环下每事件 discipline 要求"不要写章节标题"，
         # system 却要求"第一行写标题"——同场矛盾指令是事件边界复读标题的成因之一。
         # 事件模式：标题由整章拼完后统一拟（ADR-020 延迟拟题）。
-        L.pop()
-        L.append("【输出格式】直接输出正文片段。**不要写章节标题**、不要写「第X章」字样"
-                 "（标题在整章完成后统一拟写）。不要写前言、后记、注释或任何说明文字。")
+        fmt = ("【输出格式】直接输出正文片段。**不要写章节标题**、不要写「第X章」字样"
+               "（标题在整章完成后统一拟写）。不要写前言、后记、注释或任何说明文字。")
+    else:
+        fmt = ("【输出格式】直接输出正文。第一行是章节标题，形如：## 第X章 标题。"
+               "不要写卷名，不要写前言、后记、注释或任何说明文字。")
+    L.append("")
+    L.append(fmt)
     return "\n".join(L)
 
 
@@ -315,7 +328,7 @@ def build_chapter_context(
     gist_text: str | None = None,
     memories: list[str] | None = None,
     genre: str | None = None,
-    gist_max_chars: int = 2400,  # H13（2026-09-05）：1200 会截掉超长细纲尾部要点
+    gist_max_chars: int = GIST_MAX_CHARS,  # H13（2026-09-05）：1200 会截掉超长细纲尾部要点
     max_cast: int = 16,
     event_loop: bool = False,  # H8：事件循环模式 system 输出格式改"不写标题"
 ) -> ChapterContext:

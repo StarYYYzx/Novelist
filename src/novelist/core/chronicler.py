@@ -114,12 +114,13 @@ def _chapter_window(text: str, max_chars: int, *, head_chars: int = 800) -> str:
     原 tail-only 截断（`text[-max_chars:]`）会漏掉章头的事件/状态/**时间行**——
     时间行是 worldstate.time 推进的唯一来源，漏抽即本章时间静默停走。
     头部固定保留前 head_chars 字（开篇事件与时间锚点密度最高），其余预算给尾部。
+
+    实现已上移到 `core/prompt_budget.head_tail_window`（批次 2：审校侧踩了同一个坑，
+    两处各写一份正是坑的成因）。此处保留薄封装，调用点与既有测试零改动。
     """
-    if len(text) <= max_chars:
-        return text
-    head = min(head_chars, max(0, max_chars // 3))
-    tail = max(max_chars - head, 1)
-    return text[:head] + "\n……（中段略）……\n" + text[-tail:]
+    from .prompt_budget import head_tail_window
+
+    return head_tail_window(text, max_chars, head_chars=head_chars)
 
 
 @dataclass

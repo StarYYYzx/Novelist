@@ -25,12 +25,20 @@ from dataclasses import dataclass, field
 
 from .embedding import KEYWORD_KIND, KeywordEmbedding, cosine
 from .llm import LLMMessage, LLMRequest
+from .normalize import regroup_factions
+from .prompt_budget import head_tail_window
 
 QUERY_PROMPT = """你是检索规划器。动笔写下面这个剧情事件之前，先想清楚需要查阅哪些知识：
 世界设定（境界/规则/组织）、人物背景、未回收伏笔、历史教训、物品功法。
 事件：【{ev_text}】
 输出 3-5 个查询词（逗号分隔，每个不超过 12 字），直接输出查询词本身，不要解释。
 """
+
+# 检索规划的事件窗口（批次 2 放宽，P2-4）。原实现 `ev_text[:200]` 只让规划器看到
+# 事件开头一句半 —— 长事件的检索意图（后段出现的组织/道具/线索）完全取不到。
+# 规划器不需要全文，但需要头尾：开头给主体与动作，结尾给结果与悬念。
+QUERY_EV_CHARS = 1200
+QUERY_EV_HEAD = 400
 
 # 每 kind 注入上限（防事件 prompt 膨胀）
 KIND_TOPK = {
@@ -128,11 +136,13 @@ class KnowledgeBase:
                     keywords=[str(rec.get("category") or "")],
                     payload={"rule": str(rec.get("rule") or "")[:120]}))
 
-        # 势力（worldview.factions）
+        # 势力（worldview.factions）。批次 2：**读侧也做分组归一**——存量项目盘上
+        # 的 `{"faction": "name：玄剑宗"}` 脏条目（写侧修复前产生）若直读，
+        # 知识单元 id 会变成 `"name：玄剑宗"`，按「玄剑宗」检索永远命中不了。
         wv = read("bible/worldview.json")
         if isinstance(wv, dict):
-            for f in wv.get("factions") or []:
-                if isinstance(f, dict) and f.get("faction"):
+            for f in regroup_factions(wv.get("factions") or []):
+                if f.get("faction"):
                     self._items.append(KnowledgeItem(
                         kind="faction", id=str(f["faction"]),
                         text=f"{f.get('faction')} {f.get('note', '')}",
@@ -238,7 +248,9 @@ class KnowledgeBase:
         try:
             res = provider.complete(LLMRequest(
                 messages=[LLMMessage(role="user",
-                                     content=QUERY_PROMPT.format(ev_text=ev_text[:200]))],
+                                     content=QUERY_PROMPT.format(
+                                         ev_text=head_tail_window(ev_text, QUERY_EV_CHARS,
+                                                                  head_chars=QUERY_EV_HEAD)))],
                 max_tokens_out=120, temperature=0.2,
                 thinking=True))  # 判断类：检索意图抽取，开思考
         except Exception:  # noqa: BLE001

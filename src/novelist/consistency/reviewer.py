@@ -21,14 +21,38 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from ..core.context import load_bible
+from ..core.context import GIST_MAX_CHARS, load_bible
 from ..core.llm import LLMMessage, LLMRequest
+from ..core.normalize import humanize_kv, normalize_glossary
+from ..core.prompt_budget import head_tail_window
 from ..storage.workspace import Workspace
 
 CATEGORIES = (
     "设定矛盾", "人设漂移", "称谓失当", "时间线", "战力越级",
     "事实前后矛盾", "细纲未覆盖", "伏笔", "其他",
 )
+
+# 维度名别名 → 规范名。`_parse` 只认 CATEGORIES 里的精确串，而审校模型会照抄 prompt
+# 措辞、也可能回退到旧措辞（「时间线与因果」是 2026-09-12 prompt 审计 P2-1 的缺陷写法，
+# 实测 80 条真实 lessons 里「时间线」0 条、全被归进「其他」）。在此收敛，避免分类漂移
+# 改变 `_append_lessons` 的去重键（`category|issue[:30]`）而重复入库。
+CATEGORY_ALIASES = {
+    "时间线与因果": "时间线",
+    "时间线/因果": "时间线",
+    "时间线因果": "时间线",
+    "因果": "时间线",
+    "伏笔推进": "伏笔",
+    "伏笔未推进": "伏笔",
+    "称谓": "称谓失当",
+    "细纲未覆盖要点": "细纲未覆盖",
+}
+
+# 审校正文窗口（批次 2）。事件级片段的预算维持原值 3000（单事件通常远小于此，
+# 等价于不截断）；章级原先**直接复用同一个 tail-only 窗口**，把整章交给 review()
+# 却只看到尾部 3000 字 → 章头事件与时间行静默丢失（与 chronicler H2 同一个坑）。
+EVENT_REVIEW_CHARS = 3000
+CHAPTER_REVIEW_CHARS = 12000   # 章级预算：正常一章（4000–6000 字）全量进，超长才折叠
+CHAPTER_REVIEW_HEAD = 3000     # 章头保留量（开篇信息密度最高，且与事件级窗口同量级）
 
 REVIEW_PROMPT = """你是审校师。对照设定圣经与前情，审读下面这一章正文，找出问题。
 
@@ -46,14 +70,15 @@ REVIEW_PROMPT = """你是审校师。对照设定圣经与前情，审读下面�
 - 设定矛盾：是否违反世界规则
 - 人设漂移：言行是否偏离人物卡（特别注意性别、性格、说话方式）
 - 称谓失当：人物之间的称呼是否符合身份与修为高低（低修为者称高修为者为「前辈」才合理）
-- 时间线与因果：事件顺序、因果链是否自洽
+- 时间线：事件顺序、因果链是否自洽（含时间跨度与因果链，即「时间线与因果」）
 - 战力越级：修为描写是否超出人物卡或自相矛盾（例外：人物卡 power.hidden_level 标注了隐藏实际战力的，越级表现是有意的扮猪吃虎设定，不算问题）
 - 事实前后矛盾：与前情提要是冲突（如已死之人复活、已毁之物再现）
 - 细纲未覆盖：细纲要点是否有遗漏
+- 伏笔：本章该推进/回收的线索是否被漏掉（只判「漏了没有」；「必须推进」由线索卡负责，不重复判）
 
 【输出】只输出问题行，每行：级别 | 维度 | 问题描述 | 修订建议
 - 级别：block（必须改）/ warn（建议改）
-- 维度只能是上述七项之一
+- 维度只能是上述八项之一
 - 没有问题就只输出一行：ok
 
 正文：
@@ -67,8 +92,14 @@ class ReviewIssue:
     detail: str
     suggestion: str = ""
 
-
 def _bible_brief(ws: Workspace, project_id: str, cast_ids: list[str] | None = None) -> str:
+    """审校用圣经摘要。
+
+    批次 2（2026-09-12 结构化审计 P2-3）：原先只有境界体系/铁律/主角/人物卡，缺
+    glossary（专有名词固定写法）、工艺卡（题材硬规范）、境界波动、现代词豁免——
+    其中 glossary 的后果最重：**专有名词写法在整条链上没有执行侧校验**
+    （生成侧只声明、R-LEX 不查、润色透传），审校是唯一能补上这一层的环节。
+    """
     bible = load_bible(ws, project_id)
     lines: list[str] = []
     wv = bible.get("worldview") or {}
@@ -78,10 +109,32 @@ def _bible_brief(ws: Workspace, project_id: str, cast_ids: list[str] | None = No
             lines.append(f"境界体系：{'、'.join(levels)}")
         for r in wv.get("rules") or []:
             lines.append(f"铁律：{r}")
+        fluctuates = wv.get("realm_fluctuates") or []
+        if fluctuates:
+            lines.append("境界波动（下列角色境界随系统绑定/解除而变，不得写死）："
+                         + "、".join(humanize_kv(x) for x in fluctuates))
+        modern = wv.get("modern_words") or []
+        if modern:
+            lines.append("禁用现代词/现代概念（出现即算设定矛盾）："
+                         + "、".join(humanize_kv(x) for x in modern))
     st = bible.get("style") or {}
     proto = st.get("protagonist") or {}
     if proto.get("name"):
         lines.append(f"主角：{proto['name']}（性别 {proto.get('gender', 'unknown')}）")
+    glossary = normalize_glossary(st.get("glossary") or [])
+    if glossary:
+        lines.append("专有名词（写法必须与下列完全一致，出现异写即报「设定矛盾」）："
+                     + "、".join(f"{g['term']}（{g['note']}）" if g.get("note") else str(g["term"])
+                                for g in glossary))
+    craft_ids = [str(x) for x in (st.get("craft_cards") or []) if str(x).strip()]
+    if craft_ids:
+        # 题材工艺卡：硬规范（如"系统流必须有系统提示音"）。审校必须知道，
+        # 否则会把合规写法当问题报、或漏报违规写法。
+        from ..craft.loader import inject_block
+
+        blk = inject_block(craft_ids)
+        if blk:
+            lines.append("题材工艺规范（硬要求）：" + " ".join(blk.split()))
     chars = [c for c in bible.get("characters") or [] if isinstance(c, dict)]
     if cast_ids:
         chars = [c for c in chars if c.get("id") in cast_ids] or chars
@@ -96,6 +149,35 @@ def _bible_brief(ws: Workspace, project_id: str, cast_ids: list[str] | None = No
     return "\n".join(lines)
 
 
+def review_window(text: str, *, chapter_scope: bool = False) -> str:
+    """审校正文窗口（批次 2，P1-2）。
+
+    章级 (`chapter_scope=True`) 走**头+尾**：`review_chapter_file` 把整章交给
+    `review()`，而旧实现与事件级共用 `text[-3000:]` → 章头事件与时间行静默丢失。
+    事件级维持原尾部窗口（单事件片段通常远小于 3000，等价于不截断）。
+    """
+    if chapter_scope:
+        return head_tail_window(text, CHAPTER_REVIEW_CHARS, head_chars=CHAPTER_REVIEW_HEAD)
+    return text[-EVENT_REVIEW_CHARS:]
+
+
+def review_context(ws: Workspace, project_id: str, *, gist_text: str = "",
+                   memories: list[str] | None = None,
+                   cast_ids: list[str] | None = None,
+                   scope: str = "") -> str:
+    """`REVIEW_PROMPT` 的上下文段（圣经/前情/细纲/范围）。
+
+    **单发审校与证据环审校共用此函数**——两条路径原先各自 `.format()` 一遍，
+    细纲窗口已经漂移过一次（800 vs 生成侧 2400），故收敛到单一入口。
+    """
+    return REVIEW_PROMPT.format(
+        bible=_bible_brief(ws, project_id, cast_ids),
+        memory="\n".join(memories or []) or "（无前情）",
+        gist=(gist_text or "")[:GIST_MAX_CHARS] or "（无细纲）",
+        scope=scope or "【范围说明】本次审读的是完整一章。",
+    )
+
+
 class Reviewer:
     """审校师：LLM 语义审校，只读产出工单。"""
 
@@ -107,17 +189,20 @@ class Reviewer:
     def review(self, text: str, vol: int, ch: int, *, gist_text: str = "",
                memories: list[str] | None = None,
                cast_ids: list[str] | None = None,
-               scope: str = "") -> list[ReviewIssue]:
+               scope: str = "", chapter_scope: bool = False) -> list[ReviewIssue]:
+        """审读一段正文并产出工单。
+
+        `chapter_scope=True` 表示 `text` 是**完整一章**（由 `review_chapter_file` 等章级
+        调用方传入）→ 正文走头+尾窗口；事件级片段保持默认（尾部窗口）。
+        """
         if self.llm is None or not text.strip():
             return []
-        prompt = REVIEW_PROMPT.format(
-            bible=_bible_brief(self.ws, self.project_id, cast_ids),
-            memory="\n".join(memories or []) or "（无前情）",
-            gist=gist_text[:800] or "（无细纲）",
-            scope=scope or "【范围说明】本次审读的是完整一章。",
-        )
+        prompt = review_context(self.ws, self.project_id, gist_text=gist_text,
+                                memories=memories, cast_ids=cast_ids, scope=scope)
         res = self.llm.complete(
-            LLMRequest(messages=[LLMMessage(role="user", content=prompt + text[-3000:])],
+            LLMRequest(messages=[LLMMessage(
+                role="user",
+                content=prompt + review_window(text, chapter_scope=chapter_scope))],
                        # 审校预算可配：开思考时思考占预算大头（实测复杂 prompt 思考 >5K 字），
                        # 默认 800 会被吃光导致空输出→静默失效。NOVELIST_REVIEWER_TOKENS
                        # 覆盖（云端强模型给 4096，本地 9B 给 2048）。
@@ -139,7 +224,9 @@ class Reviewer:
             if len(parts) < 3:
                 continue
             level = "block" if parts[0] == "block" else "warn"
-            category = parts[1] if parts[1] in CATEGORIES else "其他"
+            raw = parts[1]
+            category = (raw if raw in CATEGORIES
+                        else CATEGORY_ALIASES.get(raw, "其他"))
             out.append(ReviewIssue(level=level, category=category, detail=parts[2][:200],
                                    suggestion=parts[3][:200] if len(parts) > 3 else ""))
         return out
@@ -151,6 +238,6 @@ class Reviewer:
             if p.exists():
                 text = p.read_text(encoding="utf-8")
                 gist = self.ws.outline_chapter_path(self.project_id, vol, ch)
-                return self.review(text, vol, ch,
+                return self.review(text, vol, ch, chapter_scope=True,
                                    gist_text=gist.read_text(encoding="utf-8") if gist.exists() else "")
         return []

@@ -108,3 +108,21 @@ def prose_tail(text: str, window_chars: int) -> str:
     if m is not None and m.start() > 0:
         tail = tail[m.end():]
     return tail.lstrip()
+
+
+def head_tail_window(text: str, max_chars: int, *, head_chars: int = 800) -> str:
+    """头+尾窗口切片：超预算时保留前 `head_chars` 字 + 尾部余额，中段折叠标注。
+
+    与同模块 `prose_tail` 的分工：`prose_tail` 服务于**接续写作**（只需要最近的下文
+    接缝，切点对齐段落边界）；本函数服务于**通读判断**（审校/抽取），头尾都要——
+    章头的事件、状态与**时间行**密度最高（时间行是 `worldstate.time` 推进的唯一来源），
+    tail-only 会让它们静默消失（`chronicler` 的 H2 修复即此坑）。
+
+    调用方一律走本函数，不要各写一份 `text[-N:]`——两处各写一份正是本坑的成因。
+    """
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    head = min(head_chars, max(0, max_chars // 3))
+    tail = max(max_chars - head, 1)
+    return text[:head] + "\n……（中段略）……\n" + text[-tail:]
+

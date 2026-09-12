@@ -24,6 +24,7 @@ import os
 import re
 
 from .llm import LLMMessage, LLMRequest, estimate_cost
+from .prompt_budget import head_tail_window
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
 
@@ -656,6 +657,12 @@ def _known_setting_terms(ws, project_id: str) -> set[str]:
     return terms
 
 
+# 设定补充提案的正文窗口（批次 2，P2-5）。原实现 tail-only 800 字，看不到事件的
+# 开场交代；提案层失败不阻断（有确定性兜底），但白跑一趟没有意义。
+SETTINGS_SUPPLEMENT_CHARS = 1600
+SETTINGS_SUPPLEMENT_HEAD = 600
+
+
 def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
     """世界观滚动补充（递归分层 B）——P0-B 闸门版：纯提案器，不自动入档。
 
@@ -677,7 +684,9 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
             f"你是设定编辑。下面是一段正文节选，其中可能提到**此前从未出现过的专有名词**"
             f"（地点/组织/功法/种族/规则/势力等需要读者理解的设定）。\n"
             f"已知设定（不要提取这些）：{known_block}\n\n"
-            f"正文：{ev_text[-800:]}\n\n"
+            # 批次 2（P2-5）：原 `ev_text[-800:]` 只看尾部——新设定名词最常出现在
+            # 事件的**开场交代**（新地点/新组织首次亮相），tail-only 恰好看不到。
+            f"正文：{head_tail_window(ev_text, SETTINGS_SUPPLEMENT_CHARS, head_chars=SETTINGS_SUPPLEMENT_HEAD)}\n\n"
             f"输出 JSON 数组，每项：{{\"term\": \"新名词\", \"text\": \"一句话设定说明（30字内）\", "
             f"\"keywords\": [\"检索用关键词1\", \"关键词2\"]}}\n"
             f"只输出真正的新设定名词，最多 3 条，没有就输出 []。只输出 JSON。"

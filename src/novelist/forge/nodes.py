@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..core.llm import LLMMessage, LLMRequest
-from ..core.normalize import dedup_keep_order, normalize_glossary
+from ..core.normalize import dedup_keep_order, normalize_glossary, regroup_factions
 from ..storage.workspace import Workspace
 from .state import Blueprint
 
@@ -271,7 +271,7 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 按以下 JSON 输出（键名严格一致，缺省用空对象/空数组）：
 {_BOOK_OUTPUT_PROTOCOL}"""
-    return "你是网文立项设定师（Forge book 节点，docs/10 §7.2）。", user
+    return "你是网文立项设定师。", user
 
 
 def _lines_ledger(ctx: NodeContext) -> list[dict]:
@@ -388,7 +388,7 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     rc = ctx.extra.get("roll_context")  # forge roll：§7.7 四块上下文
     if rc:
         user += f"\n\n【滚动上下文（前卷事实，优先于规划）】\n{rc}\n以上为第 {vol - 1} 卷已发生的实然，本卷细纲必须承接。"
-    return f"你是卷大纲师（Forge volume 节点，第 {vol} 卷，docs/10 §7.2）。", user
+    return "你是卷大纲师。", user
 
 
 # ---- 方案4（质量加固 2026-09-05）：章纲事件母题去重 ----
@@ -559,7 +559,28 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
                   "（同主角+同动作+同对象即视为重复）；「与前一章衔接」指因果承接，"
                   "不是重复叙述同一事件。")
     meta_rules = _chapter_meta_rules(meta, ch)
-    user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。
+    # 批次 2（2026-09-12 结构化审计 P1-1）：细纲层原先**不含任何世界观基座**——
+    # 决定"本章发生什么"的节点看不到境界体系与铁律，只有角色卡带出的 power.level
+    # 一条间接证据。后果实证：fame5 细纲写"炼气三层废柴"、正文（system prompt 有
+    # 完整境界体系）写"九层压线"，两层对不上。数据源与 `_sibling_block` 同源（bp.worldview），
+    # 纯增量注入、不改任何规则。
+    _wv = bp.get("worldview") or {}
+    _wv_lines: list[str] = []
+    if _wv.get("name"):
+        _wv_lines.append(f"- 世界：{_wv['name']}")
+    if _wv.get("summary"):
+        _wv_lines.append(f"- 概要：{_wv['summary']}")
+    _levels = _dict_of(_wv.get("power_system")).get("levels") or []
+    if _levels:
+        _wv_lines.append("- 境界体系（角色的 power.level 必须出自此表，不得自造、不得错序）："
+                         + "、".join(str(x) for x in _levels))
+    for _r in (_wv.get("rules") or [])[:6]:
+        _wv_lines.append(f"- 铁律：{_r}")
+    wv_block = ""
+    if _wv_lines:
+        wv_block = ("\n\n【世界观基座】（境界与规则是硬约束：事件的修为表现、资源、"
+                    "社会常识都必须与它一致）\n" + "\n".join(_wv_lines))
+    user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。{wv_block}
 
 【本卷主线】{vol_block}
 
@@ -597,7 +618,7 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
   "after_days": 0
 }}
 只输出 JSON。"""
-    return f"你是章节细纲师（Forge chapter 节点，第 {vol} 卷第 {ch} 章，docs/10 §7.2）。", user
+    return "你是章节细纲师。", user
 
 
 # ---- F4 旁支节点 prompt（docs/10 §7.1 树形 + §7.2 判据引导）----
@@ -679,7 +700,7 @@ def _worldview_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【要求】artifact 可为 null（只做分解）或完整 worldview 细化（name/power_system/rules/factions/civilizations）；
 不得改动现有 power_system.levels（已与主角金手指对齐）；rules 每条一句话、可执行、相互不矛盾。"""
-    return "你是世界观构建师（Forge worldview 节点，docs/10 §7.1 L1）。", user
+    return "你是世界观构建师。", user
 
 
 # 体系设定节点（system，L2）的 artifact/settings 示例字段。
@@ -704,7 +725,7 @@ def _system_prompt(ctx: NodeContext) -> tuple[str, str]:
 settings（id 用 set: 前缀，每条含 keywords/text，text 一段话，知识库检索用）。
 
 {_protocol_block(_SYSTEM_FIELDS_EXAMPLE)}"""
-    return "你是体系设定师（Forge system 节点，docs/10 §7.1 L2）。", user
+    return "你是体系设定师。", user
 
 
 def _setting_entry_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -714,7 +735,7 @@ def _setting_entry_prompt(ctx: NodeContext) -> tuple[str, str]:
 【要点】{json.dumps(child, ensure_ascii=False)}
 
 {_protocol_block('  "artifact": {"id": "set:xxx", "keywords": ["词1", "词2"], "text": "设定正文（一段话，含数值/边界等硬细节）"},', leaf=True)}"""
-    return "你是设定条目撰写者（Forge setting_entry 节点，docs/10 §7.1 L3）。", user
+    return "你是设定条目撰写者。", user
 
 
 def _character_group_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -736,7 +757,7 @@ def _character_group_prompt(ctx: NodeContext) -> tuple[str, str]:
 全书规模 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章。
 
 【要求】artifact 可为 null 或阵容调整说明；children 每项 {{"id": "char:xxx", "brief": "该人物需要补什么", "focus": "弧线/关系/秘密"}}。"""
-    return "你是角色阵容规划师（Forge character_group 节点，docs/10 §7.1 L1）。", user
+    return "你是角色阵容规划师。", user
 
 
 def _character_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -755,7 +776,7 @@ power（level+faction）/arc（人物弧线一句话）/first_appear{{vol,ch}}/r
 secret（人物秘密，可空字符串）。id 用原骨架的 id。
 
 {_protocol_block('  "artifact": { …完整人物卡… },', leaf=True)}"""
-    return "你是人物卡撰写者（Forge character 节点，docs/10 §7.1 L2）。", user
+    return "你是人物卡撰写者。", user
 
 
 def _style_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -773,7 +794,7 @@ forbidden_words[]（禁用词，含现代词与陈词滥调）/glossary[{{term,n
 不改 pov/tense（已与商讨答案对齐）。{_craft_block(st)}
 
 {_protocol_block('  "artifact": { …完整文风… },', leaf=True)}"""
-    return "你是文风定稿师（Forge style 节点，docs/10 §7.1 L1）。", user
+    return "你是文风定稿师。", user
 
 
 def _craft_block(st: dict) -> str:
@@ -815,7 +836,7 @@ payoff_desc（回收方式一句话）；scope=volume 的必须有 target_vol；
 伏笔要能被章节细纲的 threads_involved 引用。
 
 {_protocol_block('  "artifact": {"threads": [ …伏笔清单… ]},', leaf=True)}"""
-    return "你是伏笔布局师（Forge thread_set 节点，docs/10 §7.1 L1）。", user
+    return "你是伏笔布局师。", user
 
 
 def _arc_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -831,7 +852,7 @@ def _arc_prompt(ctx: NodeContext) -> tuple[str, str]:
 "chapters_hint": "建议覆盖的章数与节奏，如'第 3–5 章：铺垫→交锋→反转'"}}。
 
 {_protocol_block('  "artifact": { …本弧产物… },', leaf=True)}"""
-    return "你是章段弧线师（Forge arc 节点，docs/10 §7.1 L2）。", user
+    return "你是章段弧线师。", user
 
 
 def _beat_prompt(ctx: NodeContext) -> tuple[str, str]:
@@ -848,7 +869,7 @@ def _beat_prompt(ctx: NodeContext) -> tuple[str, str]:
 按叙事顺序，每拍一句话，关键拍标注情绪强度（如"高"）。
 
 {_protocol_block('  "artifact": {"beats": ["…"]},', leaf=True)}"""
-    return "你是重场戏节拍师（Forge beat 节点，docs/10 §7.1 L4）。", user
+    return "你是重场戏节拍师。", user
 
 
 # ---- apply（落盘 + 蓝图回写，provenance 保护）----
@@ -1960,15 +1981,13 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
     wv = dict(bp.get("worldview") or {})
     wv.setdefault("id", "world:main")
     wv.setdefault("name", (bp.get("meta") or {}).get("title") or "未命名世界")
-    # factions 归一化：蓝图是字符串数组（中间态），bible schema 要求对象数组（知识单元）
+    # factions 归一化：蓝图是字符串数组（中间态），bible schema 要求对象数组（知识单元）。
+    # 批次 2：模型把**一个势力的多个字段**逐项拍平成 `{"faction": "name：玄剑宗"}`
+    # （`_coerce_str_list` 的 `f"{k}：{v}"`），逐项落盘后 `faction` = `"name：玄剑宗"`
+    # → knowledge 势力单元 id 与 character_factory 的 `power.faction` 取值表同时失效。
+    # 归一逻辑在 `core/normalize.regroup_factions`（与读取侧共用同一份）。
     if wv.get("factions"):
-        norm = []
-        for f in wv["factions"]:
-            if isinstance(f, str):
-                norm.append({"faction": f})
-            elif isinstance(f, dict) and f.get("faction"):
-                norm.append(f)
-        wv["factions"] = norm
+        wv["factions"] = regroup_factions(wv["factions"])
     write("bible/worldview.json", wv)
     # characters（剥离 role；protagonist → is_protagonist；运行期扩展键/工厂卡保留）
     # 方案7：落盘前 name 防污染归一——存量污染卡（人设长句塞 name）在重同步时被修复，
