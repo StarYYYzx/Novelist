@@ -182,7 +182,7 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
    - `_polish_and_cap(job, text)` → 润色+篇幅截断（"4)"与"4.4)"段）
    - `_post_verify(job, text)` → 设定交代+实体进度（"4.5)""4.6)"段）
    - `_writeback_events(job, text)` → 编纂员回写（"5)"段）
-3. 约束：**行为不变**——拆完跑全量 220 测试必须全绿，ProductionResult 字段不增不减（新增字段
+3. 约束：**行为不变**——拆完跑全量测试必须全绿，ProductionResult 字段不增不减（新增字段
    属于功能提交，不混入重构提交）。
 
 **P0-2 Provider 双轨制归一（providers/__init__.py REGISTRY 死代码 vs cli.py:352 `_make_cli_provider`）**
@@ -201,10 +201,10 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
 
 验收（2026-09-07）：`pytest tests/test_providers_factory.py tests/test_providers_deepseek.py -q` → 35 passed；全量 `-m 'not slow'` → 876 passed。
 
-**P0-3 Workspace 公共路径 API（`_abs` 被 21 文件外部调用 42 次）**
+**P0-3 Workspace 公共路径 API（`_abs` 被 47 文件外部调用 175 处；`ws.path(` 调用数 0 —— 未做）**
 
 改法：`storage/workspace.py` 加公共方法 `def path(self, *parts: str) -> Path: return self._abs(...)`；
-全库 `ws._abs(` → `ws.path(` 机械替换（sed 可完成，42 处）；`_abs` 保留私有供内部使用。
+全库 `ws._abs(` → `ws.path(` 机械替换（sed 可完成，175 处）；`_abs` 保留私有供内部使用。
 契机：任何动 workspace 的批次顺路做，或单独一个 refactor 提交（纯机械，低风险）。
 
 ### P1（一致性债务）
@@ -222,11 +222,12 @@ cli.py / server.py          # 入口层：装配 + I/O，不含业务规则
 
 改法：改继承 + 全库 grep 捕获点确认无 `except Exception` 依赖旧层级语义（体检确认无裸 except，安全）。
 
-**P1-5 tests/conftest.py 共享夹具（19 个文件各自手搓 Workspace/project）**
+**P1-5 tests/conftest.py 共享夹具（conftest 已建，但存量测试仍各自手搓 Workspace/project）**
 
 改法：新建 conftest，提供 `workspace`（空）、`bible_project`（最小 bible：worldview/characters/
 style/volumes/细纲 1-1）、`fake_provider` 三个 fixture；新测试一律用；存量测试文件**不动**
-（行为已验证，搬家纯风险）。契机：M3m T1 写测试时建 conftest。
+（行为已验证，搬家纯风险）。**2026-09-12 已建成 `tests/conftest.py`（105 行：密钥环境隔离 +
+tmp_path 夹具）**，存量测试文件仍不动——后续新测试一律用它。
 
 **P1-6 CLI 装配去重（chapter/promote/export 等命令重复 gate+approvals+registry 装配）**
 
@@ -272,24 +273,42 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | P0-2 Provider 单轨 | ✅ 已完成（2026-09-07） | 见本节 P0-2 改法/验收 |
 | P0-3 ws.path() | 待做 | 独立 refactor（机械替换） |
 | P1-4 异常归位 | 待做 | 独立 refactor（低风险） |
-| P1-5 conftest | 待做 | M3m T1 |
+| P1-5 conftest | 🔶 部分（conftest 已建，夹具未统一） | 新测试接入 |
 | P1-6 CLI 装配 | 待做 | 与 P0-2 同批 |
 | P2-8/9/10 | 待做 | 顺路 |
 
 ---
 
-## 附：体检数据基线（2026-09-01）
+## 附：体检数据基线（2026-09-12 AST 重测）
 
-| 指标 | 数值 | 目标 |
-| --- | --- | --- |
-| src 总行数 | 8047（core 4640，最大文件 orchestrator 1280） | 单文件 ≤500 |
-| 函数总数 | 376；>50 行 16 个；>100 行 2 个 | >100 行归零 |
-| 类型缺口 | 无返回类型 46 / 参数未标注 83 | 新代码 0 缺口，存量增量清偿 |
-| docstring 缺失 | 211/376（56%） | 公共 API 归零 |
-| 裸 except / TODO / FIXME | 0 / 0 / 0 | 保持 0 |
-| `ws._abs` 外部调用 | 21 文件 42 处 | 归零（迁移 `ws.path`） |
-| 死代码 | providers REGISTRY、base.py | 归零 |
-| 死依赖 | structlog（声明未用） | 归零 |
-| 测试 | 22 文件 4128 行 220 用例，无 conftest | conftest + 行为命名 |
-| 分层违规 | 0（storage 不反向依赖 core ✓） | 保持 0 |
-| 提交规范 | conventional + 中文（10/10 合规） | 保持 |
+> 上一版为 2026-09-01（src 8047 行 / 376 函数 / 220 用例），随 M3l–M3aa 大规模落地已全面失效；
+> 本节于 2026-09-12 用 AST 重测（`scripts/` 不计入）。**对比列保留旧值**，便于看演化方向。
+
+| 指标 | 2026-09-01 | 2026-09-12（实测） | 目标 |
+| --- | --- | --- | --- |
+| src 规模 | 8047 行 | **29031 行 / 87 文件** | 单文件 ≤500 |
+| 最大文件 | orchestrator 1280 | **orchestrator 2610**（nodes 2180 / cli 1835 / engine 1371） | 单文件 ≤500 |
+| 函数总数 | 376 | **1122** | — |
+| >50 行函数 | 16 | **83** | 新代码不新增 |
+| >100 行函数 | 2 | **19** | >100 行归零 |
+| 最大函数 | — | **`orchestrator.produce_chapter` 1112 行 / 51 参数**（P0-1） | 拆成 5 段 |
+| 类型缺口 | 无返回 46 / 参数 83 | **无返回 81 / 参数 363** | 新代码 0 缺口，存量增量清偿 |
+| docstring 缺失 | 211/376（56%） | **533/1122（47%）**；公共 API 缺 252 | 公共 API 归零 |
+| 裸 except / TODO / FIXME | 0 / 0 / 0 | **0 / 0 / 0** ✅ | 保持 0 |
+| `except Exception` 带 noqa | 未测 | **164/168（97.6%）**（R7.3） | 保持 ≥95% |
+| `ws._abs` 外部调用 | 21 文件 42 处 | **47 文件 175 处**（`ws.path(` = 0） | 归零（迁移 `ws.path`） |
+| ruff 告警 | 未测 | **0**（本批从 125 清零：F401 87 / F841 24 / F541 6 / E741 4 / E402 2 / F811 1 / E731 1） | 保持 0 |
+| 死代码 | providers REGISTRY、base.py | **已清** ✅（REGISTRY 已投用、`providers/base.py` 已删）；`core/scene_tools.py` 保留（文档记为待接入预留件） | 归零 |
+| 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
+| `[tool.ruff]` / `[tool.mypy]` | 无 | **仍无**（P2-9 未做；pyproject 无 `[tool.ruff]`/`[tool.mypy]`） | 落地 |
+| 测试 | 22 文件 4128 行 220 用例，无 conftest | **87 文件 17136 行；969 收集**（967 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
+| schemas / docs | — | **24 个 schema；docs 20 文件 7024 行** | — |
+| 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
+| 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |
+
+> 复测命令（无第三方依赖）：
+> ```bash
+> C:/Python314/python.exe -c "..."   # AST 统计见 .workbuddy/memory/2026-09-12.md 记录
+> E:/python/ana/Scripts/ruff.EXE check src tests scripts
+> C:/Python314/python.exe -m pytest tests/ -q --collect-only   # 969 收集
+> ```

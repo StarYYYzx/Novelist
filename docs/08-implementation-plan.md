@@ -29,79 +29,119 @@
 novelist/
 ├── pyproject.toml
 ├── src/novelist/
-│   ├── __init__.py
-│   ├── core/               # 与表层无关的内核
-│   │   ├── agent_runner.py     # Agent 循环执行器（主编剧 & 子代理共用）
-│   │   ├── subagent.py         # 派发/回收/隔离会话管理（含演员派发）
-│   │   ├── orchestrator.py     # 主编剧具体实现（守则 + 决策）
-│   │   ├── pipeline.py         # 工序状态机（串行逐章；事件回写状态）
-│   │   ├── permission.py       # 门禁与策略
-│   │   ├── budget.py           # token/成本预算
-│   │   ├── memory.py           # 记忆子系统编辑/索引入口
-│   │   ├── scene.py            # 围读会（受控群聊）场景总线（ADR-014）
-│   │   ├── moderation.py       # 审核拦截识别 + 降级链（ADR-015）
-│   │   └── events.py           # 事件总线/审计
-│   ├── memory/             # 记忆子系统（ADR-011）
-│   │   ├── retriever.py        # query_memory / 检索（语义+关键词兜底）
-│   │   ├── chronicler.py       # 编纂：提炼/写入/冲突校验（ADR-013）
-│   │   ├── validators.py       # 记忆冲突双层校验器
-│   │   └── index.py            # RAG 索引构建/增量/落盘
-│   ├── tools/              # 工具注册表 + 各工具实现
-│   │   ├── registry.py
-│   │   ├── filesys.py      # read_file/write_file/list_dir/grep
-│   │   ├── writing.py      # write_draft/promote_draft
-│   │   ├── setting.py      # update_entity/add_plot_thread/set_timeline
-│   │   ├── outline.py
-│   │   ├── memory.py       # query_memory / append_experience / append_plot_event / record_relationship_change / reindex_memory
-│   │   ├── takes.py        # write_take（角色演员试演）
-│   │   ├── scene_tools.py  # join_scene / say_line / leave_scene / close_scene（围读会）
-│   │   ├── consistency.py  # run_rule_check/run_semantic_check
-│   │   └── governance.py   # delete/batch_rewrite/checkpoint/publish
-│   ├── providers/          # LLM Provider 适配器(插件)
-│   │   ├── base.py         # LLMProvider / Embedding 抽象
-│   │   ├── registry.py
-│   │   ├── openai.py
-│   │   ├── deepseek.py
-│   │   ├── anthropic.py
-│   │   ├── ollama.py
-│   │   └── vllm.py
-│   ├── consistency/        # 一致性规则引擎 + 语义检
-│   │   ├── rules.py        # 确定性规则
-│   │   └── semantic.py
-│   ├── storage/            # 工作区读写、检查点、schema 校验、SQLite 索引
-│   │   ├── workspace.py
-│   │   ├── checkpoint.py
-│   │   ├── indexdb.py      # .index.db 读写/重建（ADR-016）
-│   │   └── schemas/        # 实体 JSON Schema（见仓库根 schemas/）
-│   ├── cli.py              # click 命令行
-│   ├── server.py           # FastAPI HTTP
-│   └── config.py           # pyproject+toml 配置加载、policy 解析
-├── agents/                 # 各 Agent 系统提示（提示词独立成文本文件）
-│   ├── orchestrator.md
-│   ├── worldbuilder.md
-│   ├── outliner.md
-│   ├── wordsmith.md
-│   ├── reviewer.md
-│   ├── plotkeeper.md
-│   ├── chronicler.md       # 记忆编纂员
-│   ├── actor.template.md   # 角色演员提示词模板（{character}/{history}/{scene} 占位）
-│   └── inspector.md
-├── schemas/                # 实体 JSON Schema（bible/memory/outline/config/policy/llm/events/tools）
-│   ├── bible/{worldview,characters,locations,timeline,plot_threads,style}.schema.json
-│   ├── outline/{volume,chapter_gist}.schema.json
-│   ├── memory/{character_history,plot_event,relationship,fragment_index}.schema.json
-│   ├── config.schema.json
-│   └── policy.schema.json
-├── tests/                  # pytest 冒烟 + 契约校验测试
+│   ├── core/                   # 与表层无关的内核
+│   │   ├── agent_runner.py         # Agent 循环执行器（主编剧 & 子代理共用）
+│   │   ├── orchestrator.py         # 主编剧具体实现（守则 + 决策 + 串行逐章）
+│   │   ├── pipeline.py             # 工序状态机（串行逐章；事件回写状态）
+│   │   ├── tools.py                # 工具注册表 + 三级门禁 + ToolResult
+│   │   ├── approval.py             # 跨进程审批队列
+│   │   ├── memory.py               # 记忆检索/写入（关键词 + 向量双通道）
+│   │   ├── writeback.py            # 事件落定实时回写（ADR-013）
+│   │   ├── chronicler.py           # 编纂：提炼/写入/冲突校验
+│   │   ├── chronicler_agent.py     # 编纂子代理（只读证据仲裁环，ADR-032 F1）
+│   │   ├── worldstate.py           # 人物硬状态 + 时间轴 / pending（ADR-019）
+│   │   ├── entity.py               # 实体引入状态机（四阶段 + 别名共指）
+│   │   ├── bible.py                # 设定圣经读写
+│   │   ├── bible_feedback.py       # 人工反馈：白名单校验 + 字段级写回（ADR-029）
+│   │   ├── broadcast.py            # 事件级世界广播选角（ADR-021）
+│   │   ├── director.py             # 人物调度层（ADR-020 四件套）
+│   │   ├── character_factory.py    # 角色工厂（新角色按需建档）
+│   │   ├── character_enrich.py     # 角色卡深化
+│   │   ├── lines.py                # 线索（Line）账本：四级视图/动作落账（ADR-025）
+│   │   ├── rel_ledger.py           # 关系账本重建与反转提名
+│   │   ├── timeline.py             # 时间轴推进
+│   │   ├── tasks.py                # 任务持久化
+│   │   ├── context.py              # 章节上下文（prompt 装配）
+│   │   ├── prompt_budget.py        # prompt 预算与钉死层
+│   │   ├── phase.py                # 分阶段工作流
+│   │   ├── polish.py               # 章级润色
+│   │   ├── motif.py                # 主题意象
+│   │   ├── volume_facts.py         # 卷末事实清单
+│   │   ├── settings.py             # 设定条目索引
+│   │   ├── knowledge.py            # 知识层（教训/伏笔/势力检索）
+│   │   ├── scene.py                # 围读会场景总线（ADR-014，编排未接入）
+│   │   ├── scene_tools.py          # 围读会工具（join/say/leave/close，**未挂载**）
+│   │   ├── moderation.py           # 审核拦截识别 + 降级链（ADR-015）
+│   │   ├── embedding.py            # Embedding 抽象 + 本地 fastembed + 关键词降级
+│   │   ├── llm.py                  # LLMProvider / Embedding Protocol
+│   │   ├── session.py              # 会话信息 / Budget
+│   │   ├── draft_provenance.py     # 草稿溯源源清单（ADR-030）
+│   │   ├── chapter_reset.py        # 写章前状态清理（重跑幂等）
+│   │   ├── registry.py             # 实体注册表（items/skills/characters）
+│   │   ├── docxconv.py             # Markdown ⇄ docx 互转（零第三方依赖）
+│   │   ├── export.py               # 导出
+│   │   ├── events.py               # 事件总线 / 审计
+│   │   └── errors.py               # 错误码与异常层级
+│   ├── consistency/            # 一致性规则引擎 + 审校
+│   │   ├── rules.py                # 确定性规则（引用完整性/时间线/境界/设定）
+│   │   ├── reviewer.py             # 单发审校
+│   │   └── reviewer_agent.py       # 审校子代理（只读证据环，ADR-032 F2）
+│   ├── forge/                  # 构建层（docs/10，ADR-017/018）
+│   │   ├── state.py                # Blueprint + provenance + ForgeState
+│   │   ├── slots.py                # 槽位与缺口检测
+│   │   ├── ask.py                  # 分轮商讨协议（F2）
+│   │   ├── io_console.py           # 终端问答通道
+│   │   ├── seed.py                 # 模式一：一句话创意（F1）
+│   │   ├── ingest.py               # 模式二：已有稿子（F3）
+│   │   ├── engine.py               # 递归构建 + roll / roll_window
+│   │   ├── nodes.py                # 各层节点（book/volume/chapter …）
+│   │   ├── covenant.py             # 修订契约（波及范围）
+│   │   ├── review.py               # 审查待办与批准
+│   │   ├── coherence.py            # 蓝图审查 / 细纲连读
+│   │   ├── validate.py             # 契约校验（F4）
+│   │   ├── report.py               # 构建报告
+│   │   ├── snapshot.py             # 快照 / 回滚（F5）
+│   │   ├── console.py              # `novelist console` 交互中枢
+│   │   ├── shell.py                # `forge shell` 常驻会话壳
+│   │   ├── genres.py               # 类型包加载
+│   │   ├── genres/                 # 类型包数据（修仙男频 / 通用）
+│   │   └── textnorm.py             # 文本规范化
+│   ├── providers/              # LLM 适配器（单轨工厂，ADR P0-2）
+│   │   ├── __init__.py             # REGISTRY + PRESETS + `create()`
+│   │   ├── openai.py               # OpenAI 兼容基类（含审核拦截识别）
+│   │   ├── deepseek.py             # DeepSeek（默认生成通道）
+│   │   ├── secrets.py              # `.env` 加载 + Key 解析/脱敏
+│   │   └── fake.py                 # 测试替身（**绝不真调 LLM**）
+│   ├── storage/                # 工作区 / 检查点 / schema / SQLite 索引
+│   │   ├── workspace.py            # 目录规约 + 沙箱 + 原子写
+│   │   ├── checkpoint.py           # 双轨快照 / 恢复
+│   │   ├── indexdb.py              # `.index.db` 读写/重建（ADR-016，可再生缓存）
+│   │   └── models.py               # SchemaRegistry + 实体校验
+│   ├── tools/                  # 工具实现（经 core/tools.py 注册）
+│   │   ├── filesys.py              # read_file/write_file/list_dir/grep
+│   │   ├── writing.py              # write_draft / promote_draft
+│   │   ├── memory_tools.py         # query_memory / append_* / reindex
+│   │   └── governance.py           # delete / batch_rewrite / checkpoint
+│   ├── craft/                  # 网文工艺卡（按需检索注入）
+│   │   ├── cards/                  # 工艺卡正文（节奏/伏笔/无敌流/系统流）
+│   │   └── loader.py
+│   ├── cli.py                      # click 命令行
+│   ├── server.py                   # FastAPI HTTP
+│   └── config.py                   # pyproject + toml 配置加载、policy 解析
+├── schemas/                    # 实体 JSON Schema（bible/memory/outline/config/policy/llm/events/tools）
+├── tests/                      # pytest：冒烟 + 契约 + 里程碑回归
+├── scripts/                    # 运维/调试脚本（如 check_indexdb.py）
 └── docs/
 ```
 
-> **§2 结构图为设计蓝图（前瞻），非逐项均已实现的清单**。实际落地以各里程碑的
-> 落地记录（下方 ✅/⏳ 标注）与源码为准；图中部分文件尚未编码，显式未实现项包括：
-> `core/subagent.py`、`permission.py`、`budget.py`、`memory/` 子目录（实际在 `core/`）、
-> `tools/{setting,outline,takes,consistency}.py`（其中 `takes.py` 的 `write_take` 角色演员
-> 未编码）、`providers/{anthropic,ollama,vllm}.py`（真实厂商经 `PRESETS` factory，无独立文件）、
-> `consistency/semantic.py`、`agents/*.md` 提示词目录。读到图上某文件请以其里程碑落地记录为准。
+> **§2 已于 2026-09-12 与源码对齐**。原图是设计蓝图（前瞻），且在若干项上与实现脱节；
+> 这些差异**不是"待编码"而是"改设计"**，读图时按下面这张对照表理解：
+>
+> | 原图条目 | 实际落点 |
+> | --- | --- |
+> | `core/subagent.py` | 无此文件。子代理复用 `core/agent_runner.py`；具体子代理各自成模块（`chronicler_agent.py` / `reviewer_agent.py`） |
+> | `core/permission.py` | 三级门禁在 `core/tools.py`；审批队列在 `core/approval.py` |
+> | `core/budget.py` | prompt 预算在 `core/prompt_budget.py`，会话预算在 `core/session.py`（`Budget`） |
+> | `memory/` 子目录 | 不存在，全部在 `core/memory.py` |
+> | `tools/registry.py` | 注册表即 `core/tools.py` |
+> | `tools/{setting,outline,takes,consistency}.py` | 不存在；设定/伏笔写入并入 `tools/writing.py` 与 `core/` 各模块 |
+> | `tools/memory.py` | 实际文件名是 `tools/memory_tools.py` |
+> | `tools/scene_tools.py` | 实际路径是 `core/scene_tools.py`，且**未挂载**（见 docs/05 §5.3） |
+> | `providers/base.py` / `providers/registry.py` | 已删；抽象在 `core/llm.py`，注册表并入 `providers/__init__.py` |
+> | `providers/{anthropic,ollama,vllm}.py` | 无独立文件；统一经 `PRESETS` 工厂按名实例化 |
+> | `consistency/semantic.py` | 语义审校在 `consistency/reviewer.py` 与 `reviewer_agent.py` |
+> | `storage/schemas/` | 不存在；Schema 在仓库根 `schemas/` |
+> | `agents/*.md` | 未落地；提示词目前内联在代码里（见 docs/05） |
 
 ## 3. 里程碑路线图
 
@@ -819,7 +859,7 @@ M3r 验收后用户口径"做完继续讨论"的下一里程碑（人物一致�
 | 件 | 实现 | 状态 |
 | --- | --- | --- |
 | 广播模块 | `core/broadcast.py`：可及池（worldstate dead / unavailable_until>now / bible status dead·unknown 剔除，零调用）；prompt（事件+接缝+天数+细纲声明+上事件+池≤40）；解析纪律（防造名拒绝+告警、```json 围栏容错、非 JSON 不崩）；校验（细纲声明补回/池外剔除/文本命中补回/≤6 裁）；落盘 `memory/castings/v{vol}-c{ch}-e{idx}.json`；needs → 工厂队列（source=broadcast） | ✅ |
-| orchestrator 接线 | 事件循环注卡前 +1 次广播；`broadcast_casting: bool = False`（v1 默认关）；成功 → 名单驱动 cast、`ProductionResult.broadcasts_built` 回传；任何异常 → 静默回退确定性选角（与 ADR-020 同纪律） | ✅ |
+| orchestrator 接线 | 事件循环注卡前 +1 次广播；`broadcast_casting: bool = True`（**B1 验收后已转默认开**，见下方 2026-09-06 转正记录与 docs/问题总账 B1）；成功 → 名单驱动 cast、`ProductionResult.broadcasts_built` 回传；任何异常 → 静默回退确定性选角（与 ADR-020 同纪律） | ✅ |
 | 测试 | `tests/test_broadcast.py` 28 条：池过滤/解析纪律/校验四场景/落盘/needs 入队/失败纪律(挂·blocked·垃圾·None)/orchestrator 集成（开启广播名单驱动 + 垃圾降级不阻生成）+ **F7 不在场点名 4 条**（真自造名仍拒 / 注册角色放行不进物理 cast / 集成 / 池排除前置） | ✅ 28 passed（含 test_broadcast_alias_match） |
 | 文档 | ADR-021 状态改"已实施"；4 项拍板记录（细纲不可删 / 新人必经工厂 / 独立成次 / 落盘） | ✅ |
 

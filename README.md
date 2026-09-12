@@ -46,7 +46,7 @@
 pip install -e ".[dev,providers]"
 
 # 跑测试（本仓库默认不带真实 LLM，快而稳）
-python -m pytest tests/ -q          # 901 项通过
+python -m pytest tests/ -q          # 967 passed · 1 skipped（969 收集，slow 默认跳过）
 
 # 查看 CLI 帮助
 python -m novelist.cli --help       # 需 src 在 sys.path；或 pip install 后直接用 novelist
@@ -85,7 +85,7 @@ src/novelist/
   tools/         工具注册表（filesys / writing / memory / governance）
   consistency/   确定性规则引擎与审校
   cli.py / server.py / config.py
-tests/           ~901 项测试（单测绝不真调 LLM，docs/09）
+tests/           969 收集（967 passed · 1 skipped · 1 deselected）；单测绝不真调 LLM（docs/09）
 ```
 
 ## 文档导航
@@ -94,7 +94,7 @@ tests/           ~901 项测试（单测绝不真调 LLM，docs/09）
 | --- | --- |
 | [docs/01-overview.md](docs/01-overview.md) | 背景、目标、范围、术语表、约束与假设 |
 | [docs/02-requirements.md](docs/02-requirements.md) | 用户画像、用例、功能需求（FR / NFR）与验收标准 |
-| [docs/03-architecture-decision.md](docs/03-architecture-decision.md) | 多 Agent 模式对比、选型论证与 ADR-001…031 决策记录 |
+| [docs/03-architecture-decision.md](docs/03-architecture-decision.md) | 多 Agent 模式对比、选型论证与 ADR-001…033 决策记录 |
 | [docs/04-architecture-design.md](docs/04-architecture-design.md) | 总体架构：分层、拓扑、C4 视图、关键机制 |
 | [docs/05-agent-design.md](docs/05-agent-design.md) | 主编剧循环、子代理 / 角色演员 / 编纂员、工具协作协议 |
 | [docs/06-data-design.md](docs/06-data-design.md) | 工作区目录规范（含记忆层）、数据模型与 JSON Schema |
