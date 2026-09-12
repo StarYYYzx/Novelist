@@ -100,6 +100,12 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   `07` 接口 | `08` 实现规划（M0–M4/风险，含各里程碑完成状态）| `09` 质量 | `10` 构建层 Forge |
   **`11` 编码规范**（含存量整改清单 P0–P2）| `12` 测试计划 | `13` AI 协作开发要点。
 - `docs/人工审查.md` 是用户的审查意见与待办（含空白的"第二批"，等用户填）。
+- **带日期的报告类文档**（不在 01–13 编号内，属某轮工作的实证产物）：
+  `问题总账-2026-09-03.md`、`质量加固提案-2026-09-05.md`、`流程异常排查-2026-09-05.md`、
+  `测试记录-2026-09-06-*.md`、`线索子系统设计与规划-2026-09-06.md`、
+  **`prompt审计-2026-09-12.md`**（提示词结构/成本审计，含 P0–P2 修复清单）。
+  另有运行期证据：`novel_workspace/_harness/`（含 `prompt作用审计.md`「prompt 有没有接上链路」、
+  `前两章问题归因报告.md`、以及实测导出的 prompt dump）。
 - `src/novelist/`：
   - `core/`：`llm`（Provider 抽象）、`embedding`（Embedding + 关键词降级）、`memory`（索引/检索/写入）、
     `writeback`（事件实时回写）、`worldstate`（人物硬状态 + 时间轴/pending）、`tools`（注册表 + 三级门禁）、
