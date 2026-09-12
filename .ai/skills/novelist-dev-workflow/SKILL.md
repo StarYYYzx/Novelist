@@ -1,6 +1,6 @@
 ---
 name: novelist-dev-workflow
-description: Novelist 仓库（多 Agent 长篇小说撰写系统）的日常开发与回归约定：正确的解释器与 pytest 命令、全量回归必须前置的沙箱环境变量、本机 coreutils 缺失的绕法、生成链路的已拍板口径（deepseek-v4-flash / Provider 单轨工厂 / ADR 系列）、改 schema 与文档的联动要求、以及只读禁区。当在本仓库跑测试、修 bug、改生成链路、动 schema/docs、或接手这个项目时使用。
+description: Novelist 仓库（多 Agent 长篇小说撰写系统）的日常开发与回归约定：正确的解释器与 pytest 命令、五道机械门禁（scripts/check.py、pre-commit、CI）、AI 规范分发（AGENTS.md 单一源 / .ai/skills / ai_bootstrap.py 目录联接）、全量回归必须前置的沙箱环境变量、本机 coreutils 缺失的绕法、生成链路的已拍板口径（deepseek-v4-flash / Provider 单轨工厂 / ADR 系列）、改 schema 与文档的联动要求、以及只读禁区。当在本仓库跑测试或门禁、修 bug、改生成链路、动 schema/docs、调整 AI 引导与 hook、或接手这个项目时使用。
 agent_created: true
 ---
 
@@ -12,6 +12,11 @@ agent_created: true
 ## 1. 命令（照抄，别自己拼）
 
 ```bash
+# ★ 首选入口：五道门禁一键跑（自己注入沙箱环境变量、自己找 ruff，不用手拼命令）
+"C:/Python314/python.exe" scripts/check.py --all     # G1 ruff → G2 密钥 → G3 卫生 → G4 pytest → G5 文档基线
+"C:/Python314/python.exe" scripts/check.py --quick   # 仅 G1–G3（pre-commit 用的就是它）
+"C:/Python314/python.exe" scripts/ai_bootstrap.py --status   # 查看技能链接 / hooksPath 是否就位
+
 # 全量回归——必须带这两个环境变量，否则测试自身的 unlink 累计超阈值被沙箱误杀
 # → 表现为"偶发失败、单跑全过"
 CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
@@ -68,17 +73,46 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   的**预留件**——删它要连带改设计文档，属设计决策。
 - `novel_workspace/`、`*.index.db`、`demo/` 不入 git；测试一律用 `tmp_path`。
 
-## 6. 已知未做项（别重复发现）
+## 6. AI 规范与门禁（ADR-034 —— 改这套东西前先读）
+
+单一源 + 薄桥接 + 机械门禁，保证"队友 clone 后 AI 行为一致"：
+
+| 组件 | 角色 |
+|---|---|
+| `AGENTS.md` | **唯一规范源**（§0–§9）。跨工具事实标准（Codex/Copilot/Cursor/Cline/Zed 原生读；Claude Code 靠 `CLAUDE.md` 里的 `@AGENTS.md`） |
+| `.ai/skills/` | **技能单一源**（git 跟踪）。当前 2 个：`novelist-dev-workflow`、`python-repo-quality-remediation` |
+| `scripts/ai_bootstrap.py` | 用 `mklink /J` 把 `.workbuddy/skills`、`.claude/skills` 目录联接指向 `.ai/skills`；同时 `git config core.hooksPath .githooks` + 写本机解释器到 `.git/novelist-hook-python`（**不入库**）。**每个新 clone 只需跑一次** |
+| `scripts/check.py` | G1 ruff / G2 密钥与敏感文件 / G3 仓库卫生 / G4 pytest / G5 文档基线 9 指标 |
+| `.githooks/pre-commit` | 跑 `check.py --quick`；`SKIP_CHECK=1` 绕过 |
+| `.github/workflows/ci.yml` | windows-latest + **Python 3.11**（声明的下限，能抓 PEP 701 类 f-string 回退问题） |
+
+**这套 harness 自身踩过的坑（别再踩）：**
+
+- **`cmd || fallback` 里非零退出码 ≠ 失败**：hook 里 `IFS= read -r PY < file || PY=""`，
+  文件**无尾随换行**时 POSIX `read` 返回非 0，`||` 会把**刚读成功的值清空** → 静默回退 PATH 上
+  碰到的任意 python（实测落到没装 pytest 的 3.13）。现在是不带 `||` + 手工剥 `\r`。
+- **写机器路径给 shell 用要 `as_posix()` + `newline="\n"`**：反斜杠路径在 `[ -x "$PY" ]` 下判定失败；
+  默认 CRLF 会让 `read` 带出尾随 `\r`。两处都会导致静默回退。
+- **加 `.gitignore` 忽略规则会拆掉依赖 `git status` 的检查**：加了 `/_*.py` 后 G3 原来的
+  "untracked 残留"检查永久失效。现在 G3 = 硬拦**已入库**的根目录 `_*` 文件 + 校验 `.gitignore`
+  必需条目仍在；on-disk 残留降级为 WARN。
+- **G5 比对文件名要用 `Path(name).stem`**：文档写 `orchestrator 2610`（不带 `.py`），按完整名匹配会误报。
+- **`.gitattributes` 锁 LF**（`* text=auto eol=lf`）。本机 `core.autocrlf=true`，不锁定 hook 会被检出成
+  CRLF。Git for Windows 的 sh 能容忍带 `\r` 的 shebang，但 WSL/Linux 下 `sh .githooks/pre-commit` 不行。
+- hook 脚本**只用 shell 内建**（`read`/`command`/`[`），不用 `cat` 等外部命令——本机 coreutils 缺失。
+
+## 7. 已知未做项（别重复发现）
 
 `docs/11` §13：**P0-1** `core/orchestrator.py` 的 `produce_chapter` 1112 行待拆；
 **P0-3** `ws._abs` → `ws.path`（47 文件 175 处，`ws.path(` 调用数仍 0）；**P1-4** 7 个异常未归 `NovelistError`；
-**P2-8** structlog 未删；**P2-9** `pyproject.toml` 无 `[tool.ruff]`/`[tool.mypy]`。
+**P2-8** structlog 未删；**P2-9** ruff 已落（`[tool.ruff]` 在 `pyproject.toml`，`select = E4/E7/E9/F`
+锁定当前零告警状态），**提标（I/B/UP/SIM）与 mypy 故意留作独立批次**。
 另有：抽公共 `read_json`（6 份副本）与 LLM JSON 宽容解析（7 份副本）——可回收约 180–250 行。
 
-## 7. 收尾
+## 8. 收尾
 
-1. `ruff check src tests scripts` 全绿
-2. 全量回归绿（带 §1 的两个环境变量），记四个数
+1. `"C:/Python314/python.exe" scripts/check.py --all` 五项全绿
+2. 若动了 `docs/11` 基线表涉及的数字，先改代码再重测（G5 会拦住漂移）
 3. 临时脚本（`_*.py`、`_out.txt`）清理干净——**本项目习惯把临时脚本放根目录，容易残留**
 4. 更新 `.workbuddy/memory/YYYY-MM-DD.md`（只追加，记可复用教训而非过程流水）
 5. 用户没说推送就不要 push
