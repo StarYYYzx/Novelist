@@ -33,6 +33,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SELF = Path(__file__).resolve()
 
+# CI（GitHub Actions Windows runner）stdout 默认 cp1252，门禁输出含大量中文，
+# 第一行 print 就会 UnicodeEncodeError。统一强制 UTF-8（Python 3.7+），
+# errors="replace" 保证任何异常字节都不再崩掉门禁本身。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 # ---------------------------------------------------------------- 输出工具
 
 _OK = "[OK]  "
