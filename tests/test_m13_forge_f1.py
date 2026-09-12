@@ -183,6 +183,21 @@ def test_run_seed_fallback_on_bad_reply(ws_factory, capsys):
     capsys.readouterr()
 
 
+def test_run_seed_unknown_craft_id_warns_without_crashing(ws_factory, capsys):
+    """回归（2026-09-12）：传入未知工艺卡 id 不得崩溃。
+
+    ``_init_blueprint`` 曾直接引用 ``warnings`` 自由变量，而该名字定义在另一函数
+    ``run_seed`` 里——此前这条分支零测试覆盖，用户一旦传错工艺卡 id 即 NameError。
+    """
+    ws, pid = ws_factory("proj-f1c")
+    res = run_seed(ws, pid, "一句话", provider=FakeProvider(reply="not json at all"), gate=False,
+                   volumes=1, chapters_per_volume=1, target_words=500, max_calls=60,
+                   craft=["no-such-craft-card"])
+    # 修复前：NameError；修复后：告警回传且流程走完
+    assert any("未知工艺卡 id" in w for w in res.warnings), res.warnings
+    capsys.readouterr()
+
+
 def test_run_seed_interactive_downgrades_on_no_tty(ws_factory, monkeypatch, capsys):
     ws, pid = ws_factory("proj-f1i")
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)

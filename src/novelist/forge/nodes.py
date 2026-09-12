@@ -681,6 +681,16 @@ def _worldview_prompt(ctx: NodeContext) -> tuple[str, str]:
     return "你是世界观构建师（Forge worldview 节点，docs/10 §7.1 L1）。", user
 
 
+# 体系设定节点（system，L2）的 artifact/settings 示例字段。
+# 注意：含换行的示例必须放在普通字符串里——f-string 的替换字段在 Python 3.11
+# 不允许出现反斜杠（PEP 701 到 3.12 才放开），内联进 f-string 会让本模块在
+# 3.11 下直接 SyntaxError（pyproject 声明支持 3.11+）。
+_SYSTEM_FIELDS_EXAMPLE = (
+    '  "artifact": {"title": "维度名", "kind": "power|faction|geo|resource", "desc": "一段话"},\n'
+    '  "settings": [{"id": "set:xxx", "keywords": ["词1"], "text": "设定正文"}],'
+)
+
+
 def _system_prompt(ctx: NodeContext) -> tuple[str, str]:
     child = ctx.child or {}
     wv = ctx.bp.get("worldview") or {}
@@ -692,7 +702,7 @@ def _system_prompt(ctx: NodeContext) -> tuple[str, str]:
 【要求】artifact = 本维度的完整设定（title/kind/desc），并给出可入库的设定条目
 settings（id 用 set: 前缀，每条含 keywords/text，text 一段话，知识库检索用）。
 
-{_protocol_block('  "artifact": {"title": "维度名", "kind": "power|faction|geo|resource", "desc": "一段话"},\n  "settings": [{"id": "set:xxx", "keywords": ["词1"], "text": "设定正文"}],')}"""
+{_protocol_block(_SYSTEM_FIELDS_EXAMPLE)}"""
     return "你是体系设定师（Forge system 节点，docs/10 §7.1 L2）。", user
 
 

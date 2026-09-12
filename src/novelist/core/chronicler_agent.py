@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 
 from .agent_runner import AgentRunner
-from .chronicler import Chronicler, ExtractedEvent, Extraction
+from .chronicler import Chronicler, ChroniclerReport, ExtractedEvent, Extraction
 
 _VERDICT_RE = re.compile(
     r"^\s*(?:[-*•]|\d+[.、)．]?)?\s*(保持|忽略|改写|提请|确认)\s*[：:]\s*(\[?\d+\]?)\s*(?:[→-]\s*(.*?))?\s*(?:｜\s*(.*))?$",

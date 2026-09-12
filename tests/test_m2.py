@@ -127,13 +127,23 @@ def test_parse_deepseek_ok():
     assert res.provider == "deepseek"
 
 
-@pytest.mark.skipif(not os.getenv("DeepSeek-API-KEY"), reason="DeepSeek-API-KEY 未设置，跳过真实 API 集成")
+# 真实 API 集成 key 在**收集期**捕获：conftest 的 autouse fixture 会清掉宿主密钥环境变量，
+# 提前取值可保证 `pytest -m slow` 显式运行时仍能拿到 key。
+_LIVE_DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DeepSeek-API-KEY")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _LIVE_DEEPSEEK_KEY, reason="未设置 DeepSeek key，跳过真实 API 集成")
 def test_deepseek_live_completion():
-    """真实 DeepSeek API 集成：设置 DeepSeek-API-KEY 后运行。"""
+    """真实 DeepSeek API 集成（**默认回归跳过**，`pytest -m slow` 显式运行）。
+
+    真机调用不属单元测试（docs/09 §2.1）。此前未标 slow，默认回归会真的调外部 API；
+    2026-09-12 补标并改为收集期取 key。
+    """
     from novelist.core.llm import LLMMessage, LLMRequest
     from novelist.providers.deepseek import DeepSeekProvider
 
-    p = DeepSeekProvider(api_key=os.getenv("DeepSeek-API-KEY"), timeout_s=30)
+    p = DeepSeekProvider(api_key=_LIVE_DEEPSEEK_KEY, timeout_s=30)
     res = p.complete(LLMRequest(messages=[LLMMessage(role="user", content="用一句话自我介绍")]))
     assert res.ok
     assert res.content

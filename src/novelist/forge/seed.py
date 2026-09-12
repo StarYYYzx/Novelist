@@ -160,8 +160,15 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
                     pack: dict, pack_id: str,
                     volumes: int | None, chapters_per_volume: int | None,
                     target_words: int | None,
-                    craft: list[str] | None = None) -> Blueprint:
-    """SeedSpec + 包默认 → 蓝图（provenance 分层：user > llm > template）。"""
+                    craft: list[str] | None = None,
+                    warnings: list[str] | None = None) -> Blueprint:
+    """SeedSpec + 包默认 → 蓝图（provenance 分层：user > llm > template）。
+
+    ``warnings`` 由调用方（``run_seed``）传入用于收集告警；未传时本次告警丢弃而不报错
+    （修复：此前 245 行直接引用 ``warnings`` 自由变量，而本函数内并无该名字——
+    定义在另一函数 ``run_seed`` 中，传入未知工艺卡 id 时会抛 NameError）。
+    """
+    _warnings = warnings if warnings is not None else []
     bp = Blueprint.blank()
     meta = bp.data["meta"]
 
@@ -242,7 +249,7 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
                 continue
             (picked if s in known else unknown).append(s)
         if unknown:
-            warnings.append(
+            _warnings.append(
                 f"未知工艺卡 id：{'、'.join(unknown)}（已忽略；可用：{'、'.join(sorted(known))}）")
         if picked:
             st["craft_cards"] = picked
@@ -367,7 +374,8 @@ def run_seed(ws: Workspace, project_id: str, brief: str, *,
         pack_id = _genres.GENERIC_ID
         warnings.append(f"模板 {genre_pack or spec.template_suggestion!r} 不存在，装载通用包")
     bp = _init_blueprint(ws, project_id, brief, spec, pack, pack_id,
-                         volumes, chapters_per_volume, target_words, craft)
+                         volumes, chapters_per_volume, target_words, craft,
+                         warnings=warnings)
     bp.save(ws, project_id)
     append_transcript(ws, project_id, "seed.blueprint", rev=bp.data["rev"],
                       genre=pack_id, scale=bp.get("meta.scale"))

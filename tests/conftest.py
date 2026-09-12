@@ -17,6 +17,33 @@ from novelist.core.llm import LLMResult
 from novelist.storage.checkpoint import Checkpoint
 from novelist.storage.workspace import Workspace
 
+# 宿主环境可能注入的密钥变量（覆盖 providers/__init__.py 的 PRESETS key_env）。
+_SECRET_ENV_VARS = (
+    "DEEPSEEK_API_KEY",
+    "DeepSeek-API-KEY",  # DeepSeek 旧名（仍在 key_env 优先级列表内）
+    "OPENAI_API_KEY",
+    "DASHSCOPE_API_KEY", "QWEN_API_KEY",
+    "MOONSHOT_API_KEY", "KIMI_API_KEY",
+    "ZHIPU_API_KEY", "GLM_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OLLAMA_API_KEY",
+    "VLLM_API_KEY",
+    "LM_STUDIO_API_KEY",  # 已停用通道（LM-Studio）的宿主残留
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_secret_env(monkeypatch):
+    """隔离宿主密钥环境变量（2026-09-12）。
+
+    宿主 shell 若注入了 ``DEEPSEEK_API_KEY`` 等，会让「缺 key 应抛错」与「key 优先级」
+    两类测试静默失真（实测 2 failed：test_m2.py::test_deepseek_requires_key /
+    test_providers_deepseek.py::test_provider_key_precedence）。此处统一清除，
+    使测试结果不依赖运行环境；确需 key 的测试仍可用 ``monkeypatch.setenv`` 自行注入。
+    """
+    for name in _SECRET_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
 
 @pytest.fixture
 def ws_factory(tmp_path):

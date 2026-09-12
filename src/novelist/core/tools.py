@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .approval import ApprovalQueue, ApprovalRequest
 from .errors import DENIED, INTERNAL, NOT_FOUND, OK, DeniedError, NovelistError, SchemaFailError
 from .session import Budget, SessionInfo
 

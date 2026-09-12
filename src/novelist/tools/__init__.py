@@ -6,6 +6,7 @@ Agent 通过受控工具与系统交互。本包把各领域工具装配进 Tool
 
 from __future__ import annotations
 
+from ..core.approval import ApprovalQueue
 from ..core.session import SessionInfo
 from ..core.tools import PermissionGate, Tool, ToolRegistry
 from ..storage.workspace import Workspace

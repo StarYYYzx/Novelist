@@ -39,7 +39,7 @@ def _seed(ws, pid):
          "aliases": ["王铁面"], "role": "执法长老",
          "power": {"level": "炼气九层", "faction": "青云宗"},
          "core_traits": ["铁面", "护短"],
-         "behavior_rules": ["违规必罚", "护犊子"], "status": "active"},
+         "behavior_rules": ["违规必罚", "护犊子"]},
     ])
     ws.write_json(ws._abs(f"{pid}/bible/worldview.json"), {
         "name": "青冥界",

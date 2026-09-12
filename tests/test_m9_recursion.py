@@ -21,7 +21,6 @@ from novelist.core.llm import LLMResult
 from novelist.core.orchestrator import (
     _prior_chapter_text,
     _supplement_settings,
-    _generate_beats,
     is_expanded_event,
     parse_cast_decl,
 )

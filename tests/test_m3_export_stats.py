@@ -137,32 +137,3 @@ def test_cli_export_docx_requires_output(tmp_path):
     r = CliRunner().invoke(cli, ["export", str(tmp_path), "--format", "docx"])
     assert r.exit_code != 0
     assert "--output" in r.output
-
-
-# ---------- export → docx（M3o 接线） ----------
-
-
-def test_cli_export_docx_roundtrip(tmp_path):
-    """export --format docx 产出 Word 成稿，读回保真章题。"""
-    from novelist.core.docxconv import docx_to_markdown
-
-    ws, pid = _project(tmp_path)
-    ch = ws.chapter_path(pid, 1, 1)
-    ch.parent.mkdir(parents=True, exist_ok=True)
-    ch.write_text("# 第 1 章 初入宗门\n\n叶蓝睁开眼。\n", encoding="utf-8")
-
-    out = tmp_path / "book.docx"
-    r = CliRunner().invoke(cli, ["export", str(tmp_path),
-                                 "--format", "docx", "--output", str(out)])
-    assert r.exit_code == 0, r.output
-    assert out.exists()
-    md = docx_to_markdown(out)
-    assert "第 1 章 初入宗门" in md
-    assert "叶蓝睁开眼。" in md
-
-
-def test_cli_export_docx_requires_output(tmp_path):
-    _project(tmp_path)
-    r = CliRunner().invoke(cli, ["export", str(tmp_path), "--format", "docx"])
-    assert r.exit_code != 0
-    assert "--output" in r.output
