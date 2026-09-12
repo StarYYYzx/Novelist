@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import re
 
-from .llm import LLMMessage, LLMRequest
+from .llm import LLMMessage, LLMRequest, estimate_cost
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
 
@@ -356,6 +356,7 @@ def _seam_retell(provider, system_prompt: str, prev_tail: str, new_head: str) ->
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
+            response_format="json_object",  # P1-5（2026-09-12 审计）：此前靠正则抠 JSON
             max_tokens_out=200, temperature=0.2,
             thinking=True))  # 判断类：接缝复述判定，开思考提 recall
         raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
@@ -1296,6 +1297,11 @@ class _UsageCounter:
         self.calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        # P0-1（2026-09-12 审计）：缓存命中拆分。`cache_seen` 标记供应商是否**上报过**
+        # 这两个字段——未上报时命中率不可算，报告要写"不可测"而不是显示 0%。
+        self.cache_hit_tokens = 0
+        self.cache_miss_tokens = 0
+        self.cache_seen = False
 
     def complete(self, req, **kwargs):
         self.calls += 1
@@ -1304,6 +1310,12 @@ class _UsageCounter:
         if usage is not None:
             self.tokens_in += int(getattr(usage, "tokens_in", 0) or 0)
             self.tokens_out += int(getattr(usage, "tokens_out", 0) or 0)
+            hit = getattr(usage, "cache_hit_tokens", None)
+            miss = getattr(usage, "cache_miss_tokens", None)
+            if hit is not None or miss is not None:
+                self.cache_seen = True
+                self.cache_hit_tokens += int(hit or 0)
+                self.cache_miss_tokens += int(miss or 0)
         return res
 
     def __getattr__(self, name):
@@ -1319,7 +1331,8 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
     `audit_log`（机器查，ADR-016 辅助索引可重建）。先落报告文件、后同步索引（ADR-016
     写操作先文件后索引）；审计失败静默——审计不该阻断写章。
 
-    计价与 forge 报告同口径（¥1/1M in + ¥2/1M out，DeepSeek 参考价）。
+    计价见 `core/llm.COST_PER_M_CNY`（按缓存命中/未命中分别计费，P0-1）。供应商未上报
+    缓存拆分时按未命中价估算——那是成本的保守上界。
     `world_now`：本章结算后的故事时间（天数轴，C1/D 收敛落审计用）。
     `rel_pairs/rel_proposals`：ADR-023 章末实然关系账本（pair 数 / 翻转提案数）。
     """
@@ -1332,13 +1345,23 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
         p = ws._abs(f"{project_id}/{rel}")  # noqa: SLF001
         p.parent.mkdir(parents=True, exist_ok=True)
         status = "ok" if ok else "failed"
-        cost = counter.tokens_in / 1e6 * 1.0 + counter.tokens_out / 1e6 * 2.0
+        if counter.cache_seen:
+            cost = estimate_cost(cache_hit=counter.cache_hit_tokens,
+                                 cache_miss=counter.cache_miss_tokens,
+                                 tokens_out=counter.tokens_out)
+            denom = counter.cache_hit_tokens + counter.cache_miss_tokens
+            rate = (counter.cache_hit_tokens / denom * 100) if denom else 0.0
+            cache_txt = (f"；缓存命中 {counter.cache_hit_tokens} / 未命中 "
+                         f"{counter.cache_miss_tokens}（命中率 {rate:.1f}%）")
+        else:
+            cost = estimate_cost(cache_miss=counter.tokens_in, tokens_out=counter.tokens_out)
+            cache_txt = "；缓存命中率不可测（provider 未上报）"
         lines = [
             f"# 正文生成报告 第 {vol} 卷第 {ch} 章（{ts}）",
             f"- 结果：{status}（mode={mode}）" + (f"，{note}" if note else ""),
             f"- 事件回写：{events} 条；JIT 补卡 {jit}；设定补充 {settings}；阶段 {phase or '-'}" + (f"；设定待确认 {settings_pending}" if settings_pending else ""),
             f"- LLM 调用 {counter.calls} 次：in={counter.tokens_in} / out={counter.tokens_out} tokens，"
-            f"估算成本 ¥{cost:.4f}",
+            f"估算成本 ¥{cost:.4f}{cache_txt}",
         ]
         if world_now is not None:
             lines.insert(1, f"- 故事时间：第 {world_now} 天（开书日=0）")
@@ -1352,6 +1375,8 @@ def _write_generation_audit(ws, project_id: str, vol: int, ch: int, counter: _Us
         payload = {
             "ok": ok, "mode": mode, "events": events, "calls": counter.calls,
             "tokens_in": counter.tokens_in, "tokens_out": counter.tokens_out,
+            "cache_hit_tokens": counter.cache_hit_tokens,
+            "cache_miss_tokens": counter.cache_miss_tokens,
             "cost": round(cost, 6), "phase": phase, "jit": jit,
             "settings": settings, "settings_pending": settings_pending,
             "note": note, "ts": ts,

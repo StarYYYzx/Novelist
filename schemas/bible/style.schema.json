@@ -70,10 +70,16 @@
         ],
         "properties": {
           "term": {
-            "type": "string"
+            "type": "string",
+            "description": "单个术语（不要用「、」把多个术语拼成一个 term——装配侧 core/normalize.split_terms 会拆，但写入侧就该给原子的）"
+          },
+          "note": {
+            "type": "string",
+            "description": "写法/含义说明（拼入生成 prompt；留空则不渲染括号）。历史名 `def` 已废弃，读取侧兼容"
           },
           "def": {
-            "type": "string"
+            "type": "string",
+            "description": "旧字段名（兼容保留，勿新用）"
           }
         },
         "additionalProperties": true

@@ -78,6 +78,30 @@ class Usage:
     tokens_in: int = 0
     tokens_out: int = 0
     cost_estimate: float | None = None
+    # 缓存命中/未命中输入 token（DeepSeek `usage.prompt_cache_hit_tokens` /
+    # `prompt_cache_miss_tokens`）。DeepSeek 上下文硬盘缓存**自动生效、按前缀匹配**：
+    # 命中 0.02 vs 未命中 1 元/百万（2026-09-10 起，50 倍差）——命中率是唯一决定输入
+    # 成本的指标（P0-1，2026-09-12 prompt 审计）。未上报时保持 None，以区别于「上报了 0」：
+    # 不可测时不伪造成 0。
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
+
+
+# DeepSeek Flash 系列单价（人民币元 / 百万 token）。参考价，仅供估算。
+# 空闲时段档；高峰时段（工作日 9:00–12:00、14:00–18:00）各项翻倍。
+# 落地用（P0-1）：把价表从各报告内联处集中到这里，并按命中/未命中分别计费——
+# 旧口径只按 tokens_in 单一价算，系统性低估未命中成本、也看不见命中收益。
+COST_PER_M_CNY = {
+    "in_hit": 0.02,
+    "in_miss": 1.0,
+    "out": 2.0,  # 各来源口径有出入（2 元 vs 4 元），以官方价目页为准
+}
+
+
+def estimate_cost(*, cache_hit: int = 0, cache_miss: int = 0, tokens_out: int = 0) -> float:
+    """按命中/未命中分别计费的估算成本（元）。"""
+    p = COST_PER_M_CNY
+    return (cache_hit * p["in_hit"] + cache_miss * p["in_miss"] + tokens_out * p["out"]) / 1_000_000
 
 
 @dataclass

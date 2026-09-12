@@ -103,7 +103,9 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
 - **带日期的报告类文档**（不在 01–13 编号内，属某轮工作的实证产物）：
   `问题总账-2026-09-03.md`、`质量加固提案-2026-09-05.md`、`流程异常排查-2026-09-05.md`、
   `测试记录-2026-09-06-*.md`、`线索子系统设计与规划-2026-09-06.md`、
-  **`prompt审计-2026-09-12.md`**（提示词结构/成本审计，含 P0–P2 修复清单）。
+  **`prompt审计-2026-09-12.md`**（提示词结构/成本审计，含 P0–P2 修复清单 + 批次 1 落地记录）、
+  **`prompt组装结构审计-2026-09-12.md`**（逐环节信息覆盖审计：细纲层缺世界观基座、
+  审校层三处窗口窄化、审校维度名与解析白名单不一致）。
   另有运行期证据：`novel_workspace/_harness/`（含 `prompt作用审计.md`「prompt 有没有接上链路」、
   `前两章问题归因报告.md`、以及实测导出的 prompt dump）。
 - `src/novelist/`：
@@ -111,7 +113,8 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
     `writeback`（事件实时回写）、`worldstate`（人物硬状态 + 时间轴/pending）、`tools`（注册表 + 三级门禁）、
     `approval`（审批队列）、`pipeline`（工序状态机）、`orchestrator` + `agent_runner`（Agent 循环）、
     `phase`（分阶段工作流）、`entity`（实体引入状态机）、`scene`（围读会总线）、`export`、`errors`、
-    `events`、`moderation`。
+    `events`、`moderation`、`normalize`（确定性文本/数据归一：禁令去重、术语清单拆分与归并——
+    装配侧与 Forge 写入侧**共用同一份**）。
   - `forge/`：`state`（Blueprint/provenance）、`slots`（槽位与缺口）、`ask` + `io_console`（分轮商讨）、
     `seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、`genres`（类型包）、
     `validate` + `report`（契约校验与构建报告）。

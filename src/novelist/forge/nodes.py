@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..core.llm import LLMMessage, LLMRequest
+from ..core.normalize import dedup_keep_order, normalize_glossary
 from ..storage.workspace import Workspace
 from .state import Blueprint
 
@@ -857,11 +858,14 @@ def _coerce_str_list(v):
     强模型常把"分类列表"输出成 dict（如 civilizations={社会结构:…, 科技:…}）
     或单串——schema 校验在 bp.save 时才跑，直接崩掉整次构建（2026-09-04 云端
     Qwen3.6-35B 真机实证）。规则：dict → "键：值" 列表；str → 单元素；
-    list 内非 str 项展开/字符串化；归不出非空列表返回 None（调用方跳过）。
+    list 内非 str 项展开/字符串化；**按原序去重**（P0-3 根因侧：实测禁令表里
+    `毫无疑问地`/`毫无疑问的` 各出现 2 次，模型确实会吐重复项）；
+    归不出非空列表返回 None（调用方跳过）。
     """
     if isinstance(v, dict):
-        return [f"{k}：{val}" for k, val in v.items()
-                if isinstance(val, str) and val.strip()]
+        return dedup_keep_order(
+            f"{k}：{val}" for k, val in v.items()
+            if isinstance(val, str) and val.strip()) or None
     if isinstance(v, str):
         return [v.strip()] if v.strip() else None
     if isinstance(v, list):
@@ -874,7 +878,7 @@ def _coerce_str_list(v):
                            if isinstance(val, str) and val.strip())
             elif item:
                 out.append(str(item))
-        return out or None
+        return dedup_keep_order(out) or None
     return None
 
 
@@ -943,12 +947,12 @@ def _merge_style(bp: Blueprint, style_art: dict) -> None:
     gloss = _dict_of(style_art).get("glossary")
     if isinstance(gloss, list) and gloss:
         existing = [g for g in (st.get("glossary") or []) if isinstance(g, dict)]
-        seen = {g.get("term") for g in existing}
-        for g in gloss:
-            if isinstance(g, dict) and g.get("term") and g["term"] not in seen:
-                existing.append(g)
-                seen.add(g["term"])
-        st["glossary"] = existing
+        # P0-4 根因侧（2026-09-12 prompt 审计）：拆顿号清单式 term（实测 4/56 条是
+        # `'【出名就变强系统】、声望值、明善暗恶'` 这种把多个术语挤进一个字段的写法）
+        # + 同 term 归并、note 取更详尽者。此前只按 term 精确去重，渲染出来是一串
+        # 空括号词组，且把后面本该生效的详细条目顶在后面。
+        st["glossary"] = normalize_glossary(
+            existing + [g for g in gloss if isinstance(g, dict)])
         bp.set_provenance("style.glossary", "llm", 0.8)
     bp.data["style"] = st
 

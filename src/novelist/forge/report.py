@@ -16,13 +16,15 @@ import json
 import time
 from pathlib import Path
 
+from ..core.llm import COST_PER_M_CNY
 from ..storage.workspace import Workspace
 from .state import Blueprint, ForgeState, read_transcript
 from .validate import validate_project_full
 
-# 估算单价（¥/1M tokens）——DeepSeek 参考价；report 中注明「估算」。
-# 本地 LM-Studio / fake provider 无真实计费，tokens=0 时成本恒为 0。
-COST_PER_M = {"in": 1.0, "out": 2.0}
+# 估算单价（¥/1M tokens）——取自 `core/llm.COST_PER_M_CNY`（单一价表，P0-1 集中）。
+# forge 的 transcript 只聚合 tokens_in/out、不分命中/未命中，故按**未命中价**估输入
+# （成本的保守上界）。report 中注明「估算」；fake/本地 provider tokens=0 时成本恒为 0。
+COST_PER_M = {"in": COST_PER_M_CNY["in_miss"], "out": COST_PER_M_CNY["out"]}
 
 FULL_REL = "workspace/forge/report.md"
 

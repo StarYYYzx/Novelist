@@ -173,7 +173,8 @@ def parse_completion(status_code: int, data: dict) -> LLMResult:
 
     # 思考型模型（DeepSeek v4 / qwen3.5 等）：推理文本在 message.reasoning_content，
     # 其 token 数在 usage.completion_tokens_details.reasoning_tokens（计入 max_tokens）。
-    details = (data.get("usage") or {}).get("completion_tokens_details") or {}
+    usage_data = data.get("usage") or {}
+    details = usage_data.get("completion_tokens_details") or {}
     reasoning_text = message.get("reasoning_content") or message.get("reasoning") or ""
 
     return LLMResult(
@@ -183,8 +184,11 @@ def parse_completion(status_code: int, data: dict) -> LLMResult:
         finish_reason=finish_reason,
         provider="openai",
         usage=Usage(
-            tokens_in=data.get("usage", {}).get("prompt_tokens", 0),
-            tokens_out=data.get("usage", {}).get("completion_tokens", 0),
+            tokens_in=usage_data.get("prompt_tokens", 0),
+            tokens_out=usage_data.get("completion_tokens", 0),
+            # DeepSeek 上下文缓存命中拆分（P0-1，2026-09-12 审计）；其余厂商不返回 → None
+            cache_hit_tokens=usage_data.get("prompt_cache_hit_tokens"),
+            cache_miss_tokens=usage_data.get("prompt_cache_miss_tokens"),
         ),
         reasoning=reasoning_text,
         reasoning_tokens=details.get("reasoning_tokens"),

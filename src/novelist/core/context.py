@@ -25,13 +25,18 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .normalize import dedup_keep_order, normalize_glossary
+
 GENDER_CN = {"male": "男", "female": "女", "unknown": "未知"}
 GENDER_PRONOUN = {"male": "他", "female": "她", "unknown": "他/她"}
 
 # 输出纪律：这些是实测中真正出过问题的点，逐条对应一个已观察到的缺陷
+# 注意：「章节标题写在哪儿」**不在此处声明**——非事件模式由【输出格式】说"第一行是章节标题"，
+# 事件模式由【输出格式】说"不要写章节标题"。纪律里再写一句位置要求会与事件模式同场矛盾
+# （H8 只修了一半的残留，2026-09-12 prompt 审计 P0-2）。
 DISCIPLINE = [
     ("元叙事", "正文里不得出现「第X章」「本章」「上一章」「细纲」「大纲」这类章节/创作术语，"
-               "读者不该看到它们。章节标题只在第一行出现一次。"),
+               "读者不该看到它们。"),
     ("完整性", "必须在结尾写一个完整的收束句，以句号、问号、感叹号或引号结尾。"
                "宁可压缩内容，也严禁写到一半停下。"),
     ("人物边界", "只能使用「人物名单」与「本事件相关人物」里给出的人物，不得引入新名字；"
@@ -155,13 +160,21 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
     levels = ((wv.get("power_system") or {}).get("levels")) or []
     ps_note = ((wv.get("power_system") or {}).get("note")) or ""
     rules = wv.get("rules") or []
-    banned = st.get("forbidden_words") or []
-    modern = wv.get("modern_words") or []  # 世界观层现代词禁令（forge 产出，装配补读）
-    glossary = st.get("glossary") or []
+    # P0-3/P0-4（2026-09-12 prompt 审计）：禁令表去重、术语表拆清单+归并。
+    # 归一逻辑在 `core/normalize.py`——与 forge 写入侧共用同一份（单一源）。
+    # 注：执行层不依赖这里的归并——`consistency/rules.py` 的 R-LEX 按 bible 原文全量扫描。
+    banned = dedup_keep_order(st.get("forbidden_words") or [])
+    modern = dedup_keep_order(wv.get("modern_words") or [])  # 世界观层现代词禁令（forge 产出，装配补读）
+    glossary = normalize_glossary(st.get("glossary") or [])
     volumes = bible.get("volumes") or []
 
     L: list[str] = []
-    L.append(f"你是一部{genre or ''}长篇小说的主编剧，正在写第 {vol} 卷第 {ch} 章。")
+    # P0-1（2026-09-12 prompt 审计）：**本章编号不进 system prompt**。
+    # DeepSeek 上下文缓存按「从第 0 个 token 起前缀一致」命中；第一行含 vol/ch 会让每章
+    # 前缀全变 → 其后 2600+ 字全部 miss（命中 0.02 vs 未命中 1 元/百万，50 倍差）。
+    # 章节号不丢失——它在 user_goal 首行（build_chapter_context：`请撰写第 {vol} 卷第 {ch} 章正文。`），
+    # 从 system 删掉是纯冗余消除。改后 system 前缀从 token 0 稳定到【人物名单】之前。
+    L.append(f"你是一部{genre or ''}长篇小说的主编剧。")
 
     # 明线（讨论第 6 轮）：卷主线注入——每章须服务本卷主线，而不是只有细纲要点
     cur_vol = next((v for v in volumes if isinstance(v, dict) and int(v.get("vol", 0) or 0) == vol), None)
@@ -232,7 +245,8 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
             L.append(f"- 禁用现代词/现代概念（出现即失败）：{'、'.join(modern)}")
         if glossary:
             L.append("- 专有名词（写法必须固定）：" + "、".join(
-                f"{g.get('term')}（{g.get('note', '')}）" for g in glossary if isinstance(g, dict)))
+                f"{g['term']}（{g['note']}）" if g.get("note") else str(g["term"])
+                for g in glossary))
 
     # 题材工艺卡（craft）：设定敲定阶段勾选的硬规范（src/novelist/craft/cards/*.md）。
     # 动机（2026-09-05 lingyu5 真机）：设定阶段只拍了"写什么"，"怎么呈现"交给模型
