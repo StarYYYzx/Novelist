@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..core.llm import ModerationBlockedError
+from ..core.output import emit
 from ..storage.workspace import Workspace
 from . import genres as _genres
 from .nodes import (CHILD_KIND, LEAF_KINDS, NodeContext, chapter_range_of, run_node,
@@ -151,7 +152,15 @@ def _child_width(parent_kind: str, max_width: int, max_width_list: int) -> int:
     return max_width_list if target in _WIDE_TARGETS else max_width
 
 
-def build(ws: Workspace, project_id: str, *, provider,
+def build(ws: Workspace, project_id: str, *, provider: Any, **kw: Any) -> "BuildResult":
+    """全权构建（薄包装）：给原始调用日志挂 forge:build 上下文。"""
+    from ..core.calllog import call_context
+
+    with call_context("forge:build"):
+        return _build_impl(ws, project_id, provider=provider, **kw)
+
+
+def _build_impl(ws: Workspace, project_id: str, *, provider,
           max_calls: int | None = None, max_depth: int = 4, max_width: int = 4,
           max_width_list: int = 12,  # ADR-033 A：列表型长尾（character/system/setting_entry）宽度上限
           spec: Any = None, pack: dict | None = None,
@@ -170,7 +179,7 @@ def build(ws: Workspace, project_id: str, *, provider,
     `log_fn` 缺省打印进度行 `[calls/max] <node> … ok (calls=N)`。
     """
     warnings: list[str] = []
-    log = log_fn or (lambda line: print(line, flush=True))
+    log = log_fn or emit
     bp = Blueprint.load(ws, project_id)
     # 存量污染名治愈（ask 槽位直写时代的遗留；textnorm 与 ask/nodes 共用规则）
     from .textnorm import heal_blueprint_characters
@@ -540,7 +549,7 @@ def revise_module(ws: Workspace, project_id: str, module: str, suggestions: str,
     spec = REVIEW_MODULES.get(module)
     if spec is None:
         raise ValueError(f"unknown review module: {module}")
-    log = log_fn or (lambda line: print(line, flush=True))
+    log = log_fn or emit
     cfg = load_review(ws, project_id)
     entry = cfg["pending"].get(module)
     if entry is None:
@@ -717,14 +726,14 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     if pending_now:
         for m in pending_now:
             log_line = f"[gate] {REVIEW_MODULES[m]['label']}({m}) 待审核：forge review {m} → approve / revise"
-            (log_fn or (lambda s: print(s, flush=True)))(log_line)
+            (log_fn or emit)(log_line)
         return RollResult(ok=True, project_id=project_id, vol=vol,
                           gate_halted=True, pending_review=pending_now,
                           warnings=["审核闸门拦截：先处置 pending 模块再 roll"])
     pack = _pack_for_bp(bp)
     state = ForgeState.load(ws, project_id)
     append_transcript(ws, project_id, "roll.start", rev=bp.data["rev"], vol=vol, max_calls=max_calls)
-    log = log_fn or (lambda line: print(line, flush=True))
+    log = log_fn or emit
     start = time.time()
 
     # roll 前置文件快照（F5：rollback / --diff 基线；与 build 同一机制）
@@ -1037,8 +1046,17 @@ def _volume_chapter_range(bp: Blueprint, vol: int) -> int:
     return int(scale.get("chapters_per_volume", 20))
 
 
-def roll_window(ws: Workspace, project_id: str, *, provider, vol: int,
-                from_ch: int | None = None, width: int = 3,
+def roll_window(ws: Workspace, project_id: str, *, provider: Any, vol: int,
+                **kw: Any) -> "RollWindowResult":
+    """未来窗口滚动细纲（薄包装）：给原始调用日志挂 forge:roll-window 上下文。"""
+    from ..core.calllog import call_context
+
+    with call_context("forge:roll-window"):
+        return _roll_window_impl(ws, project_id, provider=provider, vol=vol, **kw)
+
+
+def _roll_window_impl(ws: Workspace, project_id: str, *, provider, vol: int,
+                      from_ch: int | None = None, width: int = 3,
                 gate: bool = True, max_calls: int | None = None,
                 log_fn: Callable[[str], None] | None = None) -> RollWindowResult:
     """未来 2-3 章窗口滚动细纲（docs/10 §7.7 可变层）。
@@ -1056,7 +1074,7 @@ def roll_window(ws: Workspace, project_id: str, *, provider, vol: int,
     - `gate=False` 关承诺门（脚本/测试直跑用，CLI 默认开）。
     - 返回 `RollWindowResult`；触及承诺时 `gate_halted=True` + `touched` 列出承诺 key。
     """
-    log = log_fn or (lambda line: print(line, flush=True))
+    log = log_fn or emit
     bp = Blueprint.load(ws, project_id)
     K = _volume_chapter_range(bp, vol)
     budget = int(max_calls or 0) or (width * 2 + 2)

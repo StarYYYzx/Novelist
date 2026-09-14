@@ -776,6 +776,45 @@
 全量回归 **967 passed · 1 skipped · 1 deselected**（80.22s）；G5 的 9 项基线指标与 `docs/11`
 逐格一致；`ai_bootstrap.py` 建链后两个工具的目录各可见 2 个技能。
 
+### ADR-035 原始调用日志（CallLog）：完整 prompt/响应逐条留痕，产物问题可溯源（· 拍板定稿 2026-09-15，**已实现**）
+
+> 背景/问题：系统的既有记录都是**结构化结果**——正文审计（`reports/stats/generation-*.md` +
+> `.index.db audit_log`）只记调用次数/token/成本；forge `transcript.jsonl` 记问答事件且 value 截断。
+> NFR-5 承诺"每次 LLM 调用均有审计日志"，却**没有任何地方留 prompt 原文与模型原始返回**；
+> 一旦生成产物有问题（设定矛盾、漏伏笔、格式化损坏），无法回答"这次到底发了什么、模型原样
+> 返回了什么"。实测溯源只能靠猜或重跑（重跑还可能不复现）。**根因：记录层抓的是解析后的
+> 产物，不是调用本身。**
+
+**决策**：
+
+- **A · 统一拦截点**：在 `OpenAICompatibleProvider.complete()`（`providers/openai.py`）包一层
+  日志——openai/deepseek 及全部 `PRESETS` 厂商（qwen/kimi/glm/anthropic/ollama/vllm/custom）都经
+  此基类，一条路径全覆盖；**fake 等测试替身不走此点，不会在测试里刷盘**。
+- **B · 独立目录 `raw-calls/`（相对进程 CWD；`NOVELIST_CALLLOG_DIR` 环境变量或
+  `enable_calllog(dir)` 覆盖）**，按 `YYYY-MM-DD.jsonl` 分文件、逐行一个调用，**跨项目集中可查**；
+  **不入 git**（`.gitignore` 已加）。刻意不放进工作区 `<proj>/logs/`——那里按项目隔离，而溯源要
+  跨项目 grep。
+- **C · 记录内容（宁全勿缺）**：完整 `messages`（含思考模型 `reasoning_content`）+ 实际请求体
+  `payload`（temperature/tools/thinking/max_tokens/response_format）+ 原始响应 `raw_text`
+  （脱敏全文）+ 解析 `result`（content/reasoning/tool_calls/usage）+ status_code + 耗时 + 异常
+  （type/message）+ 时间戳。
+- **D · 脱敏双保险**：payload/原始文本/异常串经 `redact_message`（providers/secrets）+ 正则
+  `redact_secrets`（core/calllog）兜底，密钥/Bearer 永不落地。
+- **E · 上下文归属（溯源定位键）**：`core/calllog.call_context(label)` 上下文管理器压"正在做
+  什么"链（如 `chapter v1-ch3 / forge:build / forge:character`）；provider 记录时带上栈顶串。
+  锚点挂在高价值入口：`produce_chapter`（卷章层）、forge `run_node`（节点层）、
+  `build/roll_window/seed/consult/ingest`（构建层）。
+- **F · 容错**：未 `enable_calllog` 时 `record()` 为 no-op；**记录失败绝不阻断生成/回写**
+  （与 `_write_generation_audit` 同哲学）；线程安全（`threading.Lock` 串行 append）。
+
+**实现**：`core/calllog.py`（写入器+上下文栈+脱敏+no-op）| `providers/openai.py#complete`（拦截点）|
+`orchestrator.produce_chapter`、`forge/*.py` 各 `*_impl` 薄包装（锚点）| `.gitignore` `raw-calls/` |
+`tests/test_calllog.py`。
+
+**验收**（2026-09-15）：定向回归（calllog/m0/forge console+shell/roll/covenant/factory）**95 passed**；
+全量 **1028 passed**；`test_calllog.py` 断言完整 prompt 全文、原始 raw_text、解析 result、异常路径、
+451 拦截、`ctx` 归属均入 `raw-calls/<date>.jsonl`。未启用时不产生任何 `raw-calls/`。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 
@@ -63,38 +64,126 @@ class OpenAICompatibleProvider:
     def complete(self, req: LLMRequest) -> LLMResult:
         if not self.api_key:
             raise ProviderError("no api key; set OPENAI_API_KEY or pass api_key")
-        payload = build_payload(
-            req, self.model, supports_reasoning_roundtrip=self.supports_reasoning_roundtrip
-        )
 
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        # 原始调用日志（core/calllog）：完整 prompt + 实际请求体 + 原始响应 + 解析结果
+        # + 异常 + 耗时。记录失败绝不影响生成/回写（与 _write_generation_audit 同哲学）。
+        import time as _t
+        from ..core import calllog as _cl
+
+        t0 = _t.perf_counter()
+        status_code: int | None = None
+        raw_text: str | None = None
+        result: LLMResult | None = None
+        payload: dict | None = None
+        # D7（2026-09-15）：不用 `sys.exc_info()` 判断"本次调用是否抛异常"。它的语义是
+        # "当前正在处理的异常"——一旦出现"在 except 块里重试 complete()"的写法
+        # （F14.1 的改写重试 / 运行时切换 Provider 正是这种形态），**成功的调用**会被
+        # 记上外层那条假异常。显式变量无此歧义。
+        exc: BaseException | None = None
         try:
-            resp = httpx.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=self.timeout_s,
+            payload = build_payload(
+                req, self.model, supports_reasoning_roundtrip=self.supports_reasoning_roundtrip
             )
-        except httpx.HTTPError as e:  # type: ignore
-            raise ProviderError(
-                f"openai request failed: {redact_message(str(e), [self.api_key])}"
-            ) from e
 
-        if resp.status_code == 451:  # 法律/审核拦截
-            return LLMResult(
-                ok=False,
-                blocked=True,
-                block_reason="http_451",
-                provider_note="",
-                finish_reason="error",
-                provider="openai",
-            )
-        if resp.status_code != 200:
-            body = redact_message(resp.text[:200], [self.api_key])
-            # OpenAI 错误体常含 "type"/"code"
-            raise ProviderError(f"openai http {resp.status_code}: {body}")
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+            except httpx.HTTPError as e:  # type: ignore
+                raise ProviderError(
+                    f"openai request failed: {redact_message(str(e), [self.api_key])}"
+                ) from e
 
-        return parse_completion(resp.status_code, resp.json())
+            status_code = resp.status_code
+            raw_text = resp.text
+            if resp.status_code == 451:  # 法律/审核拦截
+                result = LLMResult(
+                    ok=False,
+                    blocked=True,
+                    block_reason="http_451",
+                    provider_note="",
+                    finish_reason="error",
+                    provider="openai",
+                )
+                return result
+            if resp.status_code != 200:
+                body = redact_message(resp.text[:200], [self.api_key])
+                # OpenAI 错误体常含 "type"/"code"
+                raise ProviderError(f"openai http {resp.status_code}: {body}")
+
+            result = parse_completion(resp.status_code, resp.json())
+            return result
+        except BaseException as e:  # noqa: BLE001 - 只做留痕，异常原样上抛
+            exc = e
+            raise
+        finally:
+            try:
+                _cl.ensure_enabled()   # 自动开启（`NOVELIST_CALLLOG` 可关；见 calllog 模块文档）
+                _cl.record(_snapshot(
+                    self, req, payload, status_code, raw_text, result,
+                    exc=exc, elapsed_ms=(_t.perf_counter() - t0) * 1000.0,
+                ))
+            except Exception:  # noqa: BLE001 - 记录失败绝不阻断生成
+                pass
+
+
+def _redact_obj(o, secrets: list) -> object:
+    """递归脱敏 dict/list 内的字符串（payload 结构浅且规整，成本可接受）。
+
+    D4#3（2026-09-15）：ADR-035 §D 声明"payload / 原始文本 / 异常串经脱敏"，
+    实测只有 raw_text 与 exception 走了脱敏，**payload 原样落盘**——payload 里
+    正是完整 prompt 与设定正文，是体积与敏感度最大的一块。
+    """
+    if isinstance(o, str):
+        return redact_message(o, secrets)
+    if isinstance(o, dict):
+        return {k: _redact_obj(v, secrets) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_redact_obj(v, secrets) for v in o]
+    return o
+
+
+def _snapshot(provider, req: LLMRequest, payload: dict | None, status_code: int | None,
+              raw_text: str | None, result: LLMResult | None, *,
+              exc: BaseException | None, elapsed_ms: float) -> dict:
+    """把一次完整 LLM 调用折叠成一条可 JSON 化的溯源记录（core/calllog.record 使用）。"""
+    secrets = [getattr(provider, "api_key", None)]
+    return {
+        "provider": getattr(provider, "provider_name", None) or type(provider).__name__,
+        "model": req.model or provider.model,
+        "base_url": provider.base_url,
+        "request": {
+            # D4#4（2026-09-15）：完整 messages 已逐字存在 `payload.messages`（实际请求体），
+            # 此处原先再存一份 → 磁盘体积白翻一倍（实测单条 ≥12KB、约 0.15–0.3GB/本）。
+            # 改为只留**结构摘要**（角色 + 字数），完整内容以 payload 为准——
+            # ADR-035 §C"宁全勿缺"指的是"不丢信息"，不是"同样内容存两遍"。
+            "messages_digest": [
+                {"role": m.role, "chars": len(m.content or "")} for m in req.messages
+            ],
+            "temperature": req.temperature,
+            "response_format": req.response_format,
+            "max_tokens_out": req.max_tokens_out,
+            "max_content_tokens": req.max_content_tokens,
+            "thinking": req.thinking,
+            "reasoning_effort": req.reasoning_effort,
+        },
+        "payload": _redact_obj(payload, secrets) if payload is not None else None,
+        "status_code": status_code,
+        "response": {
+            "raw_text": redact_message(raw_text, secrets) if raw_text is not None else None,
+            "result": dataclasses.asdict(result) if result is not None else None,
+        },
+        "exception": {
+            "type": exc.__class__.__name__,
+            "message": redact_message(str(exc), secrets),
+        }
+        if exc is not None else None,
+        "elapsed_ms": round(elapsed_ms, 3),
+    }
 
 
 def build_payload(

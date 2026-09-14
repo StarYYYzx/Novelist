@@ -1759,6 +1759,14 @@ def _node_out_tokens(kind: str, bp: Any) -> int:
 
 
 def run_node(ctx: NodeContext, kind: str) -> NodeResult:
+    """执行一个节点（薄包装）：给原始调用日志挂节点级上下文（forge:<kind>）。"""
+    from ..core.calllog import call_context
+
+    with call_context(f"forge:{kind}"):
+        return _run_node_impl(ctx, kind)
+
+
+def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
     """执行一个节点：prompt → LLM → 解析（协议）→ apply。抛 ValueError = 解析失败（引擎重试）。"""
     if kind not in _PROMPTS:
         raise ValueError(f"unknown node kind: {kind}")

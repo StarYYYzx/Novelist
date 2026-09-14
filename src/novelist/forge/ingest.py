@@ -29,6 +29,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..core.llm import LLMMessage, LLMRequest
 from ..storage.workspace import Workspace
@@ -700,7 +701,16 @@ def _genres_pack(genre: str | None) -> tuple[dict, str]:
     return _genres.load_pack(_genres.GENERIC_ID), _genres.GENERIC_ID
 
 
-def run_ingest(ws: Workspace, project_id: str, source: str, *,
+def run_ingest(ws: Workspace, project_id: str, source: str, **kw: Any) -> "IngestResult":
+    """已有稿子 → 蓝图 + 正式章节 + 记忆初始化（薄包装）：给原始调用日志挂 forge:ingest 上下文。"""
+    from ..core.calllog import call_context
+
+    with call_context("forge:ingest"):
+        return _run_ingest_impl(ws, project_id, source, **kw)
+
+
+def _run_ingest_impl(
+    ws: Workspace, project_id: str, source: str, *,
                provider=None, embedding=None,
                genre: str | None = None,
                chapters_per_volume: int = DEFAULT_CHAPTERS_PER_VOLUME,

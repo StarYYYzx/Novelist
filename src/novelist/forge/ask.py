@@ -25,6 +25,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..core.llm import LLMMessage, LLMRequest
 from ..storage.workspace import Workspace
@@ -496,7 +497,16 @@ def _default_of(q: RoundQuestion) -> AnsweredValue:
     return AnsweredValue(q.default, src, explicit=False)
 
 
-def run_consult(ws: Workspace, project_id: str, bp: Blueprint, *,
+def run_consult(ws: Workspace, project_id: str, bp: Blueprint, **kw: Any) -> "ConsultResult":
+    """商讨问答（薄包装）：给原始调用日志挂 forge:consult 上下文。"""
+    from ..core.calllog import call_context
+
+    with call_context("forge:consult"):
+        return _run_consult_impl(ws, project_id, bp, **kw)
+
+
+def _run_consult_impl(
+    ws: Workspace, project_id: str, bp: Blueprint, *,
                 provider, io: AnswerIO | None = None,
                 slots: list[Slot] | None = None,
                 allow_llm: bool = True) -> ConsultResult:

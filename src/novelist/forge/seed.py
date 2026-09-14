@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..core.llm import LLMMessage, LLMRequest
+from ..core.output import emit
 from ..storage.workspace import Workspace
 from . import genres as _genres
 from .state import Blueprint, ForgeState, append_transcript
@@ -302,7 +303,7 @@ def _authorize_ask(bp: Blueprint, spec: SeedSpec, brief: str) -> str:
         "  [2] 商讨构建 —— 分 3–4 轮问你关键设定，每问都给候选值",
         "选择 [1/2]（回车默认 [1]）：",
     ]
-    print("\n".join(lines), flush=True)
+    emit("\n".join(lines))
     try:
         ans = input().strip()
     except EOFError:
@@ -311,7 +312,16 @@ def _authorize_ask(bp: Blueprint, spec: SeedSpec, brief: str) -> str:
 
 
 # ---- 主入口 ----
-def run_seed(ws: Workspace, project_id: str, brief: str, *,
+def run_seed(ws: Workspace, project_id: str, brief: str, **kw: Any) -> "SeedResult":
+    """一句话 → 蓝图 → 构建（薄包装）：给原始调用日志挂 forge:seed 上下文（AskUser 时叠加）。"""
+    from ..core.calllog import call_context
+
+    with call_context("forge:seed"):
+        return _run_seed_impl(ws, project_id, brief, **kw)
+
+
+def _run_seed_impl(
+    ws: Workspace, project_id: str, brief: str, *,
              provider, mode: str = "auto", genre_pack: str | None = None,
              volumes: int | None = None, chapters_per_volume: int | None = None,
              target_words: int | None = None,

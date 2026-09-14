@@ -191,6 +191,18 @@
 - **上游预检**：正文生成前对关键对白/敏感情节运行本地敏感词预检，提前改写，降低命中厂商审核的概率。
 - 拦截事件落审计日志并计入统计，便于评估"哪些主题易触发"（NFR-5）。
 
+### 5.11 原始调用日志（CallLog，ADR-035）
+- 既有记录（正文审计、`transcript.jsonl`）只存**结构化结果**；本机制补"调用本身"的原始留痕，使
+  任一生成产物可回溯到产出它的那次调用（完整 prompt / 实际请求体 / 模型原始返回）。
+- 统一拦截点 `OpenAICompatibleProvider.complete()`（openai/deepseek 及全部 `PRESETS` 厂商），
+  一条路径全覆盖；fake 等测试替身不走此点。
+- 落盘独立目录 `raw-calls/`（相对进程 CWD，`NOVELIST_CALLLOG_DIR` 可覆盖），`YYYY-MM-DD.jsonl`
+  逐行一个调用；跨项目集中可查、不入 git。
+- `core/calllog.call_context(label)` 上下文管理器压"正在做什么"链（如 `chapter v1-ch3 / forge:build /
+  forge:character`），provider 记录时带上栈顶串 → 溯源定位键。锚点：`produce_chapter`（卷章层）、
+  forge `run_node`（节点层）、`build/roll_window/seed/consult/ingest`（构建层）。
+- 脱敏双保险（`redact_message` + `redact_secrets`）；记录失败绝不阻断生成/回写；未启用时为 no-op。
+
 ## 6. 架构质量属性落实对照
 
 | 质量属性 | 落实机制 |

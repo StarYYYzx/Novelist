@@ -10,6 +10,8 @@ venv/
 
 # Novelist 工作区数据（演示/生成物不入库）
 *.index.db
+# 原始 LLM 调用日志（core/calllog，含完整 prompt/响应，仅本机溯源用，绝不入库）
+raw-calls/
 demo/
 # 排除工作区生成数据，但保留端到端测试脚本与测试报告（测试资产需可复现）
 novel_workspace/*

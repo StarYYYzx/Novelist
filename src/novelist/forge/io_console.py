@@ -49,8 +49,21 @@ class ConsoleIO:
         except Exception:  # noqa: BLE001 - 注入的流可能没有 isatty
             return False
 
+    def _write(self, text: str) -> None:
+        """写一行/一段到输出流；UTF-8 兜底（D9）：编码不了就替换，不让中文打断交互。
+
+        `self._out` 默认为 `sys.stdout`——重定向到管道/文件且 locale 非 UTF-8 时
+        （CI 的 cp1252 runner 是典型），直接 print 中文会 UnicodeEncodeError。
+        """
+        try:
+            print(text, file=self._out, flush=True)
+        except UnicodeEncodeError:
+            enc = getattr(self._out, "encoding", None) or "utf-8"
+            self._out.write(text.encode(enc, "replace").decode(enc, "replace") + "\n")
+            self._out.flush()
+
     def notify(self, text: str) -> None:
-        print(text, file=self._out, flush=True)
+        self._write(text)
 
     def _read(self) -> str:
         try:
@@ -65,7 +78,7 @@ class ConsoleIO:
             mark = " ← 推荐" if i - 1 == default_idx else ""
             lines.append(f"  ({i}) {opt}{mark}")
         lines.append("回车=推荐 | 输入编号 | q=退出：")
-        print("\n".join(lines), file=self._out, flush=True)
+        self._write("\n".join(lines))
         raw = _clean(self._read())
         if raw.lower() == "q":
             return None
@@ -74,16 +87,16 @@ class ConsoleIO:
         try:
             n = int(raw)
         except ValueError:
-            print(f"  无法识别 {raw!r}，按推荐值取。", file=self._out, flush=True)
+            self._write(f"  无法识别 {raw!r}，按推荐值取。")
             return default_idx
         if 1 <= n <= len(options):
             return n - 1
-        print(f"  编号 {n} 超出范围（1-{len(options)}），按推荐值取。", file=self._out, flush=True)
+        self._write(f"  编号 {n} 超出范围（1-{len(options)}），按推荐值取。")
         return default_idx
 
     def ask_free(self, prompt: str, default: str = "") -> str | None:
         hint = f"（回车=默认：{default}）" if default else ""
-        print(f"{prompt} {hint}", file=self._out, flush=True)
+        self._write(f"{prompt} {hint}")
         raw = self._read()
         if raw.strip().lower() == "q":
             return None
@@ -91,7 +104,7 @@ class ConsoleIO:
 
     def confirm(self, prompt: str, default: bool = True) -> bool:
         tag = "y/n" if default else "n/y"
-        print(f"{prompt} [{tag}]：", file=self._out, flush=True)
+        self._write(f"{prompt} [{tag}]：")
         raw = _clean(self._read()).lower()
         if raw in ("y", "yes"):
             return True
