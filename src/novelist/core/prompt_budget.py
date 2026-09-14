@@ -96,16 +96,21 @@ def prose_tail(text: str, window_chars: int) -> str:
 
     用于把已写正文的最近片段注入后续事件 prompt（用户 2026-09-04 提议），
     让模型看见"前面发生了什么"，压制同一事件重演/同一出场套路复用。
-    短于窗口的原样返回；切点向前回退到最近的段落边界（空行/换行），
+    短于窗口的原样返回；切点向前回退到**最近的段落边界**（空行/换行），
     保证注入的首段是完整段落而非半句。
+
+    D3 修复（2026-09-15）：原实现用「循环 `finditer` 直到最后一个匹配」，
+    语义塌缩为「取最后一个换行之后」——40 段 × 100 字、窗口 1200 只返回 100 字
+    （塌缩 12 倍，段落越短越狠）；且正文末尾带换行时切点落在末位，返回空串
+    → 调用方 `if prose_window:` 拦掉 → 整块不注入（反重演机制静默失效）。
+    正确语义是「在 `text[-window:]` 内向前找**第一个**段落边界，取其后全部内容」。
+    边界在窗口首位时直接吃掉开头换行；边界即窗口末位时保留整块（不得清零）。
     """
     if window_chars <= 0 or len(text) <= window_chars:
         return text
     tail = text[-window_chars:]
-    m = None
-    for m in re.finditer(r"\n+", tail):
-        pass
-    if m is not None and m.start() > 0:
+    m = re.search(r"\n+", tail)
+    if m is not None and m.end() < len(tail):
         tail = tail[m.end():]
     return tail.lstrip()
 

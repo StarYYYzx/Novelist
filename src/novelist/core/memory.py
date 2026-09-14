@@ -321,13 +321,19 @@ class MemoryIndex:
         """从文件全量重建（reindex_memory）。返回碎片数。"""
         emb = embedding or KeywordEmbedding()
         self.fragments = harvest_fragments(ws, project_id)
-        self.kind = getattr(emb, "kind", KEYWORD_KIND)
         self.dim = getattr(emb, "dim", None)
         self.vectors = {}
-        # 关键词模式不落向量：打分走精确 token（见 MemoryRetriever），向量只是无谓的空间开销
-        if self.fragments and self.kind != KEYWORD_KIND:
+        if self.fragments and getattr(emb, "kind", KEYWORD_KIND) != KEYWORD_KIND:
+            # P-FE2（2026-09-15）：LocalEmbedding 可能在这次 embed() 里**就地降级**
+            # （kind 由 local 变为 keyword-hash），所以 kind 必须在调用**之后**再取——
+            # 否则会把哈希投影向量当语义向量存下来，而检索侧按 kind 判分支，
+            # 变成"用哈希向量做余弦"（本模块明确否定，见 _keyword_score 的实测说明）。
             vecs = emb.embed([f.text for f in self.fragments])
-            self.vectors = {f.sig: v for f, v in zip(self.fragments, vecs)}
+            if getattr(emb, "kind", KEYWORD_KIND) != KEYWORD_KIND:
+                self.vectors = {f.sig: v for f, v in zip(self.fragments, vecs)}
+        # 关键词模式不落向量：打分走精确 token（见 MemoryRetriever），向量只是无谓的空间开销
+        self.kind = getattr(emb, "kind", KEYWORD_KIND)
+        self.dim = getattr(emb, "dim", self.dim)
         self.revision += 1
         self.save(ws, project_id)
         return len(self.fragments)
@@ -337,7 +343,10 @@ class MemoryIndex:
         if any(f.sig == frag.sig for f in self.fragments):
             return False
         if vector is None and embedding is not None and getattr(embedding, "kind", None) != KEYWORD_KIND:
-            vector = (embedding.embed([frag.text]) or [[]])[0]
+            vec = (embedding.embed([frag.text]) or [[]])[0]
+            # 同上：embed() 期间可能已降级，降级后这个向量不再是语义向量 → 丢弃
+            if getattr(embedding, "kind", None) != KEYWORD_KIND:
+                vector = vec
         self.fragments.append(frag)
         if vector:
             self.vectors[frag.sig] = vector
@@ -792,7 +801,9 @@ class MemoryWriter:
                 f.text = new_text
                 f.hash = _sha1(new_text)
                 if self.embedding is not None and getattr(self.embedding, "kind", None) != KEYWORD_KIND:
-                    idx.vectors[sig] = (self.embedding.embed([new_text]) or [[]])[0]
+                    vec = (self.embedding.embed([new_text]) or [[]])[0]
+                    if getattr(self.embedding, "kind", None) != KEYWORD_KIND and vec:
+                        idx.vectors[sig] = vec  # 同上：降级期间产生的哈希向量不入库
                 idx.revision += 1
                 idx.save(self.ws, self.project_id)
                 return True

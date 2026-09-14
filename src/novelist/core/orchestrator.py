@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from typing import TYPE_CHECKING, Any
 
 from .llm import LLMMessage, LLMRequest, estimate_cost
+from .output import emit, fmt_duration
 from .prompt_budget import head_tail_window
 from .session import Budget, SessionInfo
 from .writeback import LandedEvent, commit_event
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型检查期解析，避免 storage↔core 运行期耦合
+    from ..storage.workspace import Workspace
 
 
 def _env_int(name: str, default: int) -> int:
@@ -612,11 +618,14 @@ def _recent_chapter_memory(ws, project_id: str, vol: int, ch: int, max_items: in
 
 # ---------------------------------------------------------------- 递归分层 B：世界观滚动补充
 
-def _known_setting_terms(ws, project_id: str) -> set[str]:
+def _known_setting_terms(ws, project_id: str, errors: list[str] | None = None) -> set[str]:
     """已知设定名词集合（人物名/别名/地名/物品/功法/设定条目关键词/注册表规范名）。
 
     items/skills 曾缺席——物品名不在核对范围是"强化符追认"闭环的洞（prompt 作用审计
     §2.6/P0-B：自造词绕过名册直接洗白成设定）。
+
+    `errors`：可选失败收集器（D2-B）。采集失败会让 `known` 偏空 → 设定交代验证把
+    **已知**当**新**，产生误报，属必须可见的降级，不再静默 pass。
     """
     terms: set[str] = set()
     try:
@@ -652,8 +661,9 @@ def _known_setting_terms(ws, project_id: str) -> set[str]:
 
         for e in Registry.load(ws, project_id).all_entries():
             terms.add(e.name)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001 - 采集失败留痕（terms 偏空 → 已知被当新）
+        if errors is not None:
+            errors.append(f"已知设定名册采集失败（设定交代可能误报为新词）：{e}")
     return terms
 
 
@@ -663,7 +673,8 @@ SETTINGS_SUPPLEMENT_CHARS = 1600
 SETTINGS_SUPPLEMENT_HEAD = 600
 
 
-def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
+def _supplement_settings(ws, project_id: str, ev_text: str, provider,
+                         errors: list[str] | None = None) -> int:
     """世界观滚动补充（递归分层 B）——P0-B 闸门版：纯提案器，不自动入档。
 
     事件文本新专有名词 → LLM 提案 → **全部写 `bible/settings_pending.json` 待人工
@@ -671,14 +682,14 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider) -> int:
     不入 settings.json——反向追认通道关死（prompt 作用审计 P0-B："强化符"类自造词
     不能再洗白成设定）。人工确认走 `novelist settings-pending --allow/--deny`。
 
-    返回待确认条数。LLM/解析失败静默 0。
+    返回待确认条数。LLM/解析失败返回 0，并把原因写进 `errors`（可选）——不静默。
     """
     if provider is None or not ev_text.strip():
         return 0
     try:
         import json as _json
 
-        known = _known_setting_terms(ws, project_id)
+        known = _known_setting_terms(ws, project_id, errors)
         known_block = "、".join(sorted(known)[:120]) if known else "（无）"
         prompt = (
             f"你是设定编辑。下面是一段正文节选，其中可能提到**此前从未出现过的专有名词**"
@@ -1065,9 +1076,9 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
         "不要写本章其他事件的内容，写到本事件结束即停。")))
     if char_budget > 0:
         blocks, _evicted = apply_prompt_budget(blocks, char_budget)
-        # 淘汰可审计（M3t 纪律：绝不静默丢上下文）——先打印，后续接 ProductionResult
+        # 淘汰可审计（M3t 纪律：绝不静默丢上下文）——先输出，后续接 ProductionResult
         if _evicted:
-            print(f"[budget] evicted: {','.join(_evicted)}", flush=True)
+            emit(f"[budget] evicted: {','.join(_evicted)}")
     return "\n\n".join(text for _, text in blocks)
 
 
@@ -1530,7 +1541,20 @@ def _apply_chapter_title(ws, project_id: str, provider, final: str, vol: int, ch
     return text, title
 
 
-def produce_chapter(
+def produce_chapter(ws: "Workspace", project_id: str, vol: int, ch: int,
+                    provider: Any, **kw: Any) -> "ProductionResult":
+    """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行）。薄包装：给原始调用日志挂卷章级上下文。
+
+    D6（2026-09-15）：显式参数补回注解（`**kw` 转发其余 40+ 个具名参数，全部走关键字
+    传参，已核全库调用点）——原先整条签名塌进 `**kw`，IDE 补全与类型检查退化。
+    """
+    from .calllog import call_context
+
+    with call_context(f"chapter v{vol}-ch{ch}"):
+        return _produce_chapter_impl(ws, project_id, vol, ch, provider, **kw)
+
+
+def _produce_chapter_impl(
     ws,
     project_id: str,
     vol: int,
@@ -1615,6 +1639,11 @@ def produce_chapter(
     # F7.1：整章 LLM 用量聚合（含嵌套函数与编纂），出口统一写审计
     provider = _UsageCounter(provider)
 
+    # U6（2026-09-15）：一次 chapter 是 23–43 次 LLM 调用、几分钟到十几分钟，原先
+    # 全程只有零星几行输出，用户无法判断"是在跑还是卡住了"。这里只做计时基准，
+    # 进度行在事件循环内输出（见 `事件 i/N 生成中…`）。
+    _t0 = time.monotonic()
+
     # ---- 0) 章节重写前置清理（2026-09-05 F4/I1-I4：重跑不再新旧并存）----
     # 先快照受影响状态文件再按 (vol,ch) 回退记忆层+时间轴；生成失败则 restore，
     # 避免"清了旧数据又没写进新数据"的中间态。母题/实体/tick 的按章幂等内置于各自模块。
@@ -1629,7 +1658,7 @@ def produce_chapter(
             _removed = (sum(int(v) for v in (_reset_stats.get("memory") or {}).values())
                         + int((_reset_stats.get("timeline") or {}).get("removed") or 0))
             if _removed:
-                print(f"[ch {vol}-{ch}] {snapshot_report(_reset_stats)}", flush=True)
+                emit(f"[ch {vol}-{ch}] {snapshot_report(_reset_stats)}")
         except Exception:  # noqa: BLE001 - 前置清理失败不阻断写章（回退旧语义）
             _reset_snap = None
 
@@ -1662,8 +1691,8 @@ def produce_chapter(
                 if not _r.ok:
                     continue
                 if _r.reused:   # 检索复用（未造新卡）：登记回链，不进 factory_added 计数
-                    print(f"[ch{ch}] 需求复用现有角色：{_r.reused}"
-                          f"（{_r.rejections[-1] if _r.rejections else ''}）", flush=True)
+                    emit(f"[ch{ch}] 需求复用现有角色：{_r.reused}"
+                         f"（{_r.rejections[-1] if _r.rejections else ''}）")
                 else:
                     factory_added += 1
         except Exception:  # noqa: BLE001
@@ -1738,6 +1767,9 @@ def produce_chapter(
     broadcasts_built = 0  # ADR-021：本章广播成功次数（事件级选角推理）
     rel_pairs = 0         # ADR-023：章末实然关系账本 pair 数
     rel_proposals = 0     # ADR-023：阈值触发的翻转提案数（入 enrich pending）
+    # H1：增强层失败留痕（与"检查通过"区分）。声明提前到 soft-block 检查之前——
+    # 该检查自身失败也必须留痕（原先静默 pass，到期伏笔的软拦截可无声消失）。
+    soft_failures: list[str] = []
 
     # ---- 2.1) 定时事项软 block（ADR-019 §3.3.3，M3m T2）----
     # 已到期且连续 block 的 pending：本章细纲/key_events 未体现 → 拦截。
@@ -1755,8 +1787,8 @@ def produce_chapter(
                 ok=False, result="\n".join(blocks), mode=mode,
                 bible_injected=bible_injected,
                 phase=getattr(phase, "value", phase), phase_reason=phase_reason)
-    except Exception:  # noqa: BLE001 - 定时拦截失败不阻断写章
-        pass
+    except Exception as e:  # noqa: BLE001 - 定时拦截失败不阻断写章
+        soft_failures.append(f"定时事项软拦截检查失败（到期伏笔可能未被拦截）：{e}")
     comp: dict = {}
     chronic_reports: list = []
     review_blocks = 0       # 事件级审校 block 数（讨论第 7 轮）
@@ -1768,7 +1800,6 @@ def produce_chapter(
     seam_repairs = 0        # 接缝复述重生成次数（≤ _SEAM_REPAIR_MAX）
     goal_bans: list[str] = []   # goal 注入的禁令（批次三·方案4 复用给润色）
     prev_facts_txt = ""         # 前卷事实清单（批次三·方案3/4 共用）
-    soft_failures: list[str] = []  # H1：增强层失败留痕（与"检查通过"区分）
     try:
         if prefer_direct:
             mode = "direct"
@@ -1782,15 +1813,15 @@ def produce_chapter(
                 from .motif import MotifLedger
 
                 _bans += MotifLedger.load(ws, project_id).ban_lines()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 - 读取失败不阻断，但必须留痕
+                soft_failures.append(f"母题禁令读取失败（本章未注入重复禁令）：{e}")
             try:
                 from ..forge.coherence import load_coherence_bans, load_blueprint_bans
 
                 _bans += load_coherence_bans(ws, project_id, vol, ch)
                 _bans += load_blueprint_bans(ws, project_id)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 - 同上
+                soft_failures.append(f"连贯性禁令读取失败（本章未注入重复禁令）：{e}")
             if _bans:
                 goal = goal + ("\n\n【重复禁令】下列动作/意象母题或问题已被全局审查"
                                "标记为重复，本章**禁止**再出现，必须换全新写法：\n"
@@ -1802,8 +1833,8 @@ def produce_chapter(
                 from .volume_facts import load_prev_facts
 
                 _prev_facts = load_prev_facts(ws, project_id, vol)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 - 读取失败不阻断，但必须留痕
+                soft_failures.append(f"前卷事实清单读取失败（跨卷连续性未注入）：{e}")
             if _prev_facts:
                 goal = goal + ("\n\n【前卷事实清单】截至上一卷末的既成事实"
                                "（人物状态/时间线/未回收伏笔）。本章必须与之保持连续，"
@@ -1870,6 +1901,9 @@ def produce_chapter(
                 entity_tracker = entity_tracker or _load_entity_tracker(ws, project_id)
                 for idx, ev_text in enumerate(key_events, 1):
                     is_last = idx == len(key_events)
+                    # U6：长任务进度——当前事件序号 + 已耗时长（事件循环是本流程最慢的一段）
+                    emit(f"[{vol}-{ch}] 事件 {idx}/{len(key_events)} 生成中…"
+                         f"（已 {fmt_duration(time.monotonic() - _t0)}）")
                     # ADR-013 完全体：角色卡每事件重载（上一事件的回写已更新 power）
                     bible_chars = (_director.load_characters(ws, project_id)
                                    if _need_chars else [])
@@ -1954,16 +1988,16 @@ def produce_chapter(
                                 cast_source = _dec.names
                                 broadcasts_built += 1
                                 if _dec.alarms:
-                                    print(f"[ch{ch} e{idx}] 广播校验: "
-                                          + "; ".join(_dec.alarms)[:300], flush=True)
+                                    emit(f"[ch{ch} e{idx}] 广播校验: "
+                                         + "; ".join(_dec.alarms)[:300])
                             if _dec is not None:
                                 # 方案6.4：被拒点名收集 → 后续事件正文禁令（含名单为空仅拒绝的情形）
                                 for _rn in (getattr(_dec, "rejected", None) or []):
                                     if _rn not in banned_names:
                                         banned_names.append(_rn)
                                 if _dec.alarms and not _dec.names:
-                                    print(f"[ch{ch} e{idx}] 广播校验: "
-                                          + "; ".join(_dec.alarms)[:300], flush=True)
+                                    emit(f"[ch{ch} e{idx}] 广播校验: "
+                                         + "; ".join(_dec.alarms)[:300])
                         if cast_source:
                             # 广播名单（细纲声明与文本命中已由校验强制涵盖，勿再重复补）
                             cast_cards = _director.match_cast(bible_chars, cast_source)
@@ -2054,9 +2088,9 @@ def produce_chapter(
                     if supplement_settings:
                         try:
                             settings_pending += _supplement_settings(ws, project_id, ev_text,
-                                                                     provider)
-                        except Exception:  # noqa: BLE001
-                            pass
+                                                                     provider, errors=soft_failures)
+                        except Exception as e:  # noqa: BLE001 - 提案失败不阻断写作
+                            soft_failures.append(f"设定补充提案失败：{e}")
 
                     # 递归分层 C+（dp-microbeat，开关 orchestrator.microbeat，默认关）：
                     # 面向**每个事件**的 2–4 拍(起/承/转/合+钩)逐拍生成，缓解事件孤岛；
@@ -2205,15 +2239,16 @@ def produce_chapter(
                                     chronicler.run(piece, vol, ch, max_events=2,
                                                    tag=f"e{idx}",
                                                    payoff=(phase is Phase.TAIL)))
-                        except Exception:  # noqa: BLE001 - 单事件编纂失败不阻断整章
-                            pass
+                        except Exception as e:  # noqa: BLE001 - 单事件编纂失败不阻断整章
+                            # 事件是记忆的最小单位：漏一个是永久缺口，必须留痕
+                            soft_failures.append(f"事件编纂失败(e{idx})：{e}")
                         # 角色视角记忆（ADR-020 决策四）：事件落定即记，一人一条视角
                         if perspective_memory and cast_names:
                             try:
                                 perspectives_written += chronicler.record_perspectives(
                                     piece, cast_names, vol, ch, event_index=idx)
-                            except Exception:  # noqa: BLE001 - 视角失败不阻断
-                                pass
+                            except Exception as e:  # noqa: BLE001 - 视角失败不阻断
+                                soft_failures.append(f"角色视角记忆失败(e{idx})：{e}")
                     # dp-seam：为下一个事件产"结束状态锚"（非末事件；失败回退原文接缝）
                     if seam_state and not is_last:
                         _anchor = _event_end_state(provider, system_prompt or "",
@@ -2295,8 +2330,8 @@ def produce_chapter(
         if _reset_snap is not None:
             try:
                 _reset_snap.restore()  # 生成失败 → 还原前置清理，不留中间态
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001 - 还原失败要留痕：工作区可能残留中间态
+                soft_failures.append(f"生成失败后快照还原失败（工作区可能残留中间态，NFR-3）：{e}")
         _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                 phase=getattr(phase, "value", phase),
                                 note=f"生成异常：{str(e)[:60]}")
@@ -2320,8 +2355,8 @@ def produce_chapter(
             if _reset_snap is not None:
                 try:
                     _reset_snap.restore()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001 - 同上：还原失败留痕
+                    soft_failures.append(f"落盘失败后快照还原失败（工作区可能残留中间态）：{e}")
             _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                     phase=getattr(phase, "value", phase), note="草稿落盘失败")
             return ProductionResult(ok=False, result="cannot write draft", mode=mode,
@@ -2416,8 +2451,8 @@ def produce_chapter(
             _led.remove_chapter(ch)  # I2：重跑幂等——先清本章旧账再入新账
             _led.add_text(final, ch)
             _led.save(ws, project_id)
-        except Exception:  # noqa: BLE001 - 账本失败不影响成稿
-            pass
+        except Exception as e:  # noqa: BLE001 - 账本失败不影响成稿
+            soft_failures.append(f"母题账本更新失败（后续行文机械闸的禁令来源会变空）：{e}")
 
     # ---- 4.4b) 卷末事实清单（批次三·方案3，opt-in）：本卷最后一章生成后触发 ----
     # 依据蓝图判定"本卷最后一章"（蓝图无该卷后续章）；LLM 通读本卷正文产出
@@ -2471,8 +2506,8 @@ def produce_chapter(
                 elif _l_K and ch == max(1, _l_K // 2):
                     for _w in _l_chk(ws, project_id, _l_rows, vol, ch, _l_K):
                         soft_failures.append(f"线索检查点：{_w}")
-        except Exception:  # noqa: BLE001 - 检查点/审计失败不影响成稿
-            pass
+        except Exception as e:  # noqa: BLE001 - 检查点/审计失败不影响成稿
+            soft_failures.append(f"线索检查点/卷末审计失败（线索审计被跳过）：{e}")
 
     # ---- 4.5) 设定交代验证（首次交代状态机，讨论决策）----
     # 扫描成稿正文，命中关键词的未交代条目置 revealed=true 并写回；
@@ -2570,8 +2605,9 @@ def produce_chapter(
         try:
             commit_event(ev, sess, ws=ws, embedding=embedding, semantic_checker=semantic_checker)
             events += 1
-        except Exception:  # noqa: BLE001 - 回写失败不影响本书草稿已落盘
-            pass
+        except Exception as e:  # noqa: BLE001 - 回写失败不影响本书草稿已落盘
+            # A9/ADR-011：记忆层缺章级进度 = 闭环断链。草稿已落盘故不阻断，但必须可见
+            soft_failures.append(f"章级事件回写失败（记忆层缺本章进度）：{e}")
 
     # ---- 5.5) 定时事项记账（ADR-019 §3.3.3，M3m T2）----
     # 章末统一判定：正文 token 命中 → fired（解除不可出场期）；到期未兑现 →
@@ -2622,6 +2658,14 @@ def produce_chapter(
             write_source_list(ws, project_id, vol, ch, _src)
     except Exception:  # noqa: BLE001 - 溯源失败不影响成稿
         pass
+
+    # ---- 5.7) embedding 降级留痕（P-FE2，2026-09-15）----
+    # LocalEmbedding 首次 embed() 失败会**就地**降级为关键词检索（不再抛错穿透），
+    # 但降级意味着记忆/知识检索整体换成"精确 token 打分"——检索质量是另一档，
+    # 必须让调用方看得见（否则又是一次"看起来成功"）。
+    _deg = str(getattr(embedding, "degrade_reason", "") or "")
+    if _deg:
+        soft_failures.append(f"embedding 已降级为关键词检索（向量语义检索不可用）：{_deg[:160]}")
 
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,

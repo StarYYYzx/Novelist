@@ -5,11 +5,11 @@
 **命令面（全部接入 CLI 指令，2026-09-10）**
 - 项目导航：`projects` / `ls` / `new <标题>` / `open <id>`
 - 构建链（forge）：`seed` `build` `resume` `shell` `roll` `roll-window`
-  `ingest` `validate` `show` `craft` `covenant` `lines-replay`
+  `ingest` `forge-validate` `show` `craft` `covenant` `lines-replay`
   `rollback` `snapshots` `fr-review` `fr-approve` `fr-revise` `fr-switches`
 - 正文/流水线（顶层）：`chapter` `run` `status` `draft` `export`
 - 审核/一致性（顶层）：`review`（正文一致性）`feedback` `grant`
-- 统计与设定：`stats` `validate`（顶层欠约束检查）
+- 统计与设定：`stats` `validate`（顶层欠约束检查，**与 `forge-validate` 不同**）
 - 纪要：`characters-enrich` `enrich-pending` `settings-pending` `settings-allow`
 - 帮助/退出：`help` `exit` / `quit` / `q`
 
@@ -33,11 +33,13 @@ from __future__ import annotations
 import builtins
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 
 from click.testing import CliRunner
 
 from ..cli import cli as cli_group
+from ..core.output import use_output
 from ..storage.workspace import Workspace
 
 
@@ -86,9 +88,14 @@ class FilterableIO:
 
     def output(self, text: str) -> None:
         self.out.append(text)
-        # 真实终端（tty 且非脚本注入）直接打印——否则 REPL 全程静默
+        # 真实终端（tty 且非脚本注入）直接打印——否则 REPL 全程静默。
+        # 注意：本方法同时是 `emit()` 的 sink（见 run_cli），**不得回调 emit**（自递归）。
         if self._tty and not self._lines:
-            print(text, flush=True)
+            try:
+                print(text, flush=True)
+            except UnicodeEncodeError:  # D9：编码不含中文时退化为可编码形式
+                enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+                print(text.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
     def notify(self, text: str) -> None:
         self.output(text)
@@ -185,7 +192,14 @@ class Console:
         精确拿到新建项目 id，而非猜列表末位）。
         """
         full = _compose_argv(self, argv)
-        r = CliRunner().invoke(cli_group, full, catch_exceptions=False)
+        # U3（2026-09-15）：原用 `catch_exceptions=False`——此时 click **直接抛出**，
+        # `r.exception` 永远是 None（下面那行是死代码），而 dispatch/run 都没有 try/except
+        # → 任一命令失败（/chapter 无蓝图、/show 坏路径、/open 权限…）会**终止整个 REPL
+        # 并抛栈**，用户丢会话。改为 True：异常进 `r.exception`，转成一行提示，会话继续。
+        # U6：同时把生成期进度接到 io（`emit` 走 sink）——原先这些输出被 CliRunner 捕获，
+        # 要等命令结束才一次性刷出，长任务期间全程静默。
+        with use_output(self.io.output):
+            r = CliRunner().invoke(cli_group, full, catch_exceptions=True)
         if r.output:
             lines = [ln for ln in r.output.splitlines() if ln.strip()]
             self.io.output("\n".join(lines))
@@ -431,6 +445,15 @@ class Console:
             return
         self.run_cli(["validate", self._project_loc()])
 
+    def cmd_contract(self, args: str) -> None:
+        """forge 契约校验（V1–V6）。
+
+        U5（2026-09-15）：此前 `/validate` 在帮助里出现两次、描述互斥，且真正的
+        `forge validate` 在 console 内**无法调用**（dispatch 只映射到顶层 validate）。
+        现拆成两条命令：`/validate` = 顶层欠约束检查，`/forge-validate` = 本命令。
+        """
+        self._proj_run("validate")
+
     def cmd_feedback(self, args: str) -> None:
         if not self._need_project():
             return
@@ -474,8 +497,12 @@ class Console:
         if not line.startswith("/"):
             self.io.output(f"[!] 命令必须以 / 开头（输入 {line!r}）——/help 查看。")
             return False
-        # 拆出首词（命令名，可含连字符/下划线），其余整串作 args 保留
-        m = re.match(r"/(\S+)\s*(.*)$", line, re.S)
+        # 拆出首词（命令名，可含连字符/下划线），其余整串作 args 保留。
+        # 容忍 "/" 后空白（如 "/ seed"）；纯 "/"（或仅斜杠+空白）→ 空命令名 → 提示而非崩溃。
+        m = re.match(r"/\s*(\S+)\s*(.*)$", line, re.S)
+        if not m:
+            self.io.output("[!] 空命令名——/help 查看。")
+            return False
         name, args = m.group(1), m.group(2)
         table = {
             "projects": self.cmd_projects,
@@ -505,6 +532,7 @@ class Console:
             "export": self.cmd_export,
             "stats": self.cmd_stats,
             "validate": self.cmd_validate_top,
+            "forge-validate": self.cmd_contract,
             "feedback": self.cmd_feedback,
             "grant": self.cmd_grant,
             "characters-enrich": self.cmd_chars_enrich,
@@ -527,7 +555,18 @@ class Console:
             line = self.io.input(prompt)
             if line is None:
                 break
-            if self.dispatch(line):
+            # U3 兜底（2026-09-15）：单个命令的未捕获异常不得终止会话（抛栈即丢状态）。
+            # run_cli 那层已让 click 异常进 r.exception，这里是第二道网——覆盖 handler
+            # 自身的错误（如 cmd_new 的解析、cmd_shell 的加载）。
+            try:
+                should_exit = self.dispatch(line)
+            except (KeyboardInterrupt, EOFError):
+                self.io.output("")
+                break
+            except Exception as e:  # noqa: BLE001 - REPL 必须活着
+                self.io.output(f"[error] {type(e).__name__}: {e}")
+                should_exit = False
+            if should_exit:
                 break
             self.state.commands_run += 1
         self.io.output("已退出控制台。")
@@ -590,7 +629,7 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
   /roll <卷号>                 滚动细纲（每卷）
   /roll-window <宽>            未来窗口滚动
   /ingest <源目录/文件>         已有稿子 → 蓝图+正文+记忆初始化
-  /validate                    契约校验（forge validate）
+  /forge-validate              契约校验（forge validate，V1–V6）
   /craft                       列题材工艺卡（无 LLM）
   /covenant                    查看承诺账本（伏笔兑付/卷主线/核心人设）
   /lines-replay <卷> <章>      细纲修订转正（人工改细纲后重放线索）
@@ -603,7 +642,7 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 
 正文/流水线（顶层）：
   /chapter <卷> <章>            串行写一章（圣经注入→生成→润色→回写）
-  /run [工序或--to 工序]         跑流水线到指定工序；审查阶段做一致性检查
+  /run [--to <工序>]            跑流水线到指定工序；不传 --to 则跑到终态
   /status                       查询进度与统计
   /draft [卷-章]                查看单章草稿源清单（--text 连正文）
   /export                       导出发布包(markdown)
@@ -618,7 +657,7 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
   /characters-enrich            批量丰富群像人物卡
   /enrich-pending               处理角色丰富待办
   /settings-pending [--allow x] 查看/处理设定待决项
-  /validate                     顶层欠约束一致性检查
+  /validate                     顶层欠约束一致性检查（≠ /forge-validate 的契约校验）
 
 其他：
   /help                         此帮助
@@ -627,9 +666,13 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 提示：
   · 所有命令必须以 / 开头。
   · 顶层正文一致性审查用 /review；构建期模块待审用 /fr-review（二者不同）。
+  · 两个 validate 不同：/validate = 顶层欠约束检查；/forge-validate = forge 契约校验。
   · /shell 会话内命令同样以 / 开头（如 /show /build /review /approve /revise）。
   · /run /status /craft /show 等无 LLM，不注入 provider。
-  · /seed /build /chapter 等调 LLM，provider 在启动时指定（默认 deepseek）。
+  · /seed /build /chapter 等调 LLM；provider 在**启动 novelist console 时**指定
+    （--provider/--api-key/--api-base/--model，默认 deepseek），进 REPL 后不可切换。
+  · 每次 LLM 调用会写原始调用日志 ./raw-calls/YYYY-MM-DD.jsonl（含完整 prompt）；
+    启动时加 --no-calllog 或设 NOVELIST_CALLLOG=0 关闭。
 """
 
 

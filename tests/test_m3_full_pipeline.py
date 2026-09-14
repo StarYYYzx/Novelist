@@ -39,7 +39,7 @@ def test_chapter_full_pipeline(tmp_path):
         ],
     )
     assert res.exit_code == 0, res.output
-    assert "wrote draft" in res.output
+    assert "草稿已落盘" in res.output
     # 草稿落盘
     assert ws.draft_path(pid, 1, 1).exists()
     # 事件回写：memory/plot_events.json 追加了本章事件（原 1 条 + 本章）

@@ -51,9 +51,17 @@ def test_local_embed_empty_input():
 # ---- fastembed 已安装时的真实向量验证 ----
 @pytest.mark.skipif(not _has_fastembed(), reason="fastembed 未安装")
 def test_local_embed_real_vectors():
+    """真实向量（768 维）：**只有本地已有权重缓存时才跑**。
+
+    默认套件不依赖外部服务：无缓存时直接 skip，不发起下载（CI 上不因此拉几百 MB）。
+    注意不能靠"embed 抛异常"判断——P-FE2 修复后失败会就地降级，须查 `degraded`。
+    """
     emb = make_embedding("local")
     assert isinstance(emb, LocalEmbedding)
+    if not emb.cached():
+        pytest.skip("本地无 fastembed 权重缓存（需联网下载），按纪律跳过")
     vecs = emb.embed(["灵气复苏第一年", "青云宗杂役弟子"])
+    assert not emb.degraded, f"权重已缓存但仍降级：{emb.degrade_reason}"
     assert len(vecs) == 2
     assert emb.dim == 768
     assert all(len(v) == 768 for v in vecs)

@@ -80,5 +80,6 @@ def test_cli_chapter_writes_draft(tmp_path):
     # 用 --provider demo（= scripted，脚本写入草稿再 final）
     res = runner.invoke(cli, ["chapter", str(tmp_path), "--vol", "1", "--ch", "9", "--provider", "demo"])
     assert res.exit_code == 0, res.output
-    assert "wrote draft" in res.output
+    assert "草稿已落盘" in res.output
+    assert "用时" in res.output  # U6：长任务收尾须报总耗时
     assert ws.draft_path(pid, 1, 9).exists()

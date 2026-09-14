@@ -78,6 +78,30 @@ def test_prose_tail_cuts_at_paragraph_boundary():
     assert len(out) <= 700
     # 首个字符必须是完整段落的段首（"第二段"或"第三段"），不得是半句
     assert out.startswith(("第二段", "第三段"))
+    # D3：不只是"从某个段首开始"，还要**尽量用满窗口**（原实现只返回最后一段）
+    assert text.endswith(out)
+
+
+def test_prose_tail_keeps_window_not_just_last_paragraph():
+    """D3 回归守卫：窗口对齐段落边界，但不得塌缩成"只取最后一段"。
+
+    原实现（循环 `finditer` 到最后一个匹配）= "取最后一个换行之后"：
+    40 段 × 100 字 + 窗口 1200 → 只返回 100 字（塌缩 12 倍，段落越短越狠）；
+    正文末尾带换行 → 返回空串 → 调用方 `if prose_window:` 拦掉 → 整块不注入。
+    """
+    para = "甲" * 100
+    text = "\n\n".join(para for _ in range(40))  # 4078 字
+    out = prose_tail(text, 1200)
+    assert 1100 <= len(out) <= 1200, f"窗口塌缩：1200 → {len(out)}"
+    assert out.startswith(para), "切点必须在段首"
+    assert text.endswith(out), "必须是原文尾部"
+
+    # 末尾换行（LLM 常见收尾）不得清零
+    out_nl = prose_tail("乙" * 2000 + "\n", 1200)
+    assert len(out_nl) == 1200 and out_nl.strip(), f"末尾换行导致丢块：len={len(out_nl)}"
+
+    # 窗口首位就是段落边界时，吃掉换行即可，不得返回空
+    assert prose_tail("\n\n" + "丙" * 3000, 1200).strip()
 
 
 def test_prose_tail_idempotent_and_tail_preserved():

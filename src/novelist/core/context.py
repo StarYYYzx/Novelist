@@ -237,6 +237,11 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         if fluctuates:
             L.append("- 境界波动：下列角色/对象的境界随系统绑定/解除而变动，"
                      "写作时不得写死为固定境界——" + "、".join(str(x) for x in fluctuates))
+        # D8（2026-09-15）：现代词禁令来自 **worldview**，原先挂在 `if st:`（文风块）之下，
+        # style.json 为空/缺失时整条不渲染——世界层硬约束不该由风格文件的有无决定。
+        # 移入【世界设定】与铁律同组（数据源不变）。
+        if modern:
+            L.append(f"- 禁用现代词/现代概念（出现即失败）：{'、'.join(modern)}")
 
     if st:
         L.append("")
@@ -250,8 +255,6 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
         # 2026-09-06 起字数**下限**（目标的 85%）注入 user_goal（见 build_chapter_context）。
         if banned:
             L.append(f"- 禁用词，出现即失败：{'、'.join(banned)}")
-        if modern:
-            L.append(f"- 禁用现代词/现代概念（出现即失败）：{'、'.join(modern)}")
         if glossary:
             L.append("- 专有名词（写法必须固定）：" + "、".join(
                 f"{g['term']}（{g['note']}）" if g.get("note") else str(g["term"])

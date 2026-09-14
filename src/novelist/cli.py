@@ -3,14 +3,35 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 
 import click
 
 from .config import load_config
 from .core.errors import NovelistError
+from .core.output import fmt_duration
 from .core.session import SessionInfo
 from .storage.checkpoint import Checkpoint
 from .storage.workspace import WorkspaceError, Workspace
+
+
+def _ensure_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8（仅当当前不是 UTF-8 时）——D9（2026-09-15）。
+
+    生成期与命令输出大量含中文；Windows 上 stdout 被重定向且 locale 非 UTF-8 时
+    （CI 的 cp1252 runner 是典型），`print`/`click.echo` 直接 UnicodeEncodeError，
+    把命令/生成打断。与 `scripts/check.py` 同一手法，但放在**组回调**里执行——
+    只有真正调用 CLI 时才动 stdio，不影响 `import novelist.cli` 的使用方与测试夹具。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if enc in ("", "utf8"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):  # pragma: no cover - 特殊流
+            continue
 
 
 @click.group()
@@ -18,6 +39,7 @@ from .storage.workspace import WorkspaceError, Workspace
 @click.pass_context
 def cli(ctx: click.Context, config_path: str | None) -> None:
     """Novelist — 多 Agent 长篇小说撰写系统。"""
+    _ensure_utf8_stdio()
     ctx.ensure_object(dict)
     cfg = load_config(config_path)
     ctx.obj["config"] = cfg
@@ -66,14 +88,31 @@ def _new_project_id() -> str:
 @click.option("--api-base", default=None, help="覆盖 API base URL")
 @click.option("--model", default=None, help="覆盖模型名")
 @click.option("--smoke", is_flag=True, help="seed 仅提炼不构建（测试用）")
+@click.option("--no-calllog", "no_calllog", is_flag=True,
+              help="不写原始调用日志（默认写 ./raw-calls/YYYY-MM-DD.jsonl，含完整 prompt；"
+                   "等价 NOVELIST_CALLLOG=0）")
 def console(directory: str | None, provider: str, api_key: str | None,
-            api_base: str | None, model: str | None, smoke: bool) -> None:
+            api_base: str | None, model: str | None, smoke: bool,
+            no_calllog: bool) -> None:
     """项目交互中枢（2026-09-10）：一行启动进常驻 REPL，集项目导航与完整操作。
 
     projects/new/open/show/seed/build/resume/shell/chapter 都在此进入。
     与 claude 那种"进入终端即全功能"对应。
+
+    注：provider 只在**启动时**指定，进 REPL 后不可切换（F5.3/UC-11 的运行时切换在此不可达）
+    ——要换后端请退出重启，或用顶层 `novelist chapter --provider ...`。
     """
     from novelist.forge.console import run_console
+    from .core import calllog
+
+    # U8（2026-09-15）：日志默认在写，但用户既看不到也不知道怎么关。启动时说清两件事：
+    # 写在哪儿、怎么关（`--no-calllog` / `NOVELIST_CALLLOG=0`）。
+    if no_calllog:
+        calllog.disable_calllog()
+        click.echo("原始调用日志：已关闭（--no-calllog）。")
+    elif calllog.ensure_enabled():
+        click.echo(f"原始调用日志：每次 LLM 调用写 {calllog.dir_path()}；"
+                   "`--no-calllog` 或 NOVELIST_CALLLOG=0 可关。")
 
     run_console(
         workspace_root=directory or None,
@@ -274,6 +313,8 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     from novelist.tools import build_registry
 
     ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
+    # U6（2026-09-15）：整条链路（检索/装配/生成/润色/回写）的总耗时基准
+    _t0 = time.monotonic()
     ck = Checkpoint(ws)
     try:
         ck.restore(project_id)
@@ -299,6 +340,20 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
 
     # 先忆结果交给编排层注入圣经上下文（B-02）；关闭注入时仍可用于旧链路
     memories = _recall_lines(ws, project_id, vol, ch, embedding=emb)
+
+    # U1（2026-09-15）：默认档 ≠ 手册档。CLI 默认全是 False（弱档），而《命令手册》
+    # 描述的是"事件循环生成 → 润色 → 编纂回写"的全开档。不改默认值（属拍板面），
+    # 但必须让用户**看得见**本次实际跑的是哪一档，避免"按手册操作拿到弱产物"。
+    _on = [name for name, on in (("事件循环", event_loop), ("润色", polish),
+                                 ("事件级润色", event_polish), ("回读前章", readback),
+                                 ("设定补充", supplement_settings), ("缝合审查", seam_review),
+                                 ("前卷事实", volume_facts), ("证据环编纂", agentic_chronicle),
+                                 ("证据环审校", agentic_review)) if on]
+    click.echo("生效开关：" + ("、".join(_on) if _on else "（无——最简档）"))
+    if not _on:
+        click.echo("提示：最简档不含事件循环与润色，与《命令手册》描述的管线不同；"
+                   "完整管线请加 --event-loop --polish。")
+
     res = produce_chapter(ws, project_id, vol, ch, prov, registry=reg, prefer_direct=prefer_direct,
                           generation_tokens=gen_tokens, content_tokens=content_tokens,
                           max_events_per_chapter=max_events,
@@ -315,32 +370,43 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                           agentic_review_rounds=agentic_review_rounds)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
-    click.echo(f"wrote draft: {res.chapter_path} (mode={res.mode}, bible={res.bible_injected}, "
-               f"attempts={res.attempts})")
-    click.echo(f"phase: {res.phase}" + (f" ({res.phase_reason})" if res.phase_reason else ""))
-    click.echo(f"events committed: {res.events_committed}")
+    click.echo(f"草稿已落盘：{res.chapter_path}（模式={res.mode}，圣经注入={res.bible_injected}，"
+               f"尝试={res.attempts}）")
+    click.echo(f"阶段：{res.phase}" + (f"（{res.phase_reason}）" if res.phase_reason else ""))
+    if res.events_committed:
+        click.echo(f"已回写事件：{res.events_committed}")
+    else:
+        # U2（2026-09-15）：原先 0 条回写与成功信息同格式，读起来像"没事"；
+        # 实际含义是本章没进记忆层（A9/ADR-011 闭环缺一环），必须带告警语义。
+        click.echo("已回写事件：0  ⚠ 本章未写入任何记忆事件，记忆层会缺这一章"
+                   "（原因见下方降级/失败清单；若本章本无事件则可忽略）")
     if res.entity_new or res.entity_alerts:
-        click.echo(f"entities: +{res.entity_new}"
-                   + (f", alerts: {len(res.entity_alerts)}" if res.entity_alerts else ""))
+        click.echo(f"实体：新增 {res.entity_new}"
+                   + (f"，告警 {len(res.entity_alerts)}" if res.entity_alerts else ""))
         for a in res.entity_alerts:
-            click.echo(f"  [entity] {a}")
+            click.echo(f"  [实体] {a}")
     if res.completeness:
         c = res.completeness
-        flag = "ok" if c.get("ends_properly") and not c.get("meta_narration") else "CHECK"
-        click.echo(f"completeness: {flag} ({c.get('chars')} 字, 末字「{c.get('last_char')}」"
-                   + (f", 元叙事={c['meta_narration']}" if c.get("meta_narration") else "")
-                   + (f", 未解决={c['_unresolved']}" if c.get("_unresolved") else "") + ")")
+        flag = "正常" if c.get("ends_properly") and not c.get("meta_narration") else "需检查"
+        click.echo(f"完整性：{flag}（{c.get('chars')} 字，末字「{c.get('last_char')}」"
+                   + (f"，元叙事={c['meta_narration']}" if c.get("meta_narration") else "")
+                   + (f"，未解决={c['_unresolved']}" if c.get("_unresolved") else "") + "）")
     if res.length_truncated:
-        click.echo(f"length: TRUNCATED (超 {res.completeness.get('chars', '?')} 字上限，已截断到段落边界)")
+        click.echo(f"长度：已截断（超 {res.completeness.get('chars', '?')} 字上限，已截到段落边界）")
     if res.events_capped:
-        click.echo(f"events: capped（细纲 {res.events_capped + res.events_committed} 个事件超上限，"
+        click.echo(f"事件数：已截断（细纲 {res.events_capped + res.events_committed} 个事件超上限，"
                    f"取前 {res.events_committed} 个）")
     if res.polish is not None:
         p = res.polish
-        click.echo(f"polish: {'applied' if p.changed else 'kept original'} "
-                   f"AI味 {p.before.score} -> {p.after.score} ({p.delta:+.2f}) {p.note}")
+        click.echo(f"润色：{'已应用' if p.changed else '保留原稿'} "
+                   f"AI味 {p.before.score} → {p.after.score}（{p.delta:+.2f}）{p.note}")
     if res.soft_failures:  # H1：增强层失败显式可见，不与"检查通过"混淆
-        click.echo("soft failures: " + "; ".join(res.soft_failures))
+        # U2：改用醒目前缀 + 逐行缩进，不再与普通信息同格式（原先一行挤在成功块里）
+        click.echo(f"⚠ 降级/失败 {len(res.soft_failures)} 项（不影响成稿，但质量可能受损）：")
+        for _f in res.soft_failures:
+            click.echo(f"  - {_f}")
+    # U6：总耗时（含检索/装配/生成/润色/回写）——长任务后用户最想看到的一行
+    click.echo(f"用时：{fmt_duration(time.monotonic() - _t0)}")
 
 
 def _compose_goal(ws, project_id: str, vol: int, ch: int, embedding=None) -> str:

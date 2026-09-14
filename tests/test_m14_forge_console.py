@@ -151,6 +151,14 @@ def test_console_dispatch_unknown_warns(tmp_path):
     assert any("必须以 / 开头" in ln for ln in io.out)
 
 
+def test_console_dispatch_slash_then_space_no_crash(tmp_path):
+    """回归："/  <cmd>" 或纯 "/" 不得抛 AttributeError（历史 m.group 崩溃）。"""
+    c, io = _console(str(tmp_path), lines=["/ frobnicate x y", "/", "/q"])
+    c.run()
+    assert any("未知命令 /frobnicate" in ln for ln in io.out)
+    assert any("空命令名" in ln for ln in io.out)
+
+
 def test_console_projects_lists_seq_title_id(tmp_path):
     """需求：项目列表按「序号 标题 编号」展示（不再只有编号）。"""
     from novelist.storage.checkpoint import Checkpoint
@@ -197,6 +205,62 @@ def test_console_shell_needs_blueprint(tmp_path):
     c, io = _console(str(tmp_path), lines=["/new 无图", "/shell", "/q"], smoke=True)
     c.run()
     assert any("尚无蓝图" in ln for ln in io.out)
+
+
+# ---------- U5：帮助文本正确性（2026-09-15）----------
+
+def _help_command_lines(text: str) -> dict[str, set[str]]:
+    """把 HELP_TEXT 里 `  /cmd [args]   描述` 行解析成 {命令名: {描述集合}}。"""
+    import re
+
+    table: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        m = re.match(r"^\s{2}(/[\w-]+)\s+(.*\S)\s*$", line)
+        if not m:
+            continue
+        name, desc = m.group(1), m.group(2)
+        table.setdefault(name, set()).add(desc)
+    return table
+
+
+def test_help_has_no_command_with_conflicting_descriptions():
+    """U5 核心守卫：同一命令不得出现**两种不同描述**。
+
+    历史缺陷：`/validate` 在帮助里出现两次——L597「契约校验（forge validate）」
+    vs L625「顶层欠约束一致性检查」，而 dispatch 只映射到顶层 validate，
+    前者是错的。措辞不同的等价表述不算冲突，这里只在"描述字符串不同"时失败。
+    """
+    from novelist.forge.console import HELP_TEXT
+
+    conflicts = {k: v for k, v in _help_command_lines(HELP_TEXT).items() if len(v) > 1}
+    assert not conflicts, f"帮助里有命令被写成两种描述：{conflicts}"
+
+
+def test_help_documents_forge_validate_which_is_dispatchable(tmp_path):
+    """U5：真正的 `forge validate`（V1–V6）必须在 console 可达且列入帮助。
+
+    此前 dispatch 表里只有顶层 `validate`，`forge validate` 在 REPL 内**无法调用**。
+    """
+    from novelist.forge.console import HELP_TEXT
+
+    assert "/forge-validate" in HELP_TEXT, "帮助须列出 /forge-validate"
+    c, io = _console(str(tmp_path), lines=["/new 书", "/seed 少年觉醒", "/forge-validate", "/q"],
+                     smoke=True)
+    c.run()
+    joined = "\n".join(io.out)
+    assert "未知命令" not in joined, f"/forge-validate 未被 dispatch 识别：{joined}"
+    # 与顶层 /validate 区分：两者都在帮助里且描述不同（上面那条只查同名重复）
+    tbl = _help_command_lines(HELP_TEXT)
+    assert tbl["/validate"] != tbl["/forge-validate"], "两个 validate 的描述不得完全相同"
+
+
+def test_help_covers_provider_and_calllog(tmp_path):
+    """U5/U8：帮助须说明"provider 只在启动时定"与"raw-calls 会写盘且可关"。"""
+    from novelist.forge.console import HELP_TEXT
+
+    assert "raw-calls" in HELP_TEXT and "NOVELIST_CALLLOG" in HELP_TEXT
+    assert "启动" in HELP_TEXT and "provider" in HELP_TEXT
+    assert "--no-calllog" in HELP_TEXT
 
 
 def test_console_shell_enters_and_exits(tmp_path):

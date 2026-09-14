@@ -17,6 +17,7 @@ from novelist.core.chronicler import Chronicler
 from novelist.core.context import build_chapter_context, parse_key_events
 from novelist.core.llm import LLMResult
 from novelist.core.orchestrator import produce_chapter, _generate_with_continuation
+from novelist.core.output import use_output
 from novelist.core.session import SessionInfo
 from novelist.core.worldstate import (
     apply_delta,
@@ -270,6 +271,43 @@ def test_event_loop_generates_per_event_and_writes_back(tmp_path):
     assert res.chronicle is not None and res.chronicle.written >= 2, "逐事件回写必须发生"
     events = json.loads(ws._abs(f"{pid}/memory/plot_events.json").read_text(encoding="utf-8"))
     assert len(events) >= 2
+
+
+def test_event_loop_emits_progress_with_event_index_and_elapsed(tmp_path):
+    """U6（2026-09-15）：事件循环必须逐事件报进度（`事件 i/N 生成中…（已 mm:ss）`）。
+
+    一次 chapter 是几十次 LLM 调用、几分钟起；原先全程近乎静默，用户分不清"在跑"还是"卡死"。
+    用 sink 捕获 `emit` 输出，不依赖终端。
+    """
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    gist = ws.outline_chapter_path(pid, 1, 1)
+    gist.parent.mkdir(parents=True, exist_ok=True)
+    gist.write_text(
+        "---\nvol: 1\nch: 1\ntitle: 弃徒\n"
+        "key_events: [苏晚被逐出内门, 下山拾得断玉佩]\n---\n\n正文要点",
+        encoding="utf-8")
+    llm = _SeqLLM([
+        _res("苏晚被逐出内门，他叩首退下，一言不发地走下高台。"),
+        _res("ok"),
+        _res("苏晚被逐 | conflict | 苏晚"),
+        _res("下山时拾得半枚焦黑玉佩，掌心发烫，他知道这不简单。"),
+        _res("ok"),
+        _res("拾得玉佩 | discovery | 苏晚"),
+    ])
+    lines: list[str] = []
+    with use_output(lines.append):
+        res = produce_chapter(
+            ws, pid, 1, 1, llm, prefer_direct=True,
+            inject_bible=False, event_loop=True, commit_chapter_event=False,
+            knowledge_llm=False, session=SessionInfo(project_id=pid, agent="t"),
+            broadcast_casting=False,
+            character_direction=False, perspective_memory=False, defer_title=False)
+    assert res.ok, res.result
+    progress = [ln for ln in lines if "生成中" in ln]
+    assert len(progress) == 2, f"应逐事件各报一次进度，实得：{progress}"
+    assert "事件 1/2" in progress[0] and "事件 2/2" in progress[1]
+    assert all("已 " in ln for ln in progress), f"进度须带已耗时长：{progress}"
 
 
 def test_event_loop_without_key_events_falls_back_to_single_shot(tmp_path):
