@@ -52,6 +52,15 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   （`addopts = -m 'not slow'`，默认套件里真调外部 API 是违规）。
 - embedding = 本地 fastembed ONNX（nomic-embed-text-v1.5 / 768 维 / CPU 零 torch），不可用则降级关键词
   （精确 token 集合 + IDF 加权余弦）。**检索打分不要退回定长哈希向量余弦**——dim=256 时碰撞噪声会盖过真实信号。
+  - 2026-09-15 起两坑已修：缓存落持久目录（`NOVELIST_EMBED_CACHE` > `LOCALAPPDATA`/`XDG_CACHE_HOME`
+    > `~/.cache`），**运行期就地降级**（`embed()` 抛异常即切关键词、`kind` 翻 `keyword-hash`）。
+    **纪律：`kind` 必须在 `embed()` 之后读**——构造期读不到降级（这是 P-FE2 的根因）。
+- **输出必须走 `core/output.emit()`（禁裸 `print`）**：它带 sink 重定向（console 实时转发）
+  与 UTF-8 兜底（Windows 重定向 + 非 UTF-8 locale 下裸 print 中文会直接崩掉生成）；
+  耗时统一用 `core/output.fmt_duration()`。
+- **原始调用日志（`core/calllog`，ADR-035）默认在写** `./raw-calls/YYYY-MM-DD.jsonl`（含完整 prompt，
+  不入 git）。关法：`NOVELIST_CALLLOG=0` 或 `novelist console --no-calllog`；`disable_calllog()` 是
+  **粘性**的（不会被下次调用自动开启）。上限 `NOVELIST_CALLLOG_MAX_MB`，超限只写一条标记、不删历史。
 - ADR：002 正文严格串行逐章 | 011 bible=应然 / memory=实然 | 013 事件落定即实时回写 |
   016 文件=持久事实源（SQLite/RAG 仅可再生缓存） | 017/018 Forge 递归硬边界（depth4/width4/calls80/retry1） |
   019 worldstate | 021 事件级选角。
@@ -101,13 +110,31 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   CRLF。Git for Windows 的 sh 能容忍带 `\r` 的 shebang，但 WSL/Linux 下 `sh .githooks/pre-commit` 不行。
 - hook 脚本**只用 shell 内建**（`read`/`command`/`[`），不用 `cat` 等外部命令——本机 coreutils 缺失。
 
+## 6.5 约定的落地方式：优先加机械守卫，而不是写文档
+
+**本项目偏好**（AGENTS.md §7）：能写成检查的约定就不要只写散文——散文会漂移，检查不会。
+已有先例：G5 文档基线、`test_m14_forge_console.py` 里**解析 HELP_TEXT** 的守卫
+（拒绝"同一命令两种描述"，历史 bug 是 `/validate` 被写成两种含义、且真正的 `forge validate` 不可达）。
+
+写守卫时踩过的两个坑：
+
+- **"补分隔符"类工具的默认值必须是「无需补」**：`calllog._append_line` 往 JSONL 追加前要保证
+  文件以换行结尾（防上次写入被中断留下半行 → 该行 JSON 解析失败、**当日日志此后全废**）。
+  但 `_ends_with_newline()` 若对**不存在**的文件返回 `False`，就会在新文件首行前凭空塞一个空行 →
+  第一行解析失败。正反两个方向都会被测试抓到：加守卫时**两个方向都要写用例**。
+- **同一把锁里判定、也只在那里标记**：配额"只写一条终态标记"若判定与标记分处锁内外，并发下会重复写。
+
 ## 7. 已知未做项（别重复发现）
 
-`docs/11` §13：**P0-1** `core/orchestrator.py` 的 `produce_chapter` 1112 行待拆；
+`docs/11` §13：**P0-1** `core/orchestrator.py` 的 `_produce_chapter_impl` 1132 行待拆
+（2026-09-15 已拆出薄包装 `produce_chapter` 挂 calllog 上下文，**impl 本体未拆**）；
 **P0-3** `ws._abs` → `ws.path`（47 文件 175 处，`ws.path(` 调用数仍 0）；**P1-4** 7 个异常未归 `NovelistError`；
 **P2-8** structlog 未删；**P2-9** ruff 已落（`[tool.ruff]` 在 `pyproject.toml`，`select = E4/E7/E9/F`
 锁定当前零告警状态），**提标（I/B/UP/SIM）与 mypy 故意留作独立批次**。
 另有：抽公共 `read_json`（6 份副本）与 LLM JSON 宽容解析（7 份副本）——可回收约 180–250 行。
+**prompt 侧只剩 3-E（需拍板、会改产物）**：润色层术语硬约束 / director 补世界观基座 /
+forge 大纲+人物节点补世界观块；以及能力扩展 S-4 章级审校→修订、F3.5/F10 角色试演、F13 围读会、
+NFR-10 `novelist eval`。清单见 `docs/代码与逻辑复查-2026-09-15.md` §5.7。
 
 ## 8. 收尾
 
