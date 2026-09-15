@@ -330,14 +330,17 @@ def test_get_plot_events_tool_filters(tmp_path):
 
 
 def test_reindex_memory_tool_is_gated(tmp_path):
-    """reindex_memory 为 sensitive：默认走 ask，无审批通道时拒绝（F6.1）。"""
-    from novelist.core.errors import DeniedError
+    """reindex_memory 为 sensitive：默认走 ask，无审批通道时**判拒绝**（F6.1 / AG-14）。
+
+    AG-14（2026-09-15）：改为返回 `denied` 结果而不是抛 DeniedError——异常穿透会把
+    整章打挂，而正确语义是让模型看到"被拒绝"后改道。
+    """
     from novelist.core.tools import PermissionGate
 
     ws, pid = _project(tmp_path)
     _seed_memory(ws, pid)
-    with pytest.raises(DeniedError):
-        _invoke(ws, pid, "reindex_memory", {})
+    denied = _invoke(ws, pid, "reindex_memory", {})
+    assert denied.status == "denied"
     gate = PermissionGate(profiles={"supervised": {"sensitive": "allow", "danger": "deny", "tools": {}}})
     res = _invoke(ws, pid, "reindex_memory", {}, gate=gate)
     assert res.status == "ok"
@@ -355,7 +358,9 @@ def test_writeback_then_recall_closed_loop(tmp_path):
 
     ws, pid = _project(tmp_path)
     _write(ws, pid, "bible/characters.json", [{"id": "char:cz7", "name": "苏晚"}])
-    res = CliRunner().invoke(cli, ["chapter", str(tmp_path), "--provider", "scripted", "--vol", "1", "--ch", "1"])
+    # scripted 的脚本是工具脚本 → 显式 --loop（2026-09-15 起 chapter 默认直出）
+    res = CliRunner().invoke(cli, ["chapter", str(tmp_path), "--provider", "scripted",
+                                   "--vol", "1", "--ch", "1", "--loop"])
     assert res.exit_code == 0, res.output
 
     assert ws.fragment_index_path(pid).exists(), "回写应顺带落索引"

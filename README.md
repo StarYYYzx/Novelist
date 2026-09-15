@@ -63,7 +63,7 @@ python -m novelist.cli forge seed "废柴主角觉醒上古血脉，一路逆袭
 | 命令 | 作用 |
 | --- | --- |
 | `forge seed BRIEF` / `forge ingest 旧稿路径` | 从创意 / 旧稿构建设定集与大细纲 |
-| `chapter DIR --vol 1 --ch 1 --provider deepseek [--loop]` | 串行写一章正文（事件循环、实时回写记忆） |
+| `chapter DIR --vol 1 --ch 1 --provider deepseek` | 串行写一章正文（默认直出；事件循环、实时回写记忆） |
 | `draft DIR [1:3] [--text]` | 汇报该章草稿生成时的源清单（草稿溯源） |
 | `feedback DIR --opinion "人物性子太快了"` | 自由语设定意见 → 字段级审批写回 |
 | `review DIR --provider deepseek` | 全量一致性审查（规则层 + 语义层） |

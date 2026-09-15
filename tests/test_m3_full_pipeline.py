@@ -35,7 +35,10 @@ def test_chapter_full_pipeline(tmp_path):
     res = CliRunner().invoke(
         cli,
         [
+            # scripted 的脚本是"工具脚本"（先 write_draft 再 final）→ 必须显式 --loop：
+            # 2026-09-15 起 `chapter` 默认直出（AG-1/AG-18）
             "chapter", str(tmp_path), "--provider", "scripted", "--vol", "1", "--ch", "1",
+            "--loop",
         ],
     )
     assert res.exit_code == 0, res.output

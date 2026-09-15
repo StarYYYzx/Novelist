@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import time
 
 try:
     import httpx  # type: ignore
@@ -28,6 +29,10 @@ from ..core.llm import (
 )
 from .secrets import redact_message
 
+# AG-16（2026-09-15 审计）：瞬时失败（限流/网关抖动/连接错误）此前**无重试**——
+# 30 轮的工具循环里第 3 轮撞一次 429 就会把整章打挂。这里做有限退避重试。
+_RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+
 
 class OpenAICompatibleProvider:
     """OpenAI 兼容 chat completions 适配器。"""
@@ -40,6 +45,8 @@ class OpenAICompatibleProvider:
         model: str = "gpt-4o-mini",
         timeout_s: float = 60.0,
         supports_reasoning_roundtrip: bool = False,
+        max_retries: int = 2,
+        retry_backoff_s: float = 0.8,
     ) -> None:
         if httpx is None:
             raise ProviderError("httpx not installed (pip install novelist[providers])")
@@ -50,6 +57,9 @@ class OpenAICompatibleProvider:
         # 思考型后端的工具多轮：需回传 assistant 的 reasoning_content。
         # 仅对真正支持的后端（如 DeepSeek v4）开启，OpenAI 等不主动发，避免未知字段。
         self.supports_reasoning_roundtrip = supports_reasoning_roundtrip
+        # 瞬时错误重试（AG-16）：默认 2 次、指数退避；0 可关。
+        self.max_retries = max(0, int(max_retries))
+        self.retry_backoff_s = max(0.0, float(retry_backoff_s))
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -86,17 +96,30 @@ class OpenAICompatibleProvider:
             )
 
             headers = {"Authorization": f"Bearer {self.api_key}"}
-            try:
-                resp = httpx.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                    timeout=self.timeout_s,
-                )
-            except httpx.HTTPError as e:  # type: ignore
-                raise ProviderError(
-                    f"openai request failed: {redact_message(str(e), [self.api_key])}"
-                ) from e
+            # 瞬时错误退避重试（AG-16）：429/5xx/连接错误重试 max_retries 次；
+            # 其余（4xx 参数错、审核拦截）立即上抛，不做无意义重试。
+            attempt = 0
+            while True:
+                try:
+                    resp = httpx.post(
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=self.timeout_s,
+                    )
+                except httpx.HTTPError as e:  # type: ignore
+                    if attempt < self.max_retries:
+                        attempt += 1
+                        time.sleep(self.retry_backoff_s * attempt)
+                        continue
+                    raise ProviderError(
+                        f"openai request failed: {redact_message(str(e), [self.api_key])}"
+                    ) from e
+                if resp.status_code in _RETRY_STATUS and attempt < self.max_retries:
+                    attempt += 1
+                    time.sleep(self.retry_backoff_s * attempt)
+                    continue
+                break
 
             status_code = resp.status_code
             raw_text = resp.text
@@ -199,11 +222,29 @@ def build_payload(
       故 enabled 时不发 temperature。
     - 工具多轮：`supports_reasoning_roundtrip` 且 assistant 消息带 reasoning_content
       时回传，否则 400（DeepSeek 约束）。
+    - 工具消息协议（AG-3，2026-09-15 审计）：assistant 消息必须**原样回传** `tool_calls`
+      （含 id），工具结果必须以 `role="tool"` + `tool_call_id` 回灌——此前 LLMMessage
+      只有 role/content，工具结果被拼成 role="user" 的自然语言，模型收到的多轮上下文
+      是非法的，一接线就 400。
     - 正文预算：max_content_tokens 覆盖总预算（与思考型模型兼容，见 docs/人工审查第二批）。
     """
     messages: list[dict] = []
     for m in req.messages:
         d: dict = {"role": m.role, "content": m.content}
+        if m.role == "assistant" and getattr(m, "tool_calls", None):
+            d["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments or {}, ensure_ascii=False),
+                    },
+                }
+                for tc in m.tool_calls
+            ]
+        if m.role == "tool":
+            d["tool_call_id"] = getattr(m, "tool_call_id", None) or ""
         if supports_reasoning_roundtrip and m.role == "assistant" and m.reasoning_content:
             d["reasoning_content"] = m.reasoning_content
         messages.append(d)

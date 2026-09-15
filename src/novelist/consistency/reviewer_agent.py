@@ -43,6 +43,9 @@ class AgenticReview:
     evidence: list[dict] = field(default_factory=list)
     rounds: int = 0
     mode: str = "agent"  # agent | fallback
+    # AG-22：回退留痕（此前 fallback 只有 mode 一个字符，看不出为什么回退）
+    note: str = ""
+    usage: dict = field(default_factory=dict)
 
 
 def agentic_review(
@@ -90,14 +93,17 @@ def agentic_review(
     try:
         run = runner.run_evidence(ctx, system_prompt=REVIEWER_AGENT_SYSTEM,
                                   response_format="text")
-    except Exception:  # noqa: BLE001 - 证据环失败回退单发
+    except Exception as e:  # noqa: BLE001 - 证据环失败回退单发
+        # AG-22：回退留痕——"证据环没跑完"与"证据环没发现问题"必须可区分
         return AgenticReview(issues=reviewer.review(text, vol, ch, gist_text=gist_text,
                                                     memories=memories, cast_ids=cast_ids,
                                                     scope=scope,
                                                     chapter_scope=chapter_scope),
-                             mode="fallback")
+                             mode="fallback",
+                             note=f"证据环未完成（{type(e).__name__}: {str(e)[:120]}）→ 回退单发审校")
     out.rounds = run.rounds
     out.evidence = run.evidence
+    out.usage = run.usage
     if run.final and run.final.strip().lower() != "ok":
         out.issues = Reviewer._parse(reviewer, run.final)
     # final 为 ok/空 → 无问题，issues 保持空

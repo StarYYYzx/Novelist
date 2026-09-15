@@ -1568,7 +1568,11 @@ def _produce_chapter_impl(
     final_goal: str | None = None,
     max_rounds: int = 30,
     direct_words_floor: int = 20,
-    prefer_direct: bool = False,
+    # AG-1/AG-18（2026-09-15 审计 + 拍板）：**默认直出**。工具循环（`prefer_direct=False`）
+    # 依赖原生 function calling；此前默认走工具模式，而工具定义从未下发给模型 → 真机
+    # "草稿从不落盘却 ok=True"（2026-09-05 缺陷 DA 的未修主体）。现默认回到真机一直在用的
+    # 直出路径，工具循环改为显式开启（CLI `--loop`）。
+    prefer_direct: bool = True,
     generation_tokens: int = 4000,
     # ---- 第二批·人工审查：预算分离与篇幅治理 ----
     content_tokens: int | None = None,   # 正文预算（期望正文量）；None = 不额外约束
@@ -1801,7 +1805,15 @@ def _produce_chapter_impl(
     goal_bans: list[str] = []   # goal 注入的禁令（批次三·方案4 复用给润色）
     prev_facts_txt = ""         # 前卷事实清单（批次三·方案3/4 共用）
     try:
-        if prefer_direct:
+        # AG-20（2026-09-15 审计）：provider 未声明 `tool_calling` 时，工具循环**结构上
+        # 无法工作**（模型拿不到 tools、永远不会回 tool_calls）→ 显式降级为直出并留痕，
+        # 而不是跑出一个"ok=True 但没有草稿"的空章。
+        _caps = getattr(provider, "capabilities", None)
+        _tool_capable = bool(getattr(_caps, "tool_calling", False))
+        if not prefer_direct and not _tool_capable:
+            soft_failures.append(
+                "provider 未声明 tool_calling → 本请求已自动降级为直出（--loop 需支持工具调用的后端）")
+        if prefer_direct or not _tool_capable:
             mode = "direct"
             final = ""
 
@@ -2178,6 +2190,9 @@ def _produce_chapter_impl(
                                         gist_text=gist_text_for_events, memories=memories_ev,
                                         scope=_scope, max_rounds=agentic_review_rounds)
                                     issues = _ar.issues
+                                    # AG-22：证据环回退要留痕（否则"没跑"与"没问题"不可区分）
+                                    if getattr(_ar, "note", ""):
+                                        soft_failures.append(f"审校证据环降级(e{idx})：{_ar.note}")
                                 blocks = [i for i in issues if i.level == "block"]
                             except Exception:  # noqa: BLE001 - 审校失败不阻断
                                 issues, blocks = [], []
@@ -2234,6 +2249,9 @@ def _produce_chapter_impl(
                                     max_rounds=agentic_chronicle_rounds,
                                 )
                                 chronic_reports.append(_rep)
+                                # AG-22：证据环回退留痕（ADR-032 F1 的"回退不劣于旧路径"要求可见）
+                                if getattr(_arb, "note", ""):
+                                    soft_failures.append(f"编纂证据环降级(e{idx})：{_arb.note}")
                             else:
                                 chronic_reports.append(
                                     chronicler.run(piece, vol, ch, max_events=2,
@@ -2308,7 +2326,7 @@ def _produce_chapter_impl(
                     if attempt == max_retries:
                         comp["_unresolved"] = problems  # 重试耗尽：保留问题标记，不静默
         else:
-            from .agent_runner import AgentRunner
+            from .agent_runner import AgentLoopError, AgentRunner
 
             reg = registry or None
             if reg is None:
@@ -2319,7 +2337,36 @@ def _produce_chapter_impl(
                                  budget=Budget(max_tokens_out=generation_tokens, max_rounds=max_rounds),
                                  registry=reg)
             runner.system(system_prompt or "")
-            final = runner.run_loop(goal, max_rounds=max_rounds)
+            try:
+                final = runner.run_loop(goal, max_rounds=max_rounds)
+            except AgentLoopError as e:
+                # AG-13（拍板 A「条件收敛」）：轮次耗尽/空响应时——
+                #   ① 草稿已落盘 → 以草稿为准按成功收尾（只留痕，不白扔已写好的正文）
+                #   ② 未落盘     → 追加 1 次强制收敛调用抢救内容；仍拿不到才失败
+                _probe = ws.draft_path(project_id, vol, ch)
+                _existing = ""
+                try:
+                    if _probe.exists():
+                        _existing = _probe.read_text(encoding="utf-8").strip()
+                except OSError:
+                    _existing = ""
+                if _existing:
+                    final = _existing
+                    soft_failures.append(
+                        f"工具循环未正常收尾（{e}）但有草稿落盘 → 以草稿为准（可能中途中断）")
+                else:
+                    _conv = ""
+                    try:
+                        _conv = runner.converge(goal).strip()
+                    except Exception as _ce:  # noqa: BLE001 - 收敛调用失败按原错误收尾
+                        soft_failures.append(f"强制收敛调用失败：{_ce}")
+                    if _conv and len(_conv) >= direct_words_floor:
+                        final = _conv
+                        attempts = 1
+                        soft_failures.append(
+                            f"工具循环未正常收尾（{e}）→ 强制收敛产出草案（未经正常收尾流程）")
+                    else:
+                        raise
             attempts = 1
             # 工具模式：正文由 write_draft 落盘，完整性以草稿文件为准（不重试）
             # F2 修复（2026-09-05）：final 是 Agent 结束语（非正文），完整性判定
@@ -2361,6 +2408,35 @@ def _produce_chapter_impl(
                                     phase=getattr(phase, "value", phase), note="草稿落盘失败")
             return ProductionResult(ok=False, result="cannot write draft", mode=mode,
                                     bible_injected=bible_injected, attempts=attempts, completeness=comp)
+    else:
+        # AG-1（2026-09-15 审计）：工具模式的正文**只能**由 write_draft 工具落盘。
+        # 没有草稿文件就是失败——绝不返回 ok=True + 指向不存在文件的 chapter_path
+        # （此前真机表现：CLI 报"草稿已落盘"、事件流里多一条空章事件，磁盘上一个字都没有）。
+        _has_draft = draft.exists()
+        if not _has_draft and (final or "").strip() and len(final.strip()) >= direct_words_floor:
+            # 收敛/结束语文本尚有实体内容 → 兜底落盘（留痕：这份稿子未经正常收尾流程）
+            try:
+                draft.parent.mkdir(parents=True, exist_ok=True)
+                ws.write_text(draft, final.strip() + "\n")
+                _has_draft = True
+                soft_failures.append("工具模式未落盘 → 已用循环产出文本兜底落盘（未经正常收尾）")
+            except Exception as e:  # noqa: BLE001
+                soft_failures.append(f"兜底落盘失败：{e}")
+        if not _has_draft:
+            if _reset_snap is not None:
+                try:
+                    _reset_snap.restore()
+                except Exception as e:  # noqa: BLE001
+                    soft_failures.append(f"失败后快照还原失败（工作区可能残留中间态）：{e}")
+            _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
+                                    phase=getattr(phase, "value", phase),
+                                    note="工具模式未产出草稿")
+            return ProductionResult(
+                ok=False, mode=mode, bible_injected=bible_injected, attempts=attempts,
+                completeness=comp, soft_failures=soft_failures,
+                result=("agent 未产出草稿（tool 模式由 write_draft 工具落盘）；"
+                        "请检查 provider 是否支持 tool_calling，或改用 --direct"),
+                phase=getattr(phase, "value", phase))
 
     if not comp:
         try:
@@ -2586,6 +2662,8 @@ def _produce_chapter_impl(
                             session=sess, embedding=embedding,
                             max_rounds=agentic_chronicle_rounds,
                         )
+                        if getattr(_arb, "note", ""):  # AG-22 留痕
+                            soft_failures.append(f"章级编纂证据环降级：{_arb.note}")
                     else:
                         chronicle = chronicler.run(text_for_chronicle, vol, ch,
                                                    payoff=(phase is Phase.TAIL))
@@ -2594,9 +2672,17 @@ def _produce_chapter_impl(
         chronicle = None
         soft_failures.append("chronicle(事件回写失败)")
 
+    # AG-5（2026-09-15 审计）：**无正文内容时不得回写章级事件**。
+    # 此前事件循环/回写为空 → events==0 → 自动兜底写一条"完成第 X 卷第 Y 章"，
+    # 而该章可能一个字都没产出（复现：tool 模式空响应 → ok=True + 空章事件 + 磁盘无草稿），
+    # 既污染 plot_events，又让后续重跑撞同一个 ev id（event_seq 并未递增）。
+    _has_chapter_text = bool((final or "").strip()) or draft.exists()
     if commit_chapter_event is None:
         # 自动兜底：有真实情节事件就不写合成事件，避免内容为空的条目污染 plot_events
-        commit_chapter_event = events == 0
+        commit_chapter_event = events == 0 and _has_chapter_text
+    if commit_chapter_event and not _has_chapter_text:
+        commit_chapter_event = False
+        soft_failures.append("本章无正文内容 → 已跳过章级事件回写（防空条目污染 plot_events）")
     if commit_chapter_event:
         ev = LandedEvent(
             project_id=project_id, vol=vol, ch=ch, seq=1,

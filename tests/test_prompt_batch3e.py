@@ -192,13 +192,13 @@ def test_cli_chapter_config_defaults_apply(tmp_path):
     cfg = _write_cfg(tmp_path, "[generation]\nevent_loop = true\npolish = true\n")
     runner = CliRunner()
     res = runner.invoke(cli, ["--config", cfg, "chapter", str(ws_root),
-                              "--vol", "1", "--ch", "1", "--provider", "demo"])
+                              "--vol", "1", "--ch", "1", "--provider", "demo", "--loop"])
     assert res.exit_code == 0, res.output
     assert "生效开关" in res.output
     assert "事件循环" in res.output and "润色" in res.output
     # 显式 --no-polish 压过配置
     res2 = runner.invoke(cli, ["--config", cfg, "chapter", str(ws_root),
                                "--vol", "1", "--ch", "2", "--provider", "demo",
-                               "--no-polish"])
+                               "--loop", "--no-polish"])
     assert res2.exit_code == 0, res2.output
     assert "润色" not in res2.output.split("生效开关：", 1)[1].splitlines()[0]

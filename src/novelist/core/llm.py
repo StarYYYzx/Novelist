@@ -33,12 +33,18 @@ class ProviderCapabilities:
 
 @dataclass
 class LLMMessage:
-    role: str  # system | user | assistant
+    role: str  # system | user | assistant | tool
     content: str
     # 思考型模型（DeepSeek v4 / qwen3.5 等）的推理文本，随 assistant 消息保存。
     # 工具多轮时必须回传（DeepSeek 官方：若最终一次回答前曾发生工具调用，
     # 后续请求须携带上一 assistant 的 reasoning_content，否则返回 400）。
     reasoning_content: str = ""
+    # 原生工具调用的消息协议（AG-3，2026-09-15 审计）：OpenAI 兼容接口要求
+    #   assistant 消息带 `tool_calls`（并回传其 id），随后每条结果以
+    #   `role="tool"` + `tool_call_id` 回灌——否则第二轮直接 400。
+    # 此前只有 role/content，工具结果被拼成 role="user" 的文本，**结构上无法支持 FC**。
+    tool_calls: list[ToolCall] | None = None  # 仅 assistant 消息
+    tool_call_id: str | None = None           # 仅 role="tool" 消息
 
 
 @dataclass

@@ -40,6 +40,11 @@ class ArbitrationResult:
     flagged: list[tuple[int, str, str]] = field(default_factory=list)
     evidence: list[dict] = field(default_factory=list)
     rounds: int = 0
+    # AG-22（2026-09-15 审计）：证据环"回退"必须**显式留痕**——此前 catch 住异常后
+    # 静默返回空裁决，调用方看不出"证据环其实没跑"，与真·无冲突不可区分。
+    degraded: bool = False
+    note: str = ""
+    usage: dict = field(default_factory=dict)  # 证据环累计用量（AG-12）
 
     @property
     def ok(self) -> bool:
@@ -129,10 +134,14 @@ def arbitrate(
                              max_rounds=max_rounds, thinking=True)
         run = runner.run_evidence(prompt, system_prompt=_ARBITRATOR_SYSTEM,
                                   response_format="text")
-    except Exception:  # noqa: BLE001 - 仲裁失败降级：调用方回落到原候选集
+    except Exception as e:  # noqa: BLE001 - 仲裁失败降级：调用方回落到原候选集
+        # AG-22：回退要留痕（否则"证据环没跑"与"证据环无冲突"无法区分）
+        out.degraded = True
+        out.note = f"证据环仲裁未完成（{type(e).__name__}: {str(e)[:120]}）→ 回退原候选集"
         return out
     out.rounds = run.rounds
     out.evidence = run.evidence
+    out.usage = run.usage
 
     keep, ign, flag = _parse_verdicts(run.final)
     for i, ev in candidates:

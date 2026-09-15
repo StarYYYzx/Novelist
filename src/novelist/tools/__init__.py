@@ -8,13 +8,17 @@ from __future__ import annotations
 
 from ..core.approval import ApprovalQueue
 from ..core.session import SessionInfo
-from ..core.tools import PermissionGate, Tool, ToolRegistry
+from ..core.tools import EVIDENCE_TOOL_NAMES, PermissionGate, Tool, ToolRegistry
 from ..storage.workspace import Workspace
 
 from . import writing  # noqa: F401  装配副作用（注册工具）
 from . import filesys  # noqa: F401
 from . import memory_tools  # noqa: F401
 from . import governance  # noqa: F401
+
+# 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
+# 唯一源在 `core/tools.EVIDENCE_TOOL_NAMES`（`ToolRegistry.select("evidence")` 也用它）。
+EVIDENCE_READ_TOOLS = EVIDENCE_TOOL_NAMES
 
 
 def build_registry(
@@ -44,12 +48,6 @@ def all_tools(ws: Workspace, embedding=None) -> list[Tool]:
     )
 
 
-# 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
-EVIDENCE_READ_TOOLS = frozenset(
-    {"read_file", "grep_text", "query_memory", "get_character_history", "get_plot_events"}
-)
-
-
 def evidence_tools(ws: Workspace, embedding=None) -> list[Tool]:
     """取 `all_tools` 中允许的证据读取子集（只读，供 chronicler/reviewer 取证）。"""
     return [t for t in all_tools(ws, embedding=embedding) if t.name in EVIDENCE_READ_TOOLS]
@@ -68,4 +66,4 @@ def evidence_registry(
 
 
 __all__ = ["build_registry", "all_tools", "evidence_registry", "evidence_tools",
-           "PermissionGate", "SessionInfo"]
+           "EVIDENCE_READ_TOOLS", "PermissionGate", "SessionInfo"]

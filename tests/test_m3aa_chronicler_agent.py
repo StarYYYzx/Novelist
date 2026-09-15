@@ -103,10 +103,12 @@ def test_agentic_chronicle_fallback_keeps_all_when_no_verdict(tmp_path):
     ch = _chronicler(ws, pid, llm_reply="事件：苏晚击败墨无极 | conflict | 苏晚,墨无极\n"
                                          "事件：陈松突破修为 | turning_point | 陈松\n")
     # 仲裁环空 reply（模型不配合）→ 回退原候选全集，不丢
+    # AG-5（2026-09-15）：**空内容不再被当成"最终裁决"**——`_parse_decision` 抛
+    # AgentLoopError → 仲裁整体回退（rounds=0），由调用方按"无裁决"处理。
     arb_provider = ScriptedProvider([{"final": ""}])
     report, arb = agentic_chronicle(ch, "正文窗口", provider=arb_provider,
                                     session=_session(), vol=2, ch=3)
-    assert arb.rounds == 1
+    assert arb.rounds == 0
     assert report.written == 2          # 空裁决 → 未提及即保持：两条都走确定性闸门，不丢候选
 
 

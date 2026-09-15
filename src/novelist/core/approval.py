@@ -18,6 +18,19 @@ from typing import Any
 
 
 @dataclass
+class PersistedSessionRef:
+    """从磁盘恢复的审批请求所携带的 session 占位（AG-23，2026-09-15 审计）。
+
+    审批队列的**跨进程**用途只有"展示 + 裁决"，那时只需要 agent 名；真实调用工具需要
+    `project_id`，而它在落盘时没有保存。此前用匿名 `type("S", (), {...})()` 伪造 session，
+    误用时只会抛一句难以定位的 AttributeError；现在是有名类型 + 明确注解。
+    """
+
+    agent: str | None = None
+    persisted: bool = True
+
+
+@dataclass
 class ApprovalRequest:
     """一条待人工决策的请求。"""
 
@@ -92,7 +105,7 @@ class ApprovalQueue:
         for p in data.get("pending", []):
             req = ApprovalRequest(
                 id=p["id"], tool=p["tool"], params=p.get("params", {}),
-                session=type("S", (), {"agent": p.get("agent")})(),  # 轻量占位 session
+                session=PersistedSessionRef(agent=p.get("agent")),
                 reason=p.get("reason", ""), created_at=p.get("created_at", 0.0),
             )
             q._pending[req.id] = req
@@ -140,7 +153,13 @@ class ApprovalQueue:
             return True
 
     def wait_for_decision(self, req_id: str, timeout: float = 120.0) -> str:
-        """阻塞等待决策；超时回退 deny（docs/07 §3.3 fallback deny-if-timeout）。"""
+        """阻塞等待决策；超时回退 deny（docs/07 §3.3 fallback deny-if-timeout）。
+
+        AG-15（2026-09-15 审计）：超时判定必须**与裁决同样落盘并入历史**——此前超时分支
+        只在内存里标记 deny，不写 `pending_approvals.json`、不记 `history`，于是
+        ① 另一个进程（`novelist grant`）看到的仍是 pending，可能"批准"一条已被判 deny 的请求；
+        ② 事后审计看不到这条拒绝。
+        """
         deadline = time.monotonic() + timeout
         with self._cond:
             while True:
@@ -154,6 +173,14 @@ class ApprovalQueue:
                         req.decision = "deny"
                         self._pending.pop(req_id, None)
                     self._decided[req_id] = "deny"
+                    self._history.append({
+                        "id": req_id,
+                        "tool": getattr(req, "tool", None),
+                        "decision": "deny",
+                        "reason": "timeout",
+                        "ts": time.time(),
+                    })
+                    self._write_persist()
                     self._cond.notify_all()
                     return "deny"
                 self._cond.wait(remaining)

@@ -649,6 +649,14 @@
 > 力不从心。方向（2026-09-07 用户拍板四选）：**第一批只升级 chronicler + reviewer；建统一子代理基座；
 > 章内同步运行；Agent 只建议不直写（落库仍走确定性闸门，敏感项提请人工）**。forge 构建因本身是确定性递归
 > 调度（形态不同：Agent 指挥 + 引擎执行）**延后单独评估**，不并入本批。
+>
+> **前提修订（2026-09-15 审计 AG-2/AG-3）**：本 ADR 的证据环**依赖原生 function calling 真正接线**。
+> 审计发现此前工具定义从未下发（`AgentRunner._decide` 不传 `tools=`、`list_defs()` 全库零调用）、
+> 且消息协议缺 `tool_calls`/`tool_call_id`/`role="tool"` —— 于是真机上"证据环"退化为单轮直出
+> （测试之所以全绿，是 fake/scripted provider 直接吐 `tool_calls`）。现已修复：工具定义按 OpenAI
+> function 格式随请求下发（仅当 `capabilities.tool_calling` 为真），assistant 回传 `tool_calls`、
+> 工具结果以 `role="tool"` + `tool_call_id` 回灌；子代理证据环"回退/轮次耗尽"必须显式留痕
+> （`ArbitrationResult.degraded/note`、`AgenticReview.note`），不再与"无冲突"混为一谈。
 
 - **形态**：扩展 `core/agent_runner.AgentRunner` 成"证据循环"子代理基座——每轮 LLM 可先经 `ToolRegistry`
   观察面（读 圣经/记忆/草稿：`filesys.read` + `memory_tools.query_memory`）作为证据，再做决策；判断类

@@ -3,8 +3,6 @@
 import threading
 import time
 
-import pytest
-
 from novelist.core.approval import ApprovalQueue
 from novelist.core.session import SessionInfo
 from novelist.core.tools import (
@@ -15,7 +13,7 @@ from novelist.core.tools import (
     Tool,
     ToolRegistry,
 )
-from novelist.core.errors import DENIED, DeniedError
+from novelist.core.errors import DENIED
 
 
 def _sess(profile: str = "supervised") -> SessionInfo:
@@ -136,11 +134,18 @@ def test_registry_ask_with_queue_allow():
 
 
 def test_registry_ask_no_approvals_raises():
+    """AG-14（2026-09-15）：ask 无审批通道 → **判拒绝并返回**，不再抛异常穿透。
+
+    抛异常会让整章在"一次敏感工具调用"上直接失败（异常穿透 AgentRunner），
+    而正确的语义是把 denied 作为观察回灌给模型，让它改道。
+    """
     gate = PermissionGate(profiles={"supervised": {"sensitive": APPROVAL_ASK, "danger": APPROVAL_DENY, "tools": {}}})
     reg = ToolRegistry(gate=gate)
     reg.register(_tool("t1", "sensitive"))
-    with pytest.raises(DeniedError):
-        reg.invoke(_sess(), "t1", {"v": 1})
+    res = reg.invoke(_sess(), "t1", {"v": 1})
+    assert res.status == "denied"
+    assert res.code == DENIED
+    assert "no approval channel" in res.data["reason"]
 
 
 def test_registry_danger_denied_by_default():

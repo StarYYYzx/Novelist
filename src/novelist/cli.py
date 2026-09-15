@@ -260,7 +260,9 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.option("--provider", default="fake",
               help="LLM provider：fake/scripted/deepseek/openai/qwen/kimi/glm/anthropic/ollama/vllm/custom")
 @_apply_provider_conn
-@click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
+@click.option("--direct/--loop", default=True,
+              help="默认直出文本；--loop 走 Agent 工具循环（需 provider 支持 tool_calling，"
+                   "否则自动降级为直出并留痕）")
 @click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
 # ---- ② 预算与事件粒度（可进 [generation]）----
 @click.option("--gen-tokens", type=int, default=None,
@@ -305,7 +307,7 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str,
             api_key: str | None, api_base: str | None, model: str | None,
-            direct: bool | None,
+            direct: bool,
             policy: str | None, gen_tokens: int | None, content_tokens: int | None,
             max_events: int | None, min_event_words: int,
             polish: bool, no_bible: bool,
@@ -365,8 +367,10 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
         raise click.ClickException(f"chapter: {e}") from e
 
     prov = _make_cli_provider(provider, vol, ch, api_key=api_key, api_base=api_base, model=model)
-    # 默认直出文本（量力而为，避免多轮工具调用）；需 Agent 工具循环加 --loop
-    prefer_direct = direct if direct is not None else False
+    # AG-1/AG-18（2026-09-15 审计 + 拍板）：**默认直出**。`--loop` 是显式实验开关。
+    # 此前代码默认走工具模式（`direct=None` → False），而文档写的是"默认 direct"，
+    # 且工具模式在真机上根本拿不到 tool_calls → 草稿不落盘却报成功。
+    prefer_direct = direct
     # 生成预算（B-05）：显式 --gen-tokens 优先；缺省 4000
     if not gen_tokens:
         gen_tokens = 4000
@@ -392,7 +396,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                                  ("设定补充", supplement_settings), ("缝合审查", seam_review),
                                  ("前卷事实", volume_facts), ("证据环编纂", agentic_chronicle),
                                  ("证据环审校", agentic_review)) if on]
-    click.echo("生效开关：" + ("、".join(_on) if _on else "（无——最简档）"))
+    click.echo("生效开关："
+               + f"生成模式={'Agent 工具循环' if not direct else '直出'}；"
+               + ("、".join(_on) if _on else "（除生成模式外无——最简档）"))
     if not _on:
         click.echo("提示：最简档不含事件循环与润色，与《命令手册》描述的管线不同；"
                    "完整管线请加 --event-loop --polish。")
