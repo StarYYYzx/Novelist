@@ -112,7 +112,9 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   **`prompt组装结构审计-2026-09-12.md`**（逐环节信息覆盖审计：细纲层缺世界观基座、
   审校层三处窗口窄化、审校维度名与解析白名单不一致）、
   **`代码与逻辑复查-2026-09-15.md`**（三维复查：代码级缺陷 D1–D10 / prompt 组装覆盖度 /
-  终端 UX U1–U8，含按风险排序的修复批次 3-A…3-D 与"需拍板"的 3-E）。
+  终端 UX U1–U8，含按风险排序的修复批次 3-A…3-D 与"需拍板"的 3-E）、
+  **`Agent层审计与修复方案-2026-09-15.md`**（Agent/工具调用专项审计 AG-1…AG-24 + 四批修复方案；
+  含"默认 mode=tool 不落盘"「工具定义从未下发」等 8 组离线复现与 6 项待拍板）。
   另有运行期证据：`novel_workspace/_harness/`（含 `prompt作用审计.md`「prompt 有没有接上链路」、
   `前两章问题归因报告.md`、以及实测导出的 prompt dump）。
 - `src/novelist/`：

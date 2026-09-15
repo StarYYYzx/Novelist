@@ -65,6 +65,15 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   016 文件=持久事实源（SQLite/RAG 仅可再生缓存） | 017/018 Forge 递归硬边界（depth4/width4/calls80/retry1） |
   019 worldstate | 021 事件级选角。
 - `SceneBus` 用**不可重入** `threading.Lock`——持锁时不得再进加锁方法（超时分支就在锁内直接标记 deny）。
+- **`chapter` 默认 `mode="tool"`（不是 direct！）**——文档说"默认 direct"是错的（`cli.py:369` →
+  `orchestrator.py:1760`）。tool 模式下**草稿从不落盘**却返回 `ok=True` + 不存在的 `chapter_path`，
+  还会写 1 条空章事件。**真机跑正文一律显式加 `--direct`**。详见
+  `docs/Agent层审计与修复方案-2026-09-15.md`（AG-1）。
+- **工具循环目前是空转**：`AgentRunner._decide` 不传 `tools=`、`list_defs()` 全库零调用、
+  `LLMMessage` 无 `tool_calls`/`tool_call_id`/`role="tool"` → 真机永不产生工具调用（ADR-032
+  证据环 F1/F2 同样空转）。**测试绿靠的是 fake 脚本 provider，不代表真机可用**（AG-2/AG-3）。
+- **门禁对拼错的策略值 fail-open**（`alow` 当放行）；策略文件缺 `[profile.supervised]` 时
+  `PermissionGate.check` 会 KeyError 崩掉所有工具调用（AG-6/AG-7）。
 
 ## 4. 改动前的联动检查（漏了就是债）
 

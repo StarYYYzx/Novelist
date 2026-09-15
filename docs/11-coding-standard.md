@@ -311,7 +311,7 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
 | `[tool.ruff]` / `[tool.mypy]` | 无 | **`[tool.ruff]` 已落（锁定现状，0 告警）；`[tool.mypy]` 仍无**（P2-9 部分完成，ADR-034） | 落地 |
 | 测试 | 22 文件 4128 行 220 用例，无 conftest | **92 文件 18525 行；1067 收集**（1065 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
-| schemas / docs | — | **24 个 schema；docs 23 文件 8418 行** | — |
+| schemas / docs | — | **24 个 schema；docs 24 文件 8685 行** | — |
 | 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
 | 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |
 
