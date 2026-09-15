@@ -133,6 +133,21 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   第一行解析失败。正反两个方向都会被测试抓到：加守卫时**两个方向都要写用例**。
 - **同一把锁里判定、也只在那里标记**：配额"只写一条终态标记"若判定与标记分处锁内外，并发下会重复写。
 
+## 6.6 离线复现真实链路（比读代码快，也比读代码可靠）
+
+想知道"这条路径在真机到底能不能用"，标准做法是**用桩 provider 跑真函数**（不调真 API、不读真工作区）：
+
+- **跑整章**：`Workspace(root=tempfile.mkdtemp())` + `ws.create_project(pid)` +
+  `Checkpoint(ws).save(pid, {"id":pid,"pipeline_state":"立项","event_seq":0})`，然后
+  `produce_chapter(ws, pid, 1, 1, 桩provider, session=SessionInfo(...))`，最后打印
+  `res.ok / res.mode / ws.draft_path(...).exists() / res.chapter_path / req.tools`。
+  桩 provider 里 assert `req.tools is None` 一句话就能证明"工具定义压根没下发"。
+- **跑工具契约**：`ToolRegistry(gate=PermissionGate({...}))` + `reg.invoke(session, name, params)`，
+  直接看 `ToolResult` —— 门禁取值、错误码、失败是否被包成 `ok` 全在这里暴露。
+- **反查真机实际行为**：`novel_workspace/*/reports/stats/generation-*.md` 里有 `mode=direct|tool`
+  与 `LLM 调用 N 次：in=… / out=…`，比任何文档都可信（本仓 72 份审计里 67 份是 direct）。
+- 桩 provider 只要能 `complete(req) -> LLMResult` 即可（`blocked=True` / `content=""` 两种极端都要试）。
+
 ## 7. 已知未做项（别重复发现）
 
 `docs/11` §13：**P0-1** `core/orchestrator.py` 的 `_produce_chapter_impl` 1132 行待拆
