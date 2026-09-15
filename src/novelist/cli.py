@@ -8,7 +8,7 @@ import time
 
 import click
 
-from .config import load_config
+from .config import load_config, resolve_opt
 from .core.errors import NovelistError
 from .core.output import fmt_duration
 from .core.session import SessionInfo
@@ -242,7 +242,18 @@ def status(ctx: click.Context, directory: str | None) -> None:
     click.echo(f"stage:   {project.get('pipeline_state')}")
 
 
-@cli.command()
+@cli.command(epilog="""\b
+参数分组（共四组）与 config.toml `[generation]` 项目级默认值（U7）：
+  ① 目标与后端：--vol --ch --provider --api-* --direct/--loop --policy（不进配置）
+  ② 预算与事件粒度：--gen-tokens --content-tokens --max-events --min-event-words
+  ③ 管线开关：--polish --no-bible --event-loop --screenplay --readback
+     --event-polish --supplement-settings --no-jit --seam-review --volume-facts
+  ④ Agent 审查（ADR-032）：--agentic-chronicle --agentic-review 及其 --rounds
+
+②③④ 全部可写入 config.toml 的 `[generation]` 段作项目级默认（键名同选项去连字符，
+布尔键用肯定式，如 inject_bible/jit_characters）；优先级：显式 flag > 配置 > 出厂默认。
+示例：[generation]\\nevent_loop = true\\npolish = true\\ngen_tokens = 6000""")
+# ---- ① 目标与后端（每次调用都可能不同，不进 [generation] 配置）----
 @click.argument("directory", required=False, default=None)
 @click.option("--vol", default=1, type=int, help="卷号")
 @click.option("--ch", default=1, type=int, help="章节号")
@@ -251,43 +262,46 @@ def status(ctx: click.Context, directory: str | None) -> None:
 @_apply_provider_conn
 @click.option("--direct/--loop", default=None, help="直出文本（本地慢模型）或走 Agent 工具循环；默认 local 模型用直出")
 @click.option("--policy", default=None, help="权限策略文件（TOML，docs/07 §3.4）；缺省用 supervised 默认")
+# ---- ② 预算与事件粒度（可进 [generation]）----
 @click.option("--gen-tokens", type=int, default=None,
               help="单次生成总预算（B-05）。缺省时本地模型 400、其余 4000；"
-                   "本地 9B 模型写满一章建议 1200–1500")
+                   "本地 9B 模型写满一章建议 1200–1500；可写 [generation] gen_tokens")
 @click.option("--content-tokens", type=int, default=None,
               help="正文预算（第二批）：期望正文量；总预算至少覆盖它。缺省取配置或 3000")
 @click.option("--max-events", type=int, default=None,
               help="每章事件数上限（第二批）：超限只取前 N 个；缺省不限制")
-@click.option("--min-event-words", type=int, default=120,
-              help="单事件最小篇幅（字符，第二批）：低于下限判失败；事件循环生效")
-@click.option("--polish/--no-polish", default=False,
+@click.option("--min-event-words", type=int, default=None,
+              help="单事件最小篇幅（字符，第二批）：低于下限判失败；事件循环生效；缺省 120")
+# ---- ③ 管线开关（可进 [generation]；默认值 None = 交给配置/出厂默认）----
+@click.option("--polish/--no-polish", default=None,
               help="成章后追加一次 LLM 调用优化文风（降低 AI 味），并用确定性指标复核")
-@click.option("--no-bible", is_flag=True, default=False,
+@click.option("--no-bible", is_flag=True, default=None,
               help="关闭圣经注入（仅用于对照实验；默认开启，见 B-02）")
-@click.option("--event-loop/--no-event-loop", default=False,
+@click.option("--event-loop/--no-event-loop", default=None,
               help="按细纲 key_events 逐事件生成、逐事件回写（ADR-013 落地，第二批第 2 条）")
-@click.option("--screenplay", is_flag=True, default=False,
+@click.option("--screenplay", is_flag=True, default=None,
               help="重场戏：先剧本体写对白交锋，再叙事化成小说（第三批第 2 条·档 2，两遍生成）")
-@click.option("--readback", is_flag=True, default=False,
+@click.option("--readback", is_flag=True, default=None,
               help="回读机制：生成前注入前 1 章正文原文（第七批第 4 条）")
-@click.option("--event-polish", is_flag=True, default=False,
+@click.option("--event-polish", is_flag=True, default=None,
               help="事件级润色：每事件写完即润色，源头统一风格（第七批第 2 条）")
-@click.option("--supplement-settings", is_flag=True, default=False,
+@click.option("--supplement-settings", is_flag=True, default=None,
               help="世界观滚动补充：事件新名词补 settings 条目（第七批第 5 条·递归分层 B）")
-@click.option("--no-jit", is_flag=True, default=False,
+@click.option("--no-jit", is_flag=True, default=None,
               help="关闭人物 JIT 补卡（默认开启，第七批第 5 条·递归分层 A）")
-@click.option("--seam-review/--no-seam-review", default=True,
+@click.option("--seam-review/--no-seam-review", default=None,
               help="事件接缝 LLM 复述审查（批次三方案2；G3 修复：原先默认关且 CLI 无法打开）")
-@click.option("--volume-facts/--no-volume-facts", default=True,
+@click.option("--volume-facts/--no-volume-facts", default=None,
               help="卷末章自动产'本卷事实清单'并注入下卷（批次三方案3）")
-@click.option("--agentic-chronicle", is_flag=True, default=False,
+# ---- ④ Agent 审查（ADR-032，可进 [generation]）----
+@click.option("--agentic-chronicle", is_flag=True, default=None,
               help="编纂走只读证据仲裁环（ADR-032 F1）：落库前 query_memory 查冲突再裁决")
-@click.option("--agentic-review", is_flag=True, default=False,
+@click.option("--agentic-review", is_flag=True, default=None,
               help="审校走只读证据环（ADR-032 F2）：可疑点取证后再定论")
-@click.option("--agentic-chronicle-rounds", type=int, default=6,
-              help="F1 取证预算：chronicler 证据环轮次上限（宁漏勿误杀，ADR-032）")
-@click.option("--agentic-review-rounds", type=int, default=8,
-              help="F2 取证预算：reviewer 证据环轮次上限（ADR-032）")
+@click.option("--agentic-chronicle-rounds", type=int, default=None,
+              help="F1 取证预算：chronicler 证据环轮次上限（宁漏勿误杀，ADR-032）；缺省 6")
+@click.option("--agentic-review-rounds", type=int, default=None,
+              help="F2 取证预算：reviewer 证据环轮次上限（ADR-032）；缺省 8")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str,
             api_key: str | None, api_base: str | None, model: str | None,
@@ -313,6 +327,35 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
     from novelist.tools import build_registry
 
     ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
+    # U7（2026-09-15）：[generation] 项目级默认 —— 显式 flag > 配置 > 出厂默认。
+    # 出厂默认与配置化之前逐项一致（seam_review/volume_facts=True，其余开关 False），
+    # 无 [generation] 段时行为不变。
+    gcfg = ctx.obj["config"].generation
+    polish = resolve_opt(polish, gcfg.polish, False)
+    event_loop = resolve_opt(event_loop, gcfg.event_loop, False)
+    screenplay = resolve_opt(screenplay, gcfg.screenplay, False)
+    readback = resolve_opt(readback, gcfg.readback, False)
+    event_polish = resolve_opt(event_polish, gcfg.event_polish, False)
+    supplement_settings = resolve_opt(supplement_settings, gcfg.supplement_settings, False)
+    seam_review = resolve_opt(seam_review, gcfg.seam_review, True)
+    volume_facts = resolve_opt(volume_facts, gcfg.volume_facts, True)
+    agentic_chronicle = resolve_opt(agentic_chronicle, gcfg.agentic_chronicle, False)
+    agentic_review = resolve_opt(agentic_review, gcfg.agentic_review, False)
+    agentic_chronicle_rounds = resolve_opt(agentic_chronicle_rounds,
+                                           gcfg.agentic_chronicle_rounds, 6)
+    agentic_review_rounds = resolve_opt(agentic_review_rounds,
+                                        gcfg.agentic_review_rounds, 8)
+    # 布尔否定式 flag 对应配置里的肯定式键（inject_bible / jit_characters）
+    no_bible = resolve_opt(no_bible,
+                           None if gcfg.inject_bible is None else not gcfg.inject_bible,
+                           False)
+    no_jit = resolve_opt(no_jit,
+                         None if gcfg.jit_characters is None else not gcfg.jit_characters,
+                         False)
+    gen_tokens = resolve_opt(gen_tokens, gcfg.gen_tokens, None)
+    content_tokens = resolve_opt(content_tokens, gcfg.content_tokens, None)
+    max_events = resolve_opt(max_events, gcfg.max_events, None)
+    min_event_words = resolve_opt(min_event_words, gcfg.min_event_words, 120)
     # U6（2026-09-15）：整条链路（检索/装配/生成/润色/回写）的总耗时基准
     _t0 = time.monotonic()
     ck = Checkpoint(ws)

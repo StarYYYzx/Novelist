@@ -34,7 +34,7 @@ from .llm import LLMMessage, LLMRequest
 
 DIRECTOR_PROMPT = """你是人物导演。下面是一场戏的细纲，以及本场出场人物的人物卡。
 请为每个出场人物给出**这一场**的表演指令——把静态人设翻译成此刻的具体表现。
-
+{worldview_block}
 【本场细纲】
 {ev_text}
 
@@ -299,6 +299,25 @@ def _parse_directions(content: str, cast_names: list[str]) -> list[CharacterDire
     return out
 
 
+def worldview_block(ws, project_id: str) -> str:
+    """S-2（2026-09-15 拍板）：导演层的【世界观基座】。
+
+    原先导演只看到人物卡 power.level 一条间接证据，不知道境界体系与铁律 →
+    会产出"越级表演"指令（下游润色不改情节、审校才报战力越级——报错点在最后，
+    成本已付）。数据源与批次 2 细纲层 / S-3 forge 节点同一份
+    （bible/worldview.json，渲染走 `context.worldview_base_lines`）。
+    读取失败或空世界观返回空串（纯增量，绝不阻断调度）。
+    """
+    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json"))
+    from .context import worldview_base_lines
+
+    lines = worldview_base_lines(wv if isinstance(wv, dict) else {})
+    if not lines:
+        return ""
+    return ("\n【世界观基座】（境界与规则是硬约束：表演指令不得让角色越级装腔、"
+            "不得违背铁律）\n" + "\n".join(lines) + "\n")
+
+
 def build_direction(ws, project_id: str, provider, *, vol: int, ch: int,
                     event_index: int, ev_text: str, cards: list[dict],
                     history_lines: list[str] | None = None,
@@ -314,7 +333,8 @@ def build_direction(ws, project_id: str, provider, *, vol: int, ch: int,
         hist_block = "\n【人物近况】（他们在前面章节经历了什么，本场应带着这些前提出场）\n" \
                      + "\n".join(history_lines) + "\n"
     prompt = DIRECTOR_PROMPT.format(ev_text=ev_text, cards=card_block,
-                                    history_block=hist_block)
+                                    history_block=hist_block,
+                                    worldview_block=worldview_block(ws, project_id))
     try:
         res = provider.complete(
             LLMRequest(

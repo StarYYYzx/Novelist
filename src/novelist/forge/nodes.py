@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ..core.context import worldview_base_lines
 from ..core.llm import LLMMessage, LLMRequest
 from ..core.normalize import dedup_keep_order, normalize_glossary, regroup_factions
 from ..storage.workspace import Workspace
@@ -367,7 +368,11 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     except Exception:  # noqa: BLE001 - 到期项读取失败降级为无强制项
         threads_due_section = ""
     pace_section = _pace_section(meta)
-    user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。
+    # S-3（2026-09-15 拍板）：卷纲决定"这一段要发生什么"，在不知道境界体系与铁律的
+    # 情况下排事件，后续只能靠细纲层兜——与细纲层同一份基座，纯增量。
+    wv_block = _worldview_block(
+        bp, constraint="本卷排事件时，修为表现、资源、社会常识不得违背境界体系与铁律")
+    user = f"""你是卷大纲师。为第 {vol} 卷写出主线（全书 {scale.get('volumes', '?')} 卷 × {scale.get('chapters_per_volume', '?')} 章）。{wv_block}
 
 【本卷规划（book 产物）】{plan_block}
 
@@ -562,24 +567,11 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     # 批次 2（2026-09-12 结构化审计 P1-1）：细纲层原先**不含任何世界观基座**——
     # 决定"本章发生什么"的节点看不到境界体系与铁律，只有角色卡带出的 power.level
     # 一条间接证据。后果实证：fame5 细纲写"炼气三层废柴"、正文（system prompt 有
-    # 完整境界体系）写"九层压线"，两层对不上。数据源与 `_sibling_block` 同源（bp.worldview），
-    # 纯增量注入、不改任何规则。
-    _wv = bp.get("worldview") or {}
-    _wv_lines: list[str] = []
-    if _wv.get("name"):
-        _wv_lines.append(f"- 世界：{_wv['name']}")
-    if _wv.get("summary"):
-        _wv_lines.append(f"- 概要：{_wv['summary']}")
-    _levels = _dict_of(_wv.get("power_system")).get("levels") or []
-    if _levels:
-        _wv_lines.append("- 境界体系（角色的 power.level 必须出自此表，不得自造、不得错序）："
-                         + "、".join(str(x) for x in _levels))
-    for _r in (_wv.get("rules") or [])[:6]:
-        _wv_lines.append(f"- 铁律：{_r}")
-    wv_block = ""
-    if _wv_lines:
-        wv_block = ("\n\n【世界观基座】（境界与规则是硬约束：事件的修为表现、资源、"
-                    "社会常识都必须与它一致）\n" + "\n".join(_wv_lines))
+    # 完整境界体系）写"九层压线"，两层对不上。
+    # S-3（2026-09-15 拍板）：块内容升级为共享 `_worldview_block`——细纲层在原
+    # 境界/铁律之外补术语表与禁用词（文风节点可能在本节点之后才跑，缺则省略）。
+    wv_block = _worldview_block(
+        bp, constraint="境界与规则是硬约束：事件的修为表现、资源、社会常识都必须与它一致")
     user = f"""你是细纲师。写第 {vol} 卷第 {ch} 章的章节细纲（全书 {scale.get('chapters_per_volume', '?')} 章/卷）。{wv_block}
 
 【本卷主线】{vol_block}
@@ -765,7 +757,11 @@ def _character_prompt(ctx: NodeContext) -> tuple[str, str]:
     cid = str(child.get("id") or "")
     card = ctx.bp.find_by_id("characters", cid) if cid else None
     block = json.dumps(card, ensure_ascii=False, indent=2) if card else json.dumps(child, ensure_ascii=False, indent=2)
-    user = f"""你是人物卡撰写者。把下面的角色骨架细化为完整人物卡（做深化，不改 id/name/role）。
+    # S-3（2026-09-15 拍板）：人物卡的 power.level 是全场战力的锚点，写作节点必须
+    # 看得到境界体系表，否则自造境界/错序只能靠下游审校兜（报错点在最后）。
+    wv_block = _worldview_block(
+        ctx.bp, constraint="人物卡的 power.level 必须出自境界体系表，不得自造境界、不得错序")
+    user = f"""你是人物卡撰写者。把下面的角色骨架细化为完整人物卡（做深化，不改 id/name/role）。{wv_block}
 
 【现有骨架】
 {block}
@@ -818,6 +814,32 @@ def _craft_block(st: dict) -> str:
         "及其相关提示音/机械音色，属于题材核心要素，**不得写入 forbidden_words**；"
         "若嫌俗套，应规范其呈现频次与格式，而不是禁用。"
     )
+
+
+def _worldview_block(bp: Blueprint, *, constraint: str) -> str:
+    """S-3（2026-09-15 拍板）：卷纲/细纲/人物卡节点统一注入的世界观块。
+
+    批次 2 只给细纲层补了境界/铁律；但**卷纲排事件**不知铁律、**人物卡写
+    power.level** 不知境界表，都只能靠细纲层兜。这里把块做成按需注入的共享件
+    （与 `_craft_block` 同一哲学）：行来自 `core.context.worldview_base_lines`
+    （与导演层同一数据源同一措辞），并补术语表与禁用词（来自 bp.style，文风
+    节点未跑时缺省省略）。无任何内容时返回空串——纯增量，不产生空标题。
+    `constraint`：随节点角色定制的一句硬约束说明。
+    """
+    lines = worldview_base_lines(bp.get("worldview") or {})
+    st = bp.get("style") or {}
+    glossary = [g for g in (st.get("glossary") or [])
+                if isinstance(g, dict) and str(g.get("term") or "").strip()]
+    if glossary:
+        lines.append("- 术语表（写法以此为准，不得同义异写）："
+                     + "、".join(str(g["term"]) + (f"（{g['note']}）" if g.get("note") else "")
+                                 for g in glossary[:12]))
+    banned = [str(x).strip() for x in (st.get("forbidden_words") or []) if str(x).strip()]
+    if banned:
+        lines.append("- 禁用词（任何产出不得使用）：" + "、".join(banned[:20]))
+    if not lines:
+        return ""
+    return f"\n\n【世界观基座】（{constraint}）\n" + "\n".join(lines)
 
 
 def _thread_set_prompt(ctx: NodeContext) -> tuple[str, str]:

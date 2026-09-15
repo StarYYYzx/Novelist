@@ -295,9 +295,9 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 
 | 指标 | 2026-09-01 | 2026-09-15（实测） | 目标 |
 | --- | --- | --- | --- |
-| src 规模 | 8047 行 | **30198 行 / 90 文件** | 单文件 ≤500 |
+| src 规模 | 8047 行 | **30359 行 / 90 文件** | 单文件 ≤500 |
 | 最大文件 | orchestrator 1280 | **orchestrator 2688**（nodes 2211 / cli 1901 / engine 1389） | 单文件 ≤500 |
-| 函数总数 | 376 | **1171** | — |
+| 函数总数 | 376 | **1175** | — |
 | >50 行函数 | 16 | **85** | 新代码不新增 |
 | >100 行函数 | 2 | **20** | >100 行归零 |
 | 最大函数 | — | **`orchestrator._produce_chapter_impl` 1132 行 / 51 参数**（P0-1；2026-09-15 已拆出薄包装 `produce_chapter`，impl 本体仍待拆） | 拆成 5 段 |
@@ -305,12 +305,12 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | docstring 缺失 | 211/376（56%） | **537/1171（46%）**；公共 API（623 个）缺 254 | 公共 API 归零 |
 | 裸 except / TODO / FIXME | 0 / 0 / 0 | **0 / 0 / 0** ✅ | 保持 0 |
 | `except Exception` 带 noqa | 未测 | **169/173（97.7%）**（R7.3） | 保持 ≥95% |
-| `ws._abs` 外部调用 | 21 文件 42 处 | **47 文件 175 处**（`ws.path(` = 0） | 归零（迁移 `ws.path`） |
+| `ws._abs` 外部调用 | 21 文件 42 处 | **47 文件 176 处**（`ws.path(` = 0） | 归零（迁移 `ws.path`） |
 | ruff 告警 | 未测 | **0**（2026-09-12 本批从 125 清零：F401 87 / F841 24 / F541 6 / E741 4 / E402 2 / F811 1 / E731 1） | 保持 0 |
 | 死代码 | providers REGISTRY、base.py | **已清** ✅（REGISTRY 已投用、`providers/base.py` 已删）；`core/scene_tools.py` 保留（文档记为待接入预留件） | 归零 |
 | 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
 | `[tool.ruff]` / `[tool.mypy]` | 无 | **`[tool.ruff]` 已落（锁定现状，0 告警）；`[tool.mypy]` 仍无**（P2-9 部分完成，ADR-034） | 落地 |
-| 测试 | 22 文件 4128 行 220 用例，无 conftest | **91 文件 18321 行；1054 收集**（1052 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
+| 测试 | 22 文件 4128 行 220 用例，无 conftest | **92 文件 18525 行；1067 收集**（1065 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
 | schemas / docs | — | **24 个 schema；docs 23 文件 8418 行** | — |
 | 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
 | 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |

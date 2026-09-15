@@ -73,6 +73,30 @@ def _read_json(ws, project_id: str, rel: str, default=None):
         return default
 
 
+def worldview_base_lines(wv: dict) -> list[str]:
+    """【世界观基座】的通用行——批次 2 细纲层、S-2 导演层、S-3 forge 卷纲/人物层
+    共用**同一数据源与同一措辞**（重复渲染同一事实属有效冗余，措辞分叉才是病）。
+
+    `wv`：bible/worldview.json（运行期）或 bp.worldview（forge 期）。纯函数，无 IO。
+    空世界观返回空列表（调用方据此整体省略，不得产出空标题）。
+    """
+    if not isinstance(wv, dict):
+        return []
+    lines: list[str] = []
+    if wv.get("name"):
+        lines.append(f"- 世界：{wv['name']}")
+    if wv.get("summary"):
+        lines.append(f"- 概要：{wv['summary']}")
+    ps = wv.get("power_system")
+    levels = ps.get("levels") or [] if isinstance(ps, dict) else []
+    if levels:
+        lines.append("- 境界体系（角色的 power.level 必须出自此表，不得自造、不得错序）："
+                     + "、".join(str(x) for x in levels))
+    for r in (wv.get("rules") or [])[:6]:
+        lines.append(f"- 铁律：{r}")
+    return lines
+
+
 def load_bible(ws, project_id: str) -> dict:
     """装载设定圣经全部文件（缺失的给空值，初始化期允许不全）。"""
     return {

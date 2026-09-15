@@ -45,12 +45,57 @@ class StorageConfig:
     workspace_root: str | None = None
 
 
+# U7（2026-09-15 拍板）：chapter 管线的项目级默认值（config.toml `[generation]` 段）。
+# 全字段默认 None = 未配置 —— **显式 CLI flag > 配置 > 出厂默认**（resolve_opt），
+# 无配置文件时行为与历史版本逐字节一致（不改任何默认值）。
+# 仅收管线开关与预算；provider/api-key/policy 这类"每次调用都可能不同"的参数
+# 不进配置，保持 CLI 专属。
+GENERATION_KEYS = (
+    "gen_tokens", "content_tokens", "max_events", "min_event_words",
+    "inject_bible", "polish", "event_loop", "screenplay", "readback",
+    "event_polish", "supplement_settings", "jit_characters",
+    "seam_review", "volume_facts",
+    "agentic_chronicle", "agentic_review",
+    "agentic_chronicle_rounds", "agentic_review_rounds",
+)
+
+
+@dataclass
+class GenerationConfig:
+    gen_tokens: int | None = None
+    content_tokens: int | None = None
+    max_events: int | None = None
+    min_event_words: int | None = None
+    inject_bible: bool | None = None
+    polish: bool | None = None
+    event_loop: bool | None = None
+    screenplay: bool | None = None
+    readback: bool | None = None
+    event_polish: bool | None = None
+    supplement_settings: bool | None = None
+    jit_characters: bool | None = None
+    seam_review: bool | None = None
+    volume_facts: bool | None = None
+    agentic_chronicle: bool | None = None
+    agentic_review: bool | None = None
+    agentic_chronicle_rounds: int | None = None
+    agentic_review_rounds: int | None = None
+
+
 @dataclass
 class Config:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
+
+
+def resolve_opt(explicit, configured, default):
+    """三级优先级解析（U7）：显式 CLI 值 > 配置文件值 > 出厂默认。"""
+    if explicit is not None:
+        return explicit
+    return configured if configured is not None else default
 
 
 def load_config(path: str | None = None) -> Config:
@@ -69,6 +114,12 @@ def load_config(path: str | None = None) -> Config:
     s = raw.get("security", {})
     b = raw.get("budget", {})
     st = raw.get("storage", {})
+    g = raw.get("generation", {})
+    unknown = sorted(set(g) - set(GENERATION_KEYS)) if isinstance(g, dict) else []
+    if unknown:
+        # 拼错键静默失效比报错更糟（"配置了 polish 却不生效"会浪费一次真机生成）
+        raise NovelistError(f"config [generation] 存在未知键：{', '.join(unknown)}"
+                            f"（合法键：{', '.join(GENERATION_KEYS)}）")
     return Config(
         provider=ProviderConfig(
             primary=p.get("primary", "openai"),
@@ -94,4 +145,5 @@ def load_config(path: str | None = None) -> Config:
             use_indexdb=st.get("use_indexdb", True),
             workspace_root=st.get("workspace_root"),
         ),
+        generation=GenerationConfig(**{k: g[k] for k in GENERATION_KEYS if k in g}),
     )
