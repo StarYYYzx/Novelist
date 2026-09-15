@@ -65,15 +65,17 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   016 文件=持久事实源（SQLite/RAG 仅可再生缓存） | 017/018 Forge 递归硬边界（depth4/width4/calls80/retry1） |
   019 worldstate | 021 事件级选角。
 - `SceneBus` 用**不可重入** `threading.Lock`——持锁时不得再进加锁方法（超时分支就在锁内直接标记 deny）。
-- **`chapter` 默认 `mode="tool"`（不是 direct！）**——文档说"默认 direct"是错的（`cli.py:369` →
-  `orchestrator.py:1760`）。tool 模式下**草稿从不落盘**却返回 `ok=True` + 不存在的 `chapter_path`，
-  还会写 1 条空章事件。**真机跑正文一律显式加 `--direct`**。详见
-  `docs/Agent层审计与修复方案-2026-09-15.md`（AG-1）。
-- **工具循环目前是空转**：`AgentRunner._decide` 不传 `tools=`、`list_defs()` 全库零调用、
-  `LLMMessage` 无 `tool_calls`/`tool_call_id`/`role="tool"` → 真机永不产生工具调用（ADR-032
-  证据环 F1/F2 同样空转）。**测试绿靠的是 fake 脚本 provider，不代表真机可用**（AG-2/AG-3）。
-- **门禁对拼错的策略值 fail-open**（`alow` 当放行）；策略文件缺 `[profile.supervised]` 时
-  `PermissionGate.check` 会 KeyError 崩掉所有工具调用（AG-6/AG-7）。
+- **`chapter` 默认已是直出**（2026-09-15 起，`--direct/--loop` 默认 True；`produce_chapter`
+  签名默认 `prefer_direct=True`）。`--loop` 是显式实验开关，走 Agent 工具循环。
+  **工具模式有草稿存在性断言**：拿不到 `write_draft` 落盘就 `ok=False`，不再"ok=True + 不存在的
+  `chapter_path`"（那曾是 2026-09-05 缺陷 DA 的未修主体）。
+- **工具调用已真正接线**（AG-2/AG-3）：`_decide` 会下发 `tools`（`to_openai_schema()`，
+  不含内部 `level`）、`LLMMessage` 带 `tool_calls/tool_call_id`、工具结果以 `role="tool"` 回灌，
+  且**仅当 `provider.capabilities.tool_calling` 为真**才下发（否则自动降级直出并留痕）。
+  **注意：`--loop` 尚未在真机跑过**——验证看 `raw-calls/*.jsonl` 里有没有 `tools` 与 `tool_calls`。
+- **门禁 fail-closed**：非 `allow/ask/deny` 的取值（含拼错）一律 deny + 告警；策略文件解析期
+  即校验并抛错。策略缺失时回退链 = 请求 profile → `supervised` → 内置兜底档（不再 KeyError）。
+  `delete_file` 默认是 **`ask`**（调用时人工 y/N），白名单只允许 `drafts/`、`workspace/`。
 
 ## 4. 改动前的联动检查（漏了就是债）
 
@@ -156,9 +158,10 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
 **P2-8** structlog 未删；**P2-9** ruff 已落（`[tool.ruff]` 在 `pyproject.toml`，`select = E4/E7/E9/F`
 锁定当前零告警状态），**提标（I/B/UP/SIM）与 mypy 故意留作独立批次**。
 另有：抽公共 `read_json`（6 份副本）与 LLM JSON 宽容解析（7 份副本）——可回收约 180–250 行。
-**prompt 侧只剩 3-E（需拍板、会改产物）**：润色层术语硬约束 / director 补世界观基座 /
-forge 大纲+人物节点补世界观块；以及能力扩展 S-4 章级审校→修订、F3.5/F10 角色试演、F13 围读会、
-NFR-10 `novelist eval`。清单见 `docs/代码与逻辑复查-2026-09-15.md` §5.7。
+**S-2/S-3（世界观基座）+ U7（`[generation]` 配置段）已落地**（`470df38`）；S-1 润色层术语硬约束
+**拍板不做**。Agent 层 AG-1…AG-24 已全修（`d05c8b9`，含 6 项拍板），清单与落地记录见
+`docs/Agent层审计与修复方案-2026-09-15.md`。**仍未做**：`--loop` 真机验收、S-4 章级审校→自动修订、
+F3.5/F10 角色试演、F13 围读会、NFR-10 `novelist eval`。
 
 ## 8. 收尾
 
