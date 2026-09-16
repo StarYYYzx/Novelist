@@ -71,6 +71,11 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   写新的 `_apply_*` 段时**不要自己 save**，也不要在事务外改 `bp`。配套：重试 prompt 会带上一轮的
   行号诊断（`ctx.retry_hint`）、JSON 解析容错（`normalize.loads_json_tolerant`）、
   连续 3 个节点失败即中止（`_FailStreak`）。
+- **结构冲突由用户裁决，不要写自动合并/自动降级**（2026-09-16 拍板 `5340e7b`）：模型给出第二条
+  主线、或归一 id 后重名的伏笔（`pt:lingxiang_jinhua` vs `pt:lingxiangjinhua`）时——**保留先出现者、
+  候选不落盘**，登记到 `forge/conflicts.py` 的队列（`workspace/forge/conflicts.json`），
+  用 `forge conflicts`（console/shell `/conflicts`、`/resolve <id> <choice>`）裁决。
+  **L0 `book` 失败即中止本轮**（`_FailAbort`），只有 L1 及以下才"回滚 + 沿用上一次可用产物"。
 - **`chapter` 默认已是直出**（2026-09-15 起，`--direct/--loop` 默认 True；`produce_chapter`
   签名默认 `prefer_direct=True`）。`--loop` 是显式实验开关，走 Agent 工具循环。
   **工具模式有草稿存在性断言**：拿不到 `write_draft` 落盘就 `ok=False`，不再"ok=True + 不存在的
