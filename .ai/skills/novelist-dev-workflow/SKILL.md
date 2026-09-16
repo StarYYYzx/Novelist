@@ -65,6 +65,12 @@ CODEBUDDY_SAFE_DELETE_ENABLED=0 CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD=100000 \
   016 文件=持久事实源（SQLite/RAG 仅可再生缓存） | 017/018 Forge 递归硬边界（depth4/width4/calls80/retry1） |
   019 worldstate | 021 事件级选角。
 - `SceneBus` 用**不可重入** `threading.Lock`——持锁时不得再进加锁方法（超时分支就在锁内直接标记 deny）。
+- **Forge 节点落库是事务，别绕过**（2026-09-16 事故 `0e67b29`）：`_run_node_impl` 用
+  `forge.state.blueprint_txn` 包住 `_APPLY[kind]` —— apply 内任一步抛错（含"主线唯一"这类硬校验）
+  **整体回滚**；以前是"先写蓝图、后校验"，失败仍 `bp.save()`+`sync_bible()`，脏数据直接进 bible。
+  写新的 `_apply_*` 段时**不要自己 save**，也不要在事务外改 `bp`。配套：重试 prompt 会带上一轮的
+  行号诊断（`ctx.retry_hint`）、JSON 解析容错（`normalize.loads_json_tolerant`）、
+  连续 3 个节点失败即中止（`_FailStreak`）。
 - **`chapter` 默认已是直出**（2026-09-15 起，`--direct/--loop` 默认 True；`produce_chapter`
   签名默认 `prefer_direct=True`）。`--loop` 是显式实验开关，走 Agent 工具循环。
   **工具模式有草稿存在性断言**：拿不到 `write_draft` 落盘就 `ok=False`，不再"ok=True + 不存在的
