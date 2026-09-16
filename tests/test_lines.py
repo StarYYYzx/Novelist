@@ -14,8 +14,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from novelist.core import lines as L
 from novelist.storage.workspace import Workspace
 
@@ -248,22 +246,41 @@ def _blank_bp():
     return Blueprint.blank(meta)
 
 
-def test_apply_lines_skeleton_main_unique_hard_gate(tmp_path):
-    from novelist.forge.nodes import _apply_lines_skeleton
+def test_apply_lines_skeleton_main_conflict_suspended(tmp_path):
+    """主线唯一不再是"抛错整节点作废"，而是**挂起交人工裁决**（2026-09-16 拍板）。
 
+    旧行为：第二条 main 直接 `raise ValueError` → 引擎重试 → 仍失败则整个 book 节点作废
+    （真机事故里世界观+人物+伏笔+文风一起丢）。现行为：保留先出现者，候选进
+    `workspace/forge/conflicts.json` 等 `/resolve` 裁决。
+    """
+    from novelist.forge.conflicts import open_conflicts
+    from novelist.forge.nodes import NodeContext, _apply_lines_skeleton
+
+    ws = _ws(tmp_path)
     bp = _blank_bp()
-    _apply_lines_skeleton(bp, [
+    pid = "proj-ln"
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, provider=None, pack={})
+
+    _apply_lines_skeleton(ctx, [
         {"id": "ln:m", "desc": "主线", "kind": "main", "target": {"vol": 1, "note": "n"}},
         {"id": "ln:s", "desc": "支线", "kind": "subplot"}])
     assert bp.find_by_id("lines", "ln:m") is not None
     assert bp.find_by_id("lines", "ln:s")["status"] == "dormant"
-    with pytest.raises(ValueError, match="主线不唯一"):
-        _apply_lines_skeleton(bp, [
-            {"id": "ln:m2", "desc": "第二条主线", "kind": "main",
-             "target": {"vol": 1, "note": "n"}}])
+
+    warns = _apply_lines_skeleton(ctx, [
+        {"id": "ln:m2", "desc": "第二条主线", "kind": "main",
+         "target": {"vol": 1, "note": "n"}}])
+    # 候选不落盘、主线仍唯一、冲突已挂起且 warn 给出裁决命令
+    assert bp.find_by_id("lines", "ln:m2") is None
+    assert [x["id"] for x in bp.section("lines") if x["kind"] == "main"] == ["ln:m"]
+    items = open_conflicts(ws, pid, kind="lines")
+    assert len(items) == 1 and items[0]["payload"]["candidate"]["id"] == "ln:m2"
+    assert any("已挂起待人工裁决" in w for w in warns)
+
     # main 缺 target → 占位 + 告警
     bp2 = _blank_bp()
-    warns2 = _apply_lines_skeleton(bp2, [{"id": "ln:m", "desc": "主线", "kind": "main"}])
+    ctx2 = NodeContext(ws=ws, project_id=pid, bp=bp2, provider=None, pack={})
+    warns2 = _apply_lines_skeleton(ctx2, [{"id": "ln:m", "desc": "主线", "kind": "main"}])
     assert bp2.find_by_id("lines", "ln:m")["target"]["vol"] == 2
     assert any("target" in w for w in warns2)
 

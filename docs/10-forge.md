@@ -717,6 +717,8 @@ src/novelist/forge/
 | 失败 | 处置 |
 | --- | --- |
 | LLM JSON 解析失败 | 先**容错解析**（`normalize.loads_json_tolerant`：尾逗号、结构位全角标点）；仍失败则重试 1 次，**重试 prompt 带上上一轮的「第 N 行 + 代码摘录」诊断**（盲发重试等于赌运气）；再失败 → 回滚该节点改动、沿用上一次可用产物并记 warn；**连续 3 个节点失败 → 中止本轮构建**并提示换 provider（`_FailStreak`，2026-09-16 才真正实现——此前该规则只写在文档里） |
+| L0 `book` 失败（根节点） | **即中止本轮**（2026-09-16 拍板）：book 是整棵树的根，它没生成而 L1/L2 照跑，就是"新内容 + 旧骨架"的混血产物；中止时给出换 provider / 降规模 / `forge rollback` 三条出路。L1 及以下失败仍按"回滚 + 沿用上一次可用产物"继续 |
+| 结构声明冲突（第二条主线 / 归一后同名伏笔） | **挂起交用户裁决**（2026-09-16 拍板，`forge/conflicts.py`）：保留先出现者、候选**不落盘**，冲突连同完整内容落 `workspace/forge/conflicts.json`，warn 给出 `/conflicts` 与 `/resolve <id> <choice>`。裁决选项——主线：`keep-first` / `replace` / `subplot` / `merge`；伏笔：`merge` / `keep-both` / `drop-new`。**不自动改结构、也不整节点作废** |
 | 供应商审核拦截（ADR-015） | 复用既有 `ModerationBlockedError` 链路：改写措辞重试 → 仍失败则该节点标 `blocked`，报告列明，人工补 |
 | 递归到 `max_calls` | 剩余节点用模板默认值 + 父层摘要兜底填充，报告顶部标红"预算耗尽，以下条目为兜底值" |
 | 用户中途退出商讨 | 已答写入 transcript，未答按推荐值填充，`forge resume` 可继续 |

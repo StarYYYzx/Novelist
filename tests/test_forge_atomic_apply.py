@@ -1,7 +1,7 @@
-"""Forge 原子化落库 + 容错解析回归（2026-09-16 真机事故）。
+"""Forge 原子化落库 + 冲突裁决 + 容错解析回归（2026-09-16 真机事故）。
 
 事故现场（`novel_workspace/proj-20260914233722`，用户 23:59 的 `/build`）：
-`L0 book` 两次重试都因"主线不唯一（2 条）"失败，warn 只写了一句「回退父层产物」，
+`L0 book` 两次重试都因「主线不唯一（2 条）」失败，warn 只写了一句「回退父层产物」，
 但**实际没有回退**——`_apply_threads` / `_apply_lines_skeleton` 在硬校验之前就已经
 把产物 upsert 进蓝图，引擎随后照样 `bp.save()` + `sync_bible()`，于是 bible 里出现：
 
@@ -9,7 +9,9 @@
 - `threads` 7 → 18 条（含 `pt:lingxiang_jinhua` 与 `pt:lingxiangjinhua` 归一后同名）
 - `characters` 7 → 18 条（`char:linfeng` 与 `char:protagonist` 都叫林枫）
 
-这违反 docs/10「未通过校验的中间态不写入 bible/outline」。本文件守住修复后的行为。
+违反 docs/10「未通过校验的中间态不写入 bible/outline」。用户拍板：
+① 结构冲突（第二条主线 / 近重复伏笔）**由用户裁决**——不自动改结构、也不整节点作废；
+② L0 `book` 失败**即中止**本轮构建。本文件守住这两条 + 事务化落库。
 """
 
 from __future__ import annotations
@@ -24,10 +26,9 @@ from novelist.core.normalize import (
     strip_trailing_commas,
 )
 from novelist.forge.engine import build
-from novelist.forge.nodes import NodeContext, _parse_node_reply, run_node
-from novelist.forge.seed import _init_blueprint
 from novelist.forge.genres import load_pack_for
-from novelist.forge.seed import _parse_seed_spec
+from novelist.forge.nodes import NodeContext, _parse_node_reply, run_node, sync_bible
+from novelist.forge.seed import _init_blueprint, _parse_seed_spec
 from novelist.forge.state import Blueprint, blueprint_txn
 from novelist.storage.workspace import Workspace
 
@@ -79,6 +80,7 @@ def _bp_with_one_main(ws: Workspace, pid: str, threads: int = 1) -> Blueprint:
         bp.upsert("threads", {"id": f"pt:old{i}", "desc": f"既有伏笔{i}",
                               "scope": "book", "status": "unplanned"})
     bp.save(ws, pid)
+    sync_bible(ws, pid, bp)
     return bp
 
 
@@ -107,27 +109,22 @@ def test_tolerant_json_repairs_trailing_comma_and_fullwidth():
     assert loads_json_tolerant('{"a": 1，"b": 2}') == {"a": 1, "b": 2}
     assert loads_json_tolerant('{“a”: 1}') == {"a": 1}
     # 字符串**内**的全角标点必须原样保留
-    out = loads_json_tolerant('{"a": "中文，标点：保留"}')
-    assert out == {"a": "中文，标点：保留"}
+    assert loads_json_tolerant('{"a": "中文，标点：保留"}') == {"a": "中文，标点：保留"}
 
 
 def test_tolerant_json_helpers_are_independent():
     assert strip_trailing_commas('{"a": [1,],}') == '{"a": [1]}'
     assert fix_structural_punctuation('[1，2]') == "[1,2]"
-    # 字符串内的全角不动
     assert fix_structural_punctuation('["中文，内容"]') == '["中文，内容"]'
 
 
 def test_json_diagnostic_carries_line_and_excerpt():
     bad = '{\n  "a": 1\n  "b": 2\n}'
-    try:
+    with pytest.raises(ValueError) as ei:
         loads_json_tolerant(bad)
-    except ValueError as e:
-        msg = str(e)
-    else:  # pragma: no cover - 该输入必然失败
-        raise AssertionError("应当解析失败")
+    msg = str(ei.value)
     assert "第 3 行" in msg
-    assert '"b": 2' in msg  # 摘录里带上了出错的那一行
+    assert '"b": 2' in msg
 
 
 def test_parse_node_reply_reports_diagnostic():
@@ -153,60 +150,143 @@ def test_blueprint_txn_rolls_back_on_error():
     assert json.dumps(bp.data, ensure_ascii=False) == before
 
 
-# ---------------------------------------------------------------- 节点级：失败不留痕
+# ---------------------------------------------------------------- 主线冲突：挂起裁决
 
-def test_book_apply_two_mains_raises_and_leaves_blueprint_clean(tmp_path):
-    """复刻事故：模型给出两条主线 → 硬校验抛错，但蓝图必须**一字未改**。"""
+def test_book_two_mains_suspends_conflict_instead_of_failing(tmp_path):
+    """第二条主线**不抛错、不写入**，而是挂起等人工裁决（此前会整节点作废）。"""
+    from novelist.forge.conflicts import open_conflicts
+
     ws = Workspace(root=str(tmp_path))
     pid = "p"
     ws.create_project(pid)
     bp = _bp_with_one_main(ws, pid, threads=2)
-    lines_before = json.dumps(bp.section("lines"), ensure_ascii=False)
-    threads_before = json.dumps(bp.section("threads"), ensure_ascii=False)
-
-    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, provider=None, pack={})
-    ctx.provider = _CaptureFixed([_node_reply(_two_mains_artifact())])
-    with pytest.raises(ValueError) as ei:
-        run_node(ctx, "book")
-    assert "主线不唯一" in str(ei.value)
-
-    assert json.dumps(bp.section("lines"), ensure_ascii=False) == lines_before, "失败尝试的主线不得留在蓝图"
-    assert json.dumps(bp.section("threads"), ensure_ascii=False) == threads_before, "失败尝试的伏笔不得留在蓝图"
-    assert [x["id"] for x in bp.section("lines") if x.get("kind") == "main"] == ["ln:main"]
-
-
-def test_build_does_not_persist_failed_node_partial_writes(tmp_path):
-    """构建级：book 失败后，蓝图与 bible 的主线/伏笔必须与失败前完全一致。"""
-    ws = Workspace(root=str(tmp_path))
-    pid = "p"
-    ws.create_project(pid)
-    bp = _bp_with_one_main(ws, pid, threads=2)
-    lines_before = json.dumps(bp.section("lines"), ensure_ascii=False, sort_keys=True)
     threads_before = json.dumps(bp.section("threads"), ensure_ascii=False, sort_keys=True)
+
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                      provider=_CaptureFixed([_node_reply(_two_mains_artifact())]))
+    warns = run_node(ctx, "book").warnings
+
+    assert [x["id"] for x in bp.section("lines") if x.get("kind") == "main"] == ["ln:main"]
+    assert all(x["id"] != "ln:main_yinguo" for x in bp.section("lines"))
+    assert json.dumps(bp.section("threads"), ensure_ascii=False,
+                      sort_keys=True) != threads_before  # 新伏笔正常新增
+    items = open_conflicts(ws, pid, kind="lines")
+    assert len(items) == 1
+    assert items[0]["payload"]["candidate"]["id"] == "ln:main_yinguo"
+    joined = " ".join(warns)
+    assert "已挂起待人工裁决" in joined
+    assert "/resolve cf:lines:1" in joined
+
+
+def test_resolve_main_conflict_variants(tmp_path):
+    """四类裁决都要生效，且裁决后 bible 主线仍唯一。"""
+    from novelist.forge.conflicts import open_conflicts, resolve_conflict
+
+    def _kinds(bp):
+        return {x["id"]: x.get("kind") for x in bp.section("lines")}
+
+    for choice in ("subplot", "replace", "merge", "keep-first"):
+        ws = Workspace(root=str(tmp_path / choice))
+        pid = "p"
+        ws.create_project(pid)
+        bp = _bp_with_one_main(ws, pid)
+        ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                          provider=_CaptureFixed([_node_reply(_two_mains_artifact())]))
+        run_node(ctx, "book")
+        cid = open_conflicts(ws, pid, kind="lines")[0]["id"]
+        assert resolve_conflict(ws, pid, cid, choice)
+        after = Blueprint.load(ws, pid)
+        if choice == "subplot":
+            assert _kinds(after).get("ln:main_yinguo") == "subplot"
+        elif choice == "replace":
+            assert [x["id"] for x in after.section("lines")
+                    if x["kind"] == "main"] == ["ln:main_yinguo"]
+        elif choice == "merge":
+            main = after.find_by_id("lines", "ln:main")
+            assert "苏沐" in str(main.get("desc"))
+            assert "ln:main_yinguo" not in _kinds(after)
+        else:  # keep-first
+            assert [x["id"] for x in after.section("lines")
+                    if x["kind"] == "main"] == ["ln:main"]
+            assert "ln:main_yinguo" not in _kinds(after)
+        assert not open_conflicts(ws, pid, kind="lines")
+        bible_lines = json.loads(ws.bible_path(pid, "lines").read_text(encoding="utf-8"))
+        assert len([x for x in bible_lines if x.get("kind") == "main"]) == 1, choice
+
+
+def test_thread_near_duplicate_suspended_and_resolvable(tmp_path):
+    """归一后同名的伏笔同样挂起裁决（事故里 threads 7→18 的一半原因）。"""
+    from novelist.forge.conflicts import open_conflicts, resolve_conflict
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    bp = _bp_with_one_main(ws, pid)
+    bp.upsert("threads", {"id": "pt:lingxiang_jinhua", "desc": "苏沐灵相吞噬进化的极限",
+                          "scope": "book", "status": "unplanned"})
+    art = {"threads": [{"id": "pt:lingxiangjinhua", "desc": "苏晓灵相为何能不断进化",
+                        "scope": "book"}]}
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                      provider=_CaptureFixed([_node_reply(art)]))
+    warns = run_node(ctx, "thread_set").warnings
+
+    assert bp.find_by_id("threads", "pt:lingxiangjinhua") is None, "近重复候选不得直接落盘"
+    items = open_conflicts(ws, pid, kind="threads")
+    assert len(items) == 1 and "归一后同名" in items[0]["summary"]
+    assert "已挂起待人工裁决" in " ".join(warns)
+
+    resolve_conflict(ws, pid, items[0]["id"], "merge")
+    kept = Blueprint.load(ws, pid).find_by_id("threads", "pt:lingxiang_jinhua")
+    assert "另一说法" in kept["desc"] and "苏晓" in kept["desc"]
+    assert not open_conflicts(ws, pid, kind="threads")
+
+
+def test_resolve_keep_both_renames_candidate(tmp_path):
+    from novelist.forge.conflicts import open_conflicts, resolve_conflict
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    bp = _bp_with_one_main(ws, pid)
+    bp.upsert("threads", {"id": "pt:lingxiang_jinhua", "desc": "灵相进化极限",
+                          "scope": "book", "status": "unplanned"})
+    art = {"threads": [{"id": "pt:lingxiangjinhua", "desc": "灵相为何能进化",
+                        "scope": "book"}]}
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                      provider=_CaptureFixed([_node_reply(art)]))
+    run_node(ctx, "thread_set")
+    cid = open_conflicts(ws, pid, kind="threads")[0]["id"]
+    resolve_conflict(ws, pid, cid, "keep-both")
+    ids = [x["id"] for x in Blueprint.load(ws, pid).section("threads")]
+    assert "pt:lingxiang_jinhua" in ids and "pt:lingxiangjinhua_b" in ids
+
+
+# ---------------------------------------------------------------- 构建级：不污染 + 中止
+
+def test_build_does_not_persist_conflicting_writes(tmp_path):
+    """构建级：bible 只保留一条主线，冲突挂起，且**不算节点失败**。"""
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    bp = _bp_with_one_main(ws, pid, threads=2)
+    existing_thread_ids = [x["id"] for x in bp.section("threads")]
 
     r = build(ws, pid, provider=_CaptureFixed([_node_reply(_two_mains_artifact())]),
               gate=False, deepen=False, max_calls=40)
 
-    after = Blueprint.load(ws, pid)
-    assert json.dumps(after.section("lines"), ensure_ascii=False,
-                      sort_keys=True) == lines_before, "失败尝试的主线不得落进蓝图"
-    assert json.dumps(after.section("threads"), ensure_ascii=False,
-                      sort_keys=True) == threads_before, "失败尝试的伏笔不得落进蓝图"
-    # bible 导出与蓝图一致，且主线唯一
     bible_lines = json.loads(ws.bible_path(pid, "lines").read_text(encoding="utf-8"))
     assert [x["id"] for x in bible_lines if x.get("kind") == "main"] == ["ln:main"]
-    assert len(bible_lines) == 1
-    bible_threads = json.loads(ws.bible_path(pid, "plot_threads").read_text(encoding="utf-8"))
-    assert len(bible_threads) == 2
-    assert r.nodes_failed >= 1
-    # 文案必须说真话：不再宣称"回退父层产物"，而是"已回滚"
+    assert len(bible_lines) == 1, "冲突候选不得被写进 bible"
+    assert r.nodes_failed == 0, "主线冲突不再算节点失败（改为挂起裁决）"
     joined = " ".join(r.warnings)
-    assert "已回滚该节点的改动" in joined
-    assert "回退父层产物" not in joined
+    assert "已挂起待人工裁决" in joined
+    assert "回退父层产物" not in joined          # 不再宣称不存在的"回退"
+    after_ids = [x["id"] for x in Blueprint.load(ws, pid).section("threads")]
+    assert all(tid in after_ids for tid in existing_thread_ids)
 
 
-def test_build_aborts_after_consecutive_failures(tmp_path):
-    """docs/10 §12：连续 3 个节点解析失败 → 中止并提示换 provider（此前完全没实现）。"""
+def test_build_aborts_when_l0_book_fails(tmp_path):
+    """拍板 2：L0 book 失败即中止（不再产出「新内容 + 旧骨架」的混血产物）。"""
     ws = Workspace(root=str(tmp_path))
     pid = "p"
     ws.create_project(pid)
@@ -215,8 +295,31 @@ def test_build_aborts_after_consecutive_failures(tmp_path):
     r = build(ws, pid, provider=_CaptureFixed(["这不是 JSON"]),
               gate=False, deepen=False, max_calls=40)
 
-    assert r.interrupted is True
-    assert r.ok is False
+    assert r.ok is False and r.interrupted is True
+    assert any("L0 book 未生成" in w for w in r.warnings), r.warnings
+    assert r.calls_used <= 2, "L1/L2 一个都不该跑"
+
+
+def test_build_aborts_after_consecutive_failures(tmp_path):
+    """docs/10 §12：连续 3 个节点失败 → 中止并提示换 provider（此前完全没实现）。"""
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    _bp_with_one_main(ws, pid)
+    good_book = _node_reply({
+        "worldview": {"name": "蓝星", "power_system": {"levels": ["凡"]}, "rules": ["灵气稀薄"]},
+        "characters": [{"id": "char:linfeng", "name": "林枫", "gender": "male",
+                        "role": "protagonist", "core_traits": ["淡然"], "background": "仙帝",
+                        "power": {"level": "仙帝"}, "arc": "还因果",
+                        "first_appear": {"vol": 1, "ch": 1}}],
+        "threads": [{"id": "pt:yinguo", "desc": "因果是谁", "scope": "book"}],
+        "lines": [_main("ln:main", "林枫为还因果培养苏晓")],
+        "style": {"tense": "过去", "narration": "第三人称限知"},
+    })
+    r = build(ws, pid, provider=_CaptureFixed([good_book, "这不是 JSON"]),
+              gate=False, deepen=True, max_calls=40)
+
+    assert r.interrupted is True and r.ok is False
     assert any("连续 3 个节点" in w for w in r.warnings), r.warnings
     assert any("已回滚" in w for w in r.warnings)
 
@@ -227,10 +330,9 @@ def test_retry_prompt_carries_previous_failure(tmp_path):
     pid = "p"
     ws.create_project(pid)
     _bp_with_one_main(ws, pid)
-    good = _node_reply(_two_mains_artifact())   # JSON 合法，但仍会触发主线硬校验
-    prov = _CaptureFixed(['{"lines": [1, 2,}', good])
+    prov = _CaptureFixed(['{"lines": [1, 2,}', _node_reply(_two_mains_artifact())])
     build(ws, pid, provider=prov, gate=False, deepen=False, max_calls=40)
     assert len(prov.prompts) >= 2, "应当发生了一次重试"
     assert "上一轮输出不可用" not in prov.prompts[0]
     assert "上一轮输出不可用" in prov.prompts[1]
-    assert "第 1 行" in prov.prompts[1]   # 诊断带行号
+    assert "第 1 行" in prov.prompts[1]

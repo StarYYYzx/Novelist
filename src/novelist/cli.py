@@ -1048,6 +1048,50 @@ def forge_show(ctx: click.Context, directory: str | None) -> None:
         click.echo(line)
 
 
+@forge.command("conflicts")
+@click.argument("directory", required=False, default=None)
+@click.option("--resolve", "resolve", nargs=2, default=None, metavar="<ID> <CHOICE>",
+              help="裁决一条待决冲突：choices 见列表输出（无 LLM）")
+@click.pass_context
+def forge_conflicts(ctx: click.Context, directory: str | None,
+                    resolve: tuple[str, str] | None) -> None:
+    """冲突裁决（2026-09-16 拍板：结构冲突由用户决定，不自动改结构）。
+
+    构建期模型会给出互相冲突的结构声明——最典型的是**第二条主线**
+    （同一条主线被两次生成各写一遍）与**归一后同名的伏笔**
+    （`pt:lingxiang_jinhua` vs `pt:lingxiangjinhua`）。系统保留先出现的那条，
+    冲突候选连同完整内容挂起在此，等你裁决：
+
+    - 主线：`keep-first`（保留现有）/ `replace`（换成候选）/ `subplot`（候选降为支线）/ `merge`（并入现有）
+    - 伏笔：`merge`（合并）/ `keep-both`（都留，候选 id 加后缀）/ `drop-new`（丢弃候选）
+
+    用法：`forge conflicts [DIR]` 列表；`forge conflicts [DIR] --resolve cf:lines:1 subplot` 裁决。
+    """
+    from novelist.forge.conflicts import open_conflicts, resolve_conflict
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    if resolve is not None:
+        cid, choice = resolve
+        try:
+            note = resolve_conflict(ws, project_id, cid, choice)
+        except ValueError as e:
+            raise click.ClickException(f"conflicts: {e}") from e
+        click.echo(f"[conflicts] {cid} → {choice}：{note}")
+        click.echo(f"（已写回蓝图 + bible；剩余待决 {len(open_conflicts(ws, project_id))} 条）")
+        return
+    items = open_conflicts(ws, project_id)
+    if not items:
+        click.echo(f"[conflicts] {project_id}：无待裁决冲突。")
+        return
+    click.echo(f"== {project_id} 待裁决冲突（{len(items)} 条）==")
+    for c in items:
+        click.echo(f"  {c['id']} [{c['kind']}] {c['summary']}")
+        click.echo(f"      可选：{' | '.join(c['options'])}    建议：{c['suggested']}")
+        click.echo(f"      裁决：forge conflicts {directory or ''} --resolve {c['id']} <choice>".rstrip())
+    click.echo("（裁决会写回蓝图 + bible；未裁决时蓝图只保留先出现的那条）")
+
+
 @forge.command("covenant")
 @click.argument("directory", required=False, default=None)
 @click.pass_context

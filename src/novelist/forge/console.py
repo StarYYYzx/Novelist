@@ -305,6 +305,18 @@ class Console:
     def cmd_resume(self, args: str) -> None:
         self._proj_run("resume")
 
+    def cmd_conflicts(self, args: str) -> None:
+        """/conflicts：列出待裁决的结构冲突（主线冲突 / 伏笔近重复）。"""
+        self._proj_run("conflicts")
+
+    def cmd_resolve(self, args: str) -> None:
+        """/resolve <id> <choice>：裁决一条冲突（选项见 /conflicts）。"""
+        parts = args.strip().split()
+        if len(parts) != 2:
+            self.io.output("[!] 用法：/resolve <冲突id> <选项>（选项见 /conflicts）")
+            return
+        self._proj_run("conflicts", ["--resolve", parts[0], parts[1]])
+
     def cmd_shell(self, args: str) -> None:
         # shell 是常驻会话，不能经 CliRunner 转录（会失去交互通道）；
         # 直接在当前进程内运行，复用 console 的 io 作为 AnswerIO。
@@ -525,6 +537,8 @@ class Console:
             "seed": self.cmd_seed,
             "build": self.cmd_build,
             "resume": self.cmd_resume,
+            "conflicts": self.cmd_conflicts,
+            "resolve": self.cmd_resolve,
             "shell": self.cmd_shell,
             "roll": self.cmd_roll,
             "roll-window": self.cmd_roll_window,
@@ -644,6 +658,8 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
   /forge-validate              契约校验（forge validate，V1–V6）
   /craft                       列题材工艺卡（无 LLM）
   /covenant                    查看承诺账本（伏笔兑付/卷主线/核心人设）
+  /conflicts                   列出待裁决结构冲突（第二条主线 / 伏笔近重复）
+  /resolve <id> <choice>        裁决一条冲突（选项见 /conflicts 输出）
   /lines-replay <卷> <章>      细纲修订转正（人工改细纲后重放线索）
 
 构建期审核（forge review 系列）：

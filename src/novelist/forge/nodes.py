@@ -1211,11 +1211,11 @@ def _apply_book(ctx: NodeContext, node: dict) -> list[str]:
                 bp.set_provenance(f"{section}[{item['id']}]", "llm", 0.8)
 
     # threads
-    _apply_threads(bp, art.get("threads") or [])
+    warns.extend(_apply_threads(ctx, art.get("threads") or []))
 
     # lines 线索骨架（ADR-025）：dormant 登记进蓝图 lines 段（sync_bible 导出 bible/lines.json）；
     # 主线唯一 = 硬校验（raise → 引擎重试），main 缺 target 自动补占位 + 告警。
-    warns.extend(_apply_lines_skeleton(bp, art.get("lines") or []))
+    warns.extend(_apply_lines_skeleton(ctx, art.get("lines") or []))
 
     # style（保护 user 字段）
     if art.get("style"):
@@ -1242,17 +1242,24 @@ def _apply_book(ctx: NodeContext, node: dict) -> list[str]:
     return warns
 
 
-def _apply_lines_skeleton(bp: Blueprint, rows: list) -> list[str]:
+def _apply_lines_skeleton(ctx: NodeContext, rows: list) -> list[str]:
     """book 产物 lines 骨架登记（ADR-025 阶段2）。
 
     蓝图 lines 段只存**应然骨架**（id/desc/kind/carrier/scope/members/target，
-    status 恒 dormant——实然由 sync_bible 合并盘上运行态）。硬校验：
-    - 主线不唯一 → ValueError（引擎重试，与事件去重闸同一模式）；
-    - main 缺 target → 自动补占位（末卷落点）+ 告警（不阻断）。
+    status 恒 dormant——实然由 sync_bible 合并盘上运行态）。
+
+    主线冲突处置（2026-09-16 用户拍板：**由用户裁决**）：
+    检测到"合并后会有第二条 main"时——保留先出现的那条，冲突候选**不写进蓝图**，
+    而是连同完整内容登记到 `forge/conflicts` 队列，warn 里给出裁决命令
+    （`/conflicts` 查看、`/resolve <id> keep-first|replace|subplot|merge`）。
+    此前的行为是抛 ValueError → 引擎重试 → 仍失败则**整个 book 节点作废**
+    （真机事故：世界观+人物+伏笔+文风一起丢，只因模型把同一条主线写了两遍）。
     """
     from ..core.lines import new_line, validate_lines
+    from .conflicts import add_conflict, open_conflicts
 
     warns: list[str] = []
+    bp = ctx.bp
     scale = bp.get("meta.scale") or {}
     skeleton: list[dict] = []
     for r in rows or []:
@@ -1278,7 +1285,28 @@ def _apply_lines_skeleton(bp: Blueprint, rows: list) -> list[str]:
             x["target"] = {"vol": int(scale.get("volumes", 1) or 1),
                            "note": "（book 节点未给远期落点，占位待人工修订）"}
             warns.append(f"{x['id']}: main 缺 target，已按末卷占位")
+
+    # ① 先定"哪条主线留"：既有账本里的 main 优先（重跑 build 不得顶掉已定的主线），
+    #    否则取模型给的第一个；其余 main 进冲突队列，**不写进蓝图**。
+    existing_mains = [x for x in (bp.section("lines") or []) if x.get("kind") == "main"]
+    kept_main_id = str(existing_mains[0].get("id")) if existing_mains else ""
+    write_rows: list[dict] = []
+    conflicts: list[tuple[dict, dict]] = []   # (existing_main, candidate)
     for row in skeleton:
+        if row["kind"] != "main":
+            write_rows.append(row)
+            continue
+        if not kept_main_id:
+            kept_main_id = row["id"]
+            write_rows.append(row)
+        elif row["id"] == kept_main_id:
+            write_rows.append(row)
+        else:
+            anchor = next((x for x in (bp.section("lines") or [])
+                           if x.get("id") == kept_main_id), {"id": kept_main_id})
+            conflicts.append((dict(anchor), dict(row)))
+
+    for row in write_rows:
         existing = bp.find_by_id("lines", row["id"])
         if existing is None:
             bp.upsert("lines", dict(row))
@@ -1289,21 +1317,48 @@ def _apply_lines_skeleton(bp: Blueprint, rows: list) -> list[str]:
                 if not bp.is_protected(f"lines[{row['id']}].{k}"):
                     merged[k] = v
             bp.upsert("lines", merged)
-    # 主线唯一硬校验作用在**合并后的账本**上（骨架 + 已有行）——重跑 build 追加
-    # 第二条主线同样要拦（引擎重试）。
+
+    # ② 冲突挂起（人工裁决后再由 `resolve_conflict` 写回）
+    for anchor, cand in conflicts:
+        item = add_conflict(
+            ctx.ws, ctx.project_id, kind="lines", node=_node_id_of("book", ctx) if ctx else "book",
+            summary=(f"第二条主线 {cand['id']} 与 {anchor.get('id')} 冲突"
+                     f"（描述：{str(cand.get('desc'))[:40]}…）"),
+            payload={"existing": anchor, "candidate": cand},
+            suggested="keep-first")
+        warns.append(
+            f"{cand['id']}: 与主线 {anchor.get('id')} 冲突 → 已挂起待人工裁决"
+            f"（/conflicts 查看；裁决：/resolve {item['id']} "
+            "keep-first|replace|subplot|merge）")
+
     merged_errs = validate_lines(bp.section("lines"))
-    hard = [e for e in merged_errs if "主线不唯一" in e]
-    if hard:
-        raise ValueError(f"{hard[0]}，拒绝落盘并重生成——主线唯一是硬约束")
-    warns.extend(e for e in merged_errs if "主线不唯一" not in e)
+    warns.extend(merged_errs)
+    if open_conflicts(ctx.ws, ctx.project_id, kind="lines"):
+        warns.append("存在待裁决的主线冲突（/conflicts）——未裁决前蓝图只保留先出现的那条主线")
     return warns
 
 
-def _apply_threads(bp: Blueprint, threads: list) -> None:
+def _apply_threads(ctx: NodeContext, threads: list) -> list[str]:
+    """伏笔登记（book / thread_set 共用）。
+
+    近重复处置（2026-09-16 用户拍板：**由用户裁决**）：模型两次生成常把同一条伏笔写成
+    `pt:lingxiang_jinhua` 与 `pt:lingxiangjinhua`（归一后同名）。此前两条都会落盘
+    （实测 threads 7→18，含同义重复、注入 prompt 时重复计数）。现在保留先出现者，
+    后来者**不落盘**而是登记冲突，等 `/resolve` 裁决（merge / keep-both / drop-new）。
+    """
+    from .conflicts import add_conflict, norm_id
+
+    warns: list[str] = []
+    bp = ctx.bp
+    # 归一 id → 已存在的 thread id（用于识别"同一条伏笔的两种写法"）
+    by_norm: dict[str, str] = {}
+    for x in (bp.section("threads") or []):
+        if isinstance(x, dict) and x.get("id"):
+            by_norm.setdefault(norm_id(x["id"]), str(x["id"]))
     for t in threads or []:
         if not isinstance(t, dict) or not t.get("id") or not t.get("desc"):
             continue
-        tid = t["id"]
+        tid = str(t["id"])
         t.setdefault("scope", "book")
         t.setdefault("status", "unplanned")
         # carrier（批2·ADR-025）：伏笔载体（object/goal/character/...）——回收后
@@ -1311,10 +1366,26 @@ def _apply_threads(bp: Blueprint, threads: list) -> None:
         if t.get("carrier") and str(t["carrier"]) not in (
                 "object", "goal", "character", "emotion", "faction", "theme"):
             t["carrier"] = "object"
+        nrm = norm_id(tid)
+        twin = by_norm.get(nrm)
+        if twin and twin != tid:
+            anchor = bp.find_by_id("threads", twin) or {"id": twin}
+            item = add_conflict(
+                ctx.ws, ctx.project_id, kind="threads",
+                node=_node_id_of("thread_set", ctx) if ctx else "thread_set",
+                summary=(f"伏笔 {tid} 与 {twin} 归一后同名（同一伏笔的两种写法）"
+                         f"：{str(t.get('desc'))[:40]}…"),
+                payload={"existing": dict(anchor), "candidate": dict(t)},
+                suggested="merge")
+            warns.append(
+                f"{tid}: 与已有伏笔 {twin} 归一后同名 → 已挂起待人工裁决"
+                f"（/conflicts 查看；裁决：/resolve {item['id']} merge|keep-both|drop-new）")
+            continue
         existing = bp.find_by_id("threads", tid)
         if existing is None:
             bp.upsert("threads", dict(t))
             bp.set_provenance(f"threads[{tid}]", "llm", 0.8)
+            by_norm.setdefault(nrm, tid)
             continue
         merged = dict(existing)
         for k, v in t.items():
@@ -1323,6 +1394,7 @@ def _apply_threads(bp: Blueprint, threads: list) -> None:
             merged[k] = v
             bp.set_provenance(f"threads[{tid}].{k}", "llm", 0.8)
         bp.upsert("threads", merged)
+    return warns
 
 
 def _load_json_list(ws: Workspace, project_id: str, rel: str) -> list:
@@ -1658,8 +1730,7 @@ def _apply_style(ctx: NodeContext, node: dict) -> list[str]:
 
 def _apply_thread_set(ctx: NodeContext, node: dict) -> list[str]:
     art = _dict_of(node["artifact"])
-    _apply_threads(ctx.bp, art.get("threads") or [])
-    return []
+    return _apply_threads(ctx, art.get("threads") or [])
 
 
 def _load_arcs(ws: Workspace, project_id: str) -> list[dict]:

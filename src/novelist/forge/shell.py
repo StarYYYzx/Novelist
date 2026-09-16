@@ -37,6 +37,8 @@ HELP_TEXT = """会话命令（一律以 / 开头）：
   /approve 模块   审核通过该模块（写入账本/设定）
   /revise 模块"建议"  按建议重生成并经审批（仍待审）
   /build          触发构建（仍缺 required 时先补齐推荐值并确认再构建）
+  /conflicts      列出待裁决结构冲突（第二条主线 / 伏笔近重复）
+  /resolve <id> <选项>  裁决一条冲突（选项与建议见 /conflicts）
   /save           手动保存蓝图
   /help           本帮助
 自由语（非 / 开头的输入）：回答本轮缺口 / 补充设想（落不到槽位会登记 extras）。
@@ -134,6 +136,12 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
                 _maybe_build(ws, project_id, bp, provider, io, state, gaps, slots,
                              max_calls, result)
                 continue
+            if key in ("conflicts",):
+                _cmd_conflicts(ws, project_id, io)
+                continue
+            if key in ("resolve",):
+                _cmd_resolve(ws, project_id, io, arg)
+                continue
             if key in ("save",):
                 bp.save(ws, project_id)
                 io.notify("[shell] 蓝图已保存。")
@@ -174,6 +182,38 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
                           answered_keys, attempts, round_no, "dispatch.fallback")
         bp.save(ws, project_id)
         result.rounds_done += 1
+
+
+def _cmd_conflicts(ws: Workspace, project_id: str, io: AnswerIO) -> None:
+    """/conflicts：列出待裁决的结构冲突（2026-09-16 拍板：由用户裁决）。"""
+    from .conflicts import open_conflicts
+
+    items = open_conflicts(ws, project_id)
+    if not items:
+        io.notify("[shell] 无待裁决冲突。")
+        return
+    io.notify(f"[shell] 待裁决冲突 {len(items)} 条：")
+    for c in items:
+        io.notify(f"  {c['id']} [{c['kind']}] {c['summary']}")
+        io.notify(f"      可选：{' | '.join(c['options'])}（建议 {c['suggested']}）")
+    io.notify("  裁决：/resolve <id> <选项>")
+
+
+def _cmd_resolve(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
+    """/resolve <id> <选项>：裁决一条冲突并写回蓝图 + bible。"""
+    from .conflicts import open_conflicts, resolve_conflict
+
+    parts = arg.split()
+    if len(parts) != 2:
+        io.notify("[shell] 用法：/resolve <冲突id> <选项>（选项见 /conflicts）")
+        return
+    try:
+        note = resolve_conflict(ws, project_id, parts[0], parts[1])
+    except ValueError as e:
+        io.notify(f"[shell] 裁决失败：{e}")
+        return
+    io.notify(f"[shell] {parts[0]} → {parts[1]}：{note}")
+    io.notify(f"  剩余待决 {len(open_conflicts(ws, project_id))} 条")
 
 
 def _notify_pending_left(ws: Workspace, project_id: str, io: AnswerIO) -> None:

@@ -416,6 +416,16 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             ctx = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
                               pack=pack, spec=spec)
             res = _call(ctx, "book", 0)
+            if res is None and not budget_exhausted:
+                # 根节点失败即中止（2026-09-16 拍板）：book 是整棵树的根，
+                # 它没生成而 L1/L2 照跑，就是"新内容 + 旧骨架"的混血产物
+                # （真机事故：volume-1/style 用新内容，lines/lines 骨架仍是旧的，
+                #  同一批产物里女主出现苏嫣然/苏晓/苏沐三种写法）。
+                raise _FailAbort(
+                    "L0 book 未生成（根节点失败）→ 已中止本轮构建：后续节点的骨架都依赖它，"
+                    "继续跑只会产出「新内容 + 旧骨架」的混血产物。"
+                    "产物改动已回滚；换 provider 或降规模后 `forge resume` 重跑，"
+                    "也可 `forge rollback` 回到本轮构建前的快照")
             _persist_node(ws, project_id, "book", res)
             bp.save(ws, project_id)
             sync_bible(ws, project_id, bp)
@@ -613,6 +623,28 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
                           budget_exhausted=budget_exhausted,
                           interrupted=interrupted, gate_halted=gate_halted,
                           warnings=warnings[:10])
+        # 待裁决结构冲突计数（2026-09-16 拍板：主线/伏笔冲突交用户裁决，不静默改结构）
+        try:
+            from .conflicts import open_conflicts
+
+            _n_cf = len(open_conflicts(ws, project_id))
+            if _n_cf:
+                log(f"[conflicts] {_n_cf} 条待裁决结构冲突（第二条主线 / 归一后同名伏笔）——"
+                    "`forge conflicts` 查看，`forge conflicts --resolve <id> <choice>` 裁决；"
+                    "未裁决时蓝图只保留先出现的那条")
+        except Exception as e:  # noqa: BLE001 - 计数失败不影响构建收尾
+            warnings.append(f"待裁决冲突计数失败：{_one_line(e)}")
+        # 待裁决结构冲突计数（2026-09-16 拍板：主线/伏笔冲突交用户裁决，不静默改结构）
+        try:
+            from .conflicts import open_conflicts
+
+            _n_cf = len(open_conflicts(ws, project_id))
+            if _n_cf:
+                log(f"[conflicts] {_n_cf} 条待裁决结构冲突（第二条主线 / 归一后同名伏笔）——"
+                    "`forge conflicts` 查看，`forge conflicts --resolve <id> <choice>` 裁决；"
+                    "未裁决时蓝图只保留先出现的那条")
+        except Exception as e:  # noqa: BLE001 - 计数失败不影响构建收尾
+            warnings.append(f"待裁决冲突计数失败：{_one_line(e)}")
         # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态
         from .snapshot import take_snapshot
 
