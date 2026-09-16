@@ -79,6 +79,9 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
     round_no = 0
 
     io.notify(_banner(state, detect_gaps(bp, slots)))
+    # 同一提示不重复刷屏（2026-09-16）：无缺口态此前**每敲一条命令就打一遍**，
+    # 实测一次会话打 20+ 次，把真正的输出挤没了。
+    last_notice: str | None = None
     while True:
         gaps = detect_gaps(bp, slots)
         window = [g.slot for g in gaps
@@ -86,13 +89,16 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
 
         if window:
             round_no += 1
+            last_notice = None
             qs = _build_questions(bp, window, provider, round_no, ws, project_id,
                                   result.warnings, need_candidates=True)
             io.notify(_render_round(round_no, qs))
             io.notify("CR> 回车=取推荐值 / 自由语=回答或补充设想 / /help")
         else:
             qs = []
-            io.notify("\n（本蓝图已无缺口：/build 构建，或自由语继续补充设想登记 extras）")
+            if last_notice != "no-gap":
+                io.notify("\n（本蓝图已无缺口：/build 构建，或自由语继续补充设想登记 extras）")
+                last_notice = "no-gap"
 
         line = io.ask_free("", "")
         if line is None:
@@ -170,6 +176,19 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
         result.rounds_done += 1
 
 
+def _notify_pending_left(ws: Workspace, project_id: str, io: AnswerIO) -> None:
+    """回显剩余待审 + 下一步命令（2026-09-16 UX）。
+
+    此前 `/approve X` 只回一句"已通过"，用户不知道还剩谁没过，只能反复 /review 试探。
+    """
+    pending = sorted((load_review(ws, project_id).get("pending") or {}))
+    if pending:
+        io.notify(f"  剩余待审：{'、'.join(pending)}——下一步 /review <模块> 看全文，"
+                  "或 /approve <模块> 直接通过")
+    else:
+        io.notify("  已无待审模块——可以 /build 继续构建。")
+
+
 def _cmd_review(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
     """/review [模块]：无参列 pending；给模块名显示该模块评审稿全文路径。"""
     cfg = load_review(ws, project_id)
@@ -186,7 +205,9 @@ def _cmd_review(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
         io.notify("  /review <模块名> 看全文；/approve <模块> 通过；/revise <模块> \"建议\"。")
         return
     if arg not in pending:
-        io.notify(f"[shell] 无此待审模块 {arg!r}（/review 查看 pending）。")
+        # 2026-09-16 UX：此前只说"无此模块"，用户还得再敲一次 /review 才知道有哪些
+        left = "、".join(sorted(pending)) if pending else "（无）"
+        io.notify(f"[shell] 无此待审模块 {arg!r}；当前待审：{left}")
         return
     entry = pending[arg]
     md = ws._abs(f"{project_id}/{entry['file']}")
@@ -219,6 +240,7 @@ def _cmd_approve(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None
         return
     io.notify(f"[shell] 已通过审核：{module}"
               + ("（永久关闭该模块把关）" if remember else "") + "。")
+    _notify_pending_left(ws, project_id, io)
 
 
 def _cmd_revise(ws: Workspace, project_id: str, provider, io: AnswerIO,
@@ -242,11 +264,13 @@ def _cmd_revise(ws: Workspace, project_id: str, provider, io: AnswerIO,
     if not diffs:
         io.notify(f"[shell] {module} 无改动内容。")
         return
-    io.notify(f"[shell] {module} 已按建议重生成，差异如下（仍待审，/approve 通过）：")
+    io.notify(f"[shell] {module} 已按建议重生成（消耗 1 次 LLM 调用），"
+              "差异如下（仍待审，/approve 通过）：")
     for d in diffs:
         io.notify(f"  {d}")
     if cfg.get("pending", {}).get(module):
         stage_pending_for_revise(ws, project_id, module, suggestions)
+    _notify_pending_left(ws, project_id, io)
 
 
 def _dispatch_free_text(bp: Blueprint, qs: list[Any], line: str, provider,
@@ -292,6 +316,14 @@ def _maybe_build(ws: Workspace, project_id: str, bp: Blueprint, provider,
                  slots: list[Slot], max_calls: int | None,
                  result: ShellResult) -> None:
     """/build：required 缺口存在时先补齐推荐值并确认，再构建。"""
+    # 有待审模块 → 构建必定被闸门拦下，直接给待处置清单，不再让用户白答一次 y
+    _pending_now = sorted((load_review(ws, project_id).get("pending") or {}))
+    if _pending_now:
+        io.notify("[shell] 还有待审模块未处置，构建会被闸门拦下：")
+        for m in _pending_now:
+            io.notify(f"  - {m}（/review {m} 看全文 → /approve {m} 或 /revise {m} \"建议\"）")
+        io.notify("  处置完再 /build。")
+        return
     req = [g for g in gaps if g.slot.level == "required"]
     if req:
         io.notify(f"[shell] 仍有 {len(req)} 个 required 缺口：")

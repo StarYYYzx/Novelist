@@ -67,6 +67,9 @@ class NodeContext:
     arcs: list[dict] | None = None  # 本卷 arc 产物（chapter 节点 prompt 注入，F4b）
     extra: dict = field(default_factory=dict)  # roll 注入的四块上下文（§7.7）等
     extra_warnings: list[str] = field(default_factory=list)
+    # 上一轮失败的诊断（2026-09-16）：引擎在重试前写入，`_run_node_impl` 会把它拼进
+    # user prompt。此前重试是**盲发**——模型看不到自己上次错在哪，连续两轮同一错误白烧调用。
+    retry_hint: str = ""
     reject_note: str = ""   # 方案4：章纲去重闸拒绝原因（重生成 prompt 附带，成功后清空）
 
 
@@ -104,7 +107,11 @@ def _parse_node_reply(raw: str) -> dict:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("no json object in node reply")
-    data = json.loads(text[start : end + 1])
+    # 容错解析（docs/04 §5.7）：尾逗号 / 结构位全角标点可修复；真语法错则抛带**行号与
+    # 上下文摘录**的 ValueError，供引擎写进重试 prompt（此前只有一句 JSONDecodeError 文本）
+    from ..core.normalize import loads_json_tolerant
+
+    data = loads_json_tolerant(text[start : end + 1])
     if not isinstance(data, dict):
         raise ValueError("node reply not an object")
     has_shell = "artifact" in data
@@ -1796,6 +1803,10 @@ def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
     system, user = _ensure_json_hint(*_PROMPTS[kind](ctx))
     if ctx.extra_instruction:
         user += f"\n\n【用户修改建议（本轮重生成须落实）】\n{ctx.extra_instruction}"
+    if ctx.retry_hint:
+        # 重试时把上一轮的具体错误（含行号上下文）交给模型——盲发重试等于赌运气
+        user += ("\n\n【上一轮输出不可用，请修正后重新输出】\n"
+                 f"{ctx.retry_hint}\n只输出合法 JSON，不要解释、不要代码围栏。")
     res = ctx.provider.complete(LLMRequest(
         messages=[LLMMessage(role="system", content=system),
                   LLMMessage(role="user", content=user)],
@@ -1809,7 +1820,12 @@ def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
     if not (res.content or "").strip():
         raise ValueError("empty node reply")
     node = _parse_node_reply(res.content)
-    warns = ctx.extra_warnings + _APPLY[kind](ctx, node)
+    # 事务化落库（2026-09-16 事故修复）：apply 内部任何一步抛错（含"主线唯一"硬校验），
+    # 蓝图整体回滚 → 未通过校验的中间态绝不进 bible/outline（docs/10）。
+    from .state import blueprint_txn
+
+    with blueprint_txn(ctx.bp):
+        warns = ctx.extra_warnings + _APPLY[kind](ctx, node)
     if node["decide"] == "expand" and not node["children"]:
         warns.append(f"{node_id}: decide=expand 但未给 children，按 done 处理")
     if node["has_shell"] and not node["reason"]:

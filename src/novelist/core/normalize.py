@@ -190,3 +190,86 @@ def regroup_factions(items) -> list[dict]:
     close()
     return [g for g in groups if g.get("faction")]
 
+# ---------------------------------------------------------------------------
+# LLM JSON 容错解析（docs/04 §5.7「结构化输出校验失败 → 有限重试 → 宽松解析」）
+# ---------------------------------------------------------------------------
+# 2026-09-16 真机事故（proj-20260914233722）：thread_set 节点连续两轮 JSON 语法错误
+# （`Expecting ',' delimiter: line 183 column 8`）→ 重试盲发同一 prompt（模型看不到
+# 上次错在哪）→ 仍失败 → 回退。此处补两件事：① 结构位的全角标点/尾逗号可修复；
+# ② 失败时给出**带行号与上下文的诊断**，供重试 prompt 携带。
+
+_FULLWIDTH_STRUCT = {
+    "，": ",", "：": ":", "；": ";", "、": ",",
+    "（": "(", "）": ")", "【": "[", "】": "]",
+    "｛": "{", "｝": "}", "［": "[", "］": "]",
+    "＂": '"', "“": '"', "”": '"', "‘": "'", "’": "'",
+}
+
+
+def fix_structural_punctuation(text: str) -> str:
+    """把**字符串字面量之外**的全角标点换成半角（字符串内的原文一字不动）。
+
+    模型偶尔在 JSON 结构位写中文标点（`"a": 1，` / `{“k”: v}`），这是个确定性可修的错，
+    不该让整节点失败。用状态机区分"引号内"与"引号外"，字符串内的全角标点保持原样。
+    """
+    out: list[str] = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            continue
+        out.append(_FULLWIDTH_STRUCT.get(ch, ch))
+    return "".join(out)
+
+
+def strip_trailing_commas(text: str) -> str:
+    """去掉 `,]` / `,}` 这两种尾逗号（JSON 不允许，模型很爱写）。"""
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
+def json_diagnostic(text: str, err: Exception, *, context_lines: int = 3,
+                    width: int = 160) -> str:
+    """把 JSONDecodeError 变成"行号 + 上下文摘录"的可读诊断（供重试 prompt 携带）。"""
+    lineno = int(getattr(err, "lineno", 1) or 1)
+    col = int(getattr(err, "colno", 1) or 1)
+    lines = text.splitlines()
+    lo = max(0, lineno - context_lines - 1)
+    hi = min(len(lines), lineno + context_lines)
+    excerpt = "\n".join(f"{i + 1:>5}| {lines[i][:width]}" for i in range(lo, hi))
+    return f"{err}（第 {lineno} 行第 {col} 列）\n{excerpt}"
+
+
+def loads_json_tolerant(text: str) -> object:
+    """容错解析 LLM 输出的 JSON 对象；全失败时抛 `ValueError`（带诊断）。
+
+    尝试顺序（都确定性、零依赖）：原样 → 去尾逗号 → 结构位全角转半角 → 两者叠加。
+    """
+    import json as _json
+
+    candidates = [text]
+    stripped = strip_trailing_commas(text)
+    if stripped != text:
+        candidates.append(stripped)
+    fixed = fix_structural_punctuation(text)
+    if fixed != text:
+        candidates.append(fixed)
+        candidates.append(strip_trailing_commas(fixed))
+    first_err: Exception | None = None
+    for cand in candidates:
+        try:
+            return _json.loads(cand)
+        except ValueError as e:  # JSONDecodeError 是 ValueError 子类
+            first_err = first_err or e
+    raise ValueError("JSON 解析失败：" + json_diagnostic(text, first_err or ValueError("?")))
+

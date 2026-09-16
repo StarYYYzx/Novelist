@@ -4,6 +4,7 @@
   字段 = 下游产出超集 + provenance。读写均过 `schemas/forge/blueprint.schema.json` 校验
   （V1：蓝图自身可校验，手改打错键名在 build 前爆）。
 - `ForgeState`：`project.json.forge` 段（mode/interaction/stage/blueprint_rev/calls_used）。
+- `BlueprintTxn`：蓝图写事务——节点产物"先算后写、失败整体回滚"（2026-09-16 真机事故修复）。
 - `append_transcript`：问答/构建留痕（`workspace/forge/transcript.jsonl`，中断续跑与审计用）。
 
 路径语法：点路径 + 数组下标，如 `meta.logline`、`characters[0].name`；
@@ -12,9 +13,11 @@ provenance 键兼容 `characters[char:x].name` 的 id 索引写法（docs/10 §4
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -452,3 +455,53 @@ def read_transcript(ws: Workspace, project_id: str) -> list[dict]:
             if line:
                 out.append(json.loads(line))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 蓝图写事务（2026-09-16 真机事故修复）
+# ---------------------------------------------------------------------------
+# 事故（proj-20260914233722）：节点 `_apply_*` 直接对蓝图下单，**之后**才做"主线唯一"
+# 硬校验并 raise；引擎在节点失败后仍然 `bp.save()` + `sync_bible()` → 未通过校验的中间态
+# 被写进 bible（实测 lines 5→9 出现两条同义主线、threads 7→18、characters 7→18 含三套
+# 女主名）。这违反 docs/10「未通过校验的中间态不写入 bible/outline」。
+#
+# 修法：节点产物落库走事务——内存改动先发生，任一步抛错即整体回滚到进入时的蓝图；
+# 只有全部校验通过才"提交"（提交后由调用方统一 save/sync）。这样 **无论失败发生在
+# apply 的哪一行**（包括 apply 内部的多段写入），都不会留下半成品。
+
+
+class BlueprintTxn:
+    """蓝图事务：`rollback()` 恢复进入时快照；`commit()` 封存。
+
+    快照取 `bp.data` 深拷贝（含 provenance/rev/meta），因此"回滚"是真正回到进入时的状态，
+    而不是只清掉某一段。
+    """
+
+    def __init__(self, bp: "Blueprint") -> None:
+        self._bp = bp
+        self._snap = copy.deepcopy(bp.data)
+        self.closed = False
+
+    def rollback(self) -> None:
+        """恢复到事务开始时的蓝图（幂等）。"""
+        if not self.closed:
+            self._bp.data = self._snap
+            self.closed = True
+
+    def commit(self) -> None:
+        """确认改动（不改动内容，只封存事务）。"""
+        self.closed = True
+
+
+@contextmanager
+def blueprint_txn(bp: "Blueprint"):
+    """`with blueprint_txn(bp) as txn:` —— 块内抛错自动回滚，正常退出自动提交。"""
+    txn = BlueprintTxn(bp)
+    try:
+        yield txn
+    except BaseException:
+        txn.rollback()
+        raise
+    else:
+        txn.commit()
+

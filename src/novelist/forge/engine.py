@@ -45,6 +45,7 @@ class BuildResult:
     project_id: str
     calls_used: int = 0
     nodes_done: int = 0
+    nodes_failed: int = 0   # 重试后仍失败的节点（改动已回滚）
     chapters_written: int = 0
     volumes_written: int = 0
     budget_exhausted: bool = False
@@ -60,6 +61,7 @@ class BuildResult:
             "ok": self.ok,
             "calls_used": self.calls_used,
             "nodes_done": self.nodes_done,
+            "nodes_failed": self.nodes_failed,
             "chapters_written": self.chapters_written,
             "volumes_written": self.volumes_written,
             "budget_exhausted": self.budget_exhausted,
@@ -121,6 +123,87 @@ class _GateHalt(Exception):
     def __init__(self, modules: list[str]):
         super().__init__(", ".join(modules))
         self.modules = modules
+
+
+def _log_round_summary(log, *, kind: str, calls_used: int, max_calls: int,
+                       nodes_done: int, nodes_failed: int, elapsed_s: float,
+                       gate_halted: bool, budget_exhausted: bool,
+                       interrupted: bool) -> None:
+    """一轮构建的收尾摘要（2026-09-16 UX）：成功/回退/中止三态与预算消耗一次说清。
+
+    此前进度行只有 `[10/234] <节点> … ok`（把**调用预算**当成进度）+ 末尾一堆 warn，
+    用户看不出"这次到底成不成、有几个节点没生成"。
+    """
+    from ..core.output import fmt_duration
+
+    zt = ("闸门暂停（待审核）" if gate_halted else
+          "预算耗尽" if budget_exhausted else
+          "已中止（连续失败过多）" if interrupted else "完成")
+    log(f"[summary] {kind}结束：{zt} · 调用 {calls_used}/{max_calls} · "
+        f"节点 ok {nodes_done} / 回退 {nodes_failed} · 用时 {fmt_duration(elapsed_s)}")
+    if nodes_failed:
+        log(f"          回退的 {nodes_failed} 个节点未生成新产物，沿用上一次可用内容"
+            "（节点改动已回滚，不会留下半成品）；如需还原更早状态："
+            "`forge snapshots` 查快照 + `forge rollback --to <name>`")
+
+
+class _FailAbort(Exception):
+    """连续节点失败达阈值 → 中止本轮构建（docs/10 §12）。"""
+
+
+class _FailStreak:
+    """连续失败计数（docs/10 §12：连续 3 个节点解析失败 → 中止并提示换 provider）。
+
+    此前该规则**完全没实现**：实测 4 个节点（book / character_group / thread_set 等）
+    连续失败后构建仍继续跑，用户只在末尾看到一堆 warn。
+    """
+
+    LIMIT = 3
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def reset(self) -> None:
+        self.n = 0
+
+    def bump(self) -> int:
+        self.n += 1
+        return self.n
+
+
+def _one_line(e: BaseException, width: int = 200) -> str:
+    """把异常压成单行（JSON 诊断带多行摘录，warn 里必须折起来）。"""
+    return f"{type(e).__name__}: {str(e).replace(chr(10), ' ⏎ ')[:width]}"
+
+
+def _retry_hint(label: str, e: BaseException) -> str:
+    """重试 prompt 携带的诊断（2026-09-16）：模型必须看到自己上次错在哪。
+
+    此前 `extra_warnings` 只进返回的 warns 列表、**不进 prompt**，重试等于盲发同一请求
+    （实测 thread_set 连续两轮同一 JSON 语法错）。
+    """
+    body = str(e)
+    if len(body) > 900:
+        body = body[:900] + "…"
+    return f"{label} 上一轮输出不可用：{body}"
+
+
+def _fail_note(label: str, e: BaseException) -> str:
+    """节点失败的留痕文案：说清**真实后果**（改动已回滚、沿用上一次可用产物）。
+
+    旧文案「回退父层产物」与实际行为不符——当时只跳过节点文件落盘，蓝图/ bible 里
+    已经写入的半成品照样 `bp.save()` 落盘（2026-09-16 事故）。
+    """
+    return (f"{label}: 重试仍失败 → 已回滚该节点的改动，沿用上一次可用产物；"
+            f"原因：{_one_line(e)}")
+
+
+def _maybe_abort(streak: "_FailStreak", label: str) -> None:
+    if streak.bump() >= streak.LIMIT:
+        raise _FailAbort(
+            f"连续 {streak.LIMIT} 个节点重试后仍失败（最近：{label}）→ 已中止本轮构建。"
+            "多为 provider 输出不稳定 / 模型不适合结构化 JSON：换 provider 或降规模后 "
+            "`forge resume` 续跑；怀疑产物被写脏时用 `forge snapshots` + `forge rollback`")
 
 
 def _node_done(ws: Workspace, project_id: str, node_id: str) -> bool:
@@ -238,6 +321,8 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
     log(f"[snapshot] {snap.name}")
 
     nodes_done = 0
+    nodes_failed = 0   # 重试后仍失败（改动已回滚、沿用上一次可用产物）的节点数
+    streak = _FailStreak()
     chapters_written = 0
     volumes_written = 0
     budget_exhausted = False
@@ -260,7 +345,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
     def _call(ctx: NodeContext, kind: str, depth: int, vol: int = 0, ch: int = 0,
               child: dict | None = None):
         """执行一个节点（含 retry=1 与降级兜底）。返回 NodeResult | None（预算耗尽/失败跳过）。"""
-        nonlocal calls_used, nodes_done
+        nonlocal calls_used, nodes_done, nodes_failed
         label = _node_label(kind, vol, ch, child)
         if depth > max_depth:
             warnings.append(f"{label}: 超过 max_depth={max_depth}，按 done 处理")
@@ -273,24 +358,30 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             res = run_node(ctx, kind)
             calls_used = started
             nodes_done += 1
-            log(f"[{calls_used}/{max_calls}] {label} … ok (calls={calls_used}, "
-                f"{time.time() - start:.1f}s)")
+            streak.reset()
+            ctx.retry_hint = ""
+            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)")
             for w in res.warnings:
                 warnings.append(f"{label}: {w}")
             append_transcript(ws, project_id, "build_node", kind=kind, node=label,
                               decide=res.decide, reason=(res.reason or "")[:120],
                               tokens_in=res.tokens_in, tokens_out=res.tokens_out)
             return res
-        except ValueError as e:  # 解析失败 → retry 1（docs/10 §12）
+        except ValueError as e:  # 解析/校验失败 → retry 1（docs/10 §12）
+            ctx.retry_hint = _retry_hint(label, e)  # 重试前把诊断交给模型
             if not _budget_check():
-                warnings.append(f"{label}: 重试时预算耗尽，回退父层产物")
+                nodes_failed += 1
+                warnings.append(f"{label}: 重试时预算耗尽，未生成（沿用上一次可用产物）")
+                _maybe_abort(streak, label)
                 return None
-            ctx.extra_warnings.append(f"{label}: 首次解析失败（{e}），重试中")
+            ctx.extra_warnings.append(f"{label}: 首次失败（{_one_line(e)}），重试中")
             try:
                 res2 = run_node(ctx, kind)
                 calls_used = started + 1
                 nodes_done += 1
-                log(f"[{calls_used}/{max_calls}] {label} … ok (retry, calls={calls_used}, "
+                streak.reset()
+                ctx.retry_hint = ""
+                log(f"[{calls_used}/{max_calls} 调用] {label} … ok (retry, "
                     f"{time.time() - start:.1f}s)")
                 for w in res2.warnings:
                     warnings.append(f"{label}: {w}")
@@ -301,15 +392,21 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
                 return res2
             except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
                 calls_used = started + 1
-                warnings.append(f"{label}: 重试仍失败，回退父层产物: {e2}")
+                nodes_failed += 1
+                warnings.append(_fail_note(label, e2))
+                _maybe_abort(streak, label)
                 return None
         except ModerationBlockedError as e:
             calls_used = started
-            warnings.append(f"{label}: 审核拦截（{e}），该节点标记 blocked、人工补")
+            nodes_failed += 1
+            warnings.append(f"{label}: 审核拦截（{_one_line(e)}），该节点标记 blocked、人工补")
+            _maybe_abort(streak, label)
             return None
         except Exception as e:  # noqa: BLE001 - 节点级失败不拖垮整棵树
             calls_used = started
-            warnings.append(f"{label}: 节点异常，回退父层产物: {e}")
+            nodes_failed += 1
+            warnings.append(_fail_note(label, e))
+            _maybe_abort(streak, label)
             return None
 
     try:
@@ -489,6 +586,9 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
     except _GateHalt as g:
         gate_halted = True
         warnings.append(f"审核闸门暂停（待处置：{g.modules}）——build/resume 在处置后可续跑")
+    except _FailAbort as a:
+        interrupted = True
+        warnings.append(str(a))
     except KeyboardInterrupt:
         interrupted = True
         warnings.append("SIGINT：当前节点后落盘退出（被中断节点未落盘、calls_used 不回退）")
@@ -518,6 +618,10 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
 
         take_snapshot(ws, project_id, label="build-ok")
 
+    _log_round_summary(log, kind="构建", calls_used=calls_used, max_calls=max_calls,
+                       nodes_done=nodes_done, nodes_failed=nodes_failed,
+                       elapsed_s=time.time() - start, gate_halted=gate_halted,
+                       budget_exhausted=budget_exhausted, interrupted=interrupted)
     ok = (not interrupted and not budget_exhausted
           and (chapters_written > 0 or gate_halted))
     return BuildResult(
@@ -525,6 +629,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
         project_id=project_id,
         calls_used=calls_used,
         nodes_done=nodes_done,
+        nodes_failed=nodes_failed,
         chapters_written=chapters_written,
         volumes_written=volumes_written,
         budget_exhausted=budget_exhausted,
@@ -639,6 +744,7 @@ class RollResult:
     calls_used: int = 0
     chapters_written: int = 0
     arcs_written: int = 0
+    nodes_failed: int = 0   # 重试后仍失败的节点（改动已回滚）
     budget_exhausted: bool = False
     budget_limit: int = 40
     gate_halted: bool = False
@@ -746,6 +852,9 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     calls_used = 0
     chapters_written = 0
     arcs_written = 0
+    nodes_ok = 0
+    nodes_failed = 0
+    streak = _FailStreak()
     budget_exhausted = False
     interrupted = False
     gate_halted = False
@@ -764,7 +873,7 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
 
     def _call(ctx: NodeContext, kind: str, depth: int, vol_n: int = 0, ch: int = 0,
               child: dict | None = None):
-        nonlocal calls_used, budget_exhausted
+        nonlocal calls_used, budget_exhausted, nodes_ok, nodes_failed
         label = _node_label(kind, vol_n, ch, child)
         if depth > max_depth:
             warnings.append(f"{label}: 超过 max_depth={max_depth}，按 done 处理")
@@ -776,32 +885,47 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
         try:
             res = run_node(ctx, kind)
             calls_used = started
-            log(f"[{calls_used}/{max_calls}] {label} … ok ({time.time() - start:.1f}s)")
+            nodes_ok += 1
+            streak.reset()
+            ctx.retry_hint = ""
+            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)")
             warnings.extend(f"{label}: {w}" for w in res.warnings)
             return res
         except ValueError as e:
-            ctx.extra_warnings.append(f"{label}: 首次解析失败（{e}），重试中")
+            ctx.retry_hint = _retry_hint(label, e)   # 同 build：重试带上真实诊断
             if not _budget_check():
-                warnings.append(f"{label}: 重试时预算耗尽，回退父层产物")
+                nodes_failed += 1
+                warnings.append(f"{label}: 重试时预算耗尽，未生成（沿用上一次可用产物）")
+                _maybe_abort(streak, label)
                 return None
+            ctx.extra_warnings.append(f"{label}: 首次失败（{_one_line(e)}），重试中")
             try:
                 res2 = run_node(ctx, kind)
                 calls_used = started + 1
-                log(f"[{calls_used}/{max_calls}] {label} … ok (retry)")
+                nodes_ok += 1
+                streak.reset()
+                ctx.retry_hint = ""
+                log(f"[{calls_used}/{max_calls} 调用] {label} … ok (retry)")
                 warnings.extend(f"{label}: {w}" for w in res2.warnings)
                 return res2
             except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
                 calls_used = started + 1
-                warnings.append(f"{label}: 重试仍失败，回退父层产物: {e2}")
+                nodes_failed += 1
+                warnings.append(_fail_note(label, e2))
+                _maybe_abort(streak, label)
                 return None
         except ModerationBlockedError as e:
             # G1：roll 原先缺该分支——审核拦截被当普通异常吞掉，无痕迹
             calls_used = started
-            warnings.append(f"{label}: 审核拦截（{e}），该节点标记 blocked、人工补")
+            nodes_failed += 1
+            warnings.append(f"{label}: 审核拦截（{_one_line(e)}），该节点标记 blocked、人工补")
+            _maybe_abort(streak, label)
             return None
         except Exception as e:  # noqa: BLE001
             calls_used = started
-            warnings.append(f"{label}: 节点异常，回退父层产物: {e}")
+            nodes_failed += 1
+            warnings.append(_fail_note(label, e))
+            _maybe_abort(streak, label)
             return None
 
     try:
@@ -908,6 +1032,9 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
     except _GateHalt as g:
         gate_halted = True
         warnings.append(f"审核闸门暂停（待处置：{g.modules}）——approve 后可 roll/resume 续跑")
+    except _FailAbort as a:
+        interrupted = True
+        warnings.append(str(a))
     except KeyboardInterrupt:
         interrupted = True
         warnings.append("SIGINT：当前节点后落盘退出")
@@ -927,9 +1054,14 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
 
         take_snapshot(ws, project_id, label=f"roll-ok-v{vol}")
 
+    _log_round_summary(log, kind=f"滚动第 {vol} 卷", calls_used=calls_used,
+                       max_calls=max_calls, nodes_done=nodes_ok, nodes_failed=nodes_failed,
+                       elapsed_s=time.time() - start, gate_halted=gate_halted,
+                       budget_exhausted=budget_exhausted, interrupted=interrupted)
     return RollResult(
         ok=not interrupted and not budget_exhausted and (chapters_written > 0 or gate_halted),
         project_id=project_id, vol=vol, calls_used=calls_used,
+        nodes_failed=nodes_failed,
         chapters_written=chapters_written, arcs_written=arcs_written,
         budget_exhausted=budget_exhausted, budget_limit=max_calls,
         gate_halted=gate_halted,

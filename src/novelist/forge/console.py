@@ -288,7 +288,19 @@ class Console:
         self.run_cli(argv)
 
     def cmd_build(self, args: str) -> None:
-        self._proj_run("build")
+        """/build [--max-calls N]：构建（预算可显式给；缺省按规模推导）。
+
+        2026-09-16 UX：此前无法指定预算，用户只看到 `[10/234]` 里的 234（推导值）
+        却不知道它是什么、也不能改。
+        """
+        extra: list[str] = []
+        toks = args.strip().split()
+        for i, t in enumerate(toks):
+            if t in ("--max-calls", "-m") and i + 1 < len(toks) and toks[i + 1].isdigit():
+                extra += ["--max-calls", toks[i + 1]]
+            elif t.startswith("--max-calls=") and t.split("=", 1)[1].isdigit():
+                extra += ["--max-calls", t.split("=", 1)[1]]
+        self._proj_run("build", extra)
 
     def cmd_resume(self, args: str) -> None:
         self._proj_run("resume")
