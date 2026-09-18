@@ -185,13 +185,37 @@ def test_rstate_clean_when_monotonic(tmp_path):
     assert not [a for a in run_state_checks(ws, pid) if a.rule_id == "R-STATE"]
 
 
-def test_run_rule_checks_includes_state():
-    # R-STATE 应纳入 run_rule_checks（全量规则入口）
-    from unittest.mock import MagicMock
+def test_run_rule_checks_includes_state(tmp_path):
+    """R-STATE 必须纳入 `run_rule_checks`（全量规则入口）。
 
-    ws = MagicMock()
-    ws._abs.side_effect = lambda rel: __import__("pathlib").Path("/nonexistent") / rel
-    assert callable(run_rule_checks)
+    2026-09-18：此例原先用 MagicMock 造了个 ws 就断言 `callable(run_rule_checks)`——
+    恒真、且**从未调用**被测函数，规则从全量入口里掉出去也不会红。改为真实跑一遍。
+    """
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "炼气三层"}, at={"vol": 1, "ch": 1})
+    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 2})  # 倒退
+
+    all_alerts = run_rule_checks(ws, pid)
+    ids = {a.rule_id for a in all_alerts}
+    assert "R-STATE" in ids, f"全量入口漏掉 R-STATE，实际只有 {sorted(ids)}"
+
+    # 全量入口应当是"只跑状态规则"的超集（同一条告警都要在）
+    state_ids = {(a.rule_id, a.object_ref, a.detail)
+                 for a in run_state_checks(ws, pid) if a.rule_id == "R-STATE"}
+    all_ids = {(a.rule_id, a.object_ref, a.detail)
+               for a in all_alerts if a.rule_id == "R-STATE"}
+    assert state_ids and state_ids <= all_ids
+    assert any(a.level == "block" and "倒退" in a.detail for a in all_alerts)
+
+
+def test_run_rule_checks_clean_project_still_returns_list(tmp_path):
+    """干净项目：全量入口不炸、返回列表（防"规则全掉光"也算绿）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    alerts = run_rule_checks(ws, pid)
+    assert isinstance(alerts, list)
 
 
 # ---------------------------------------------------------------- key_events 解析与状态注入

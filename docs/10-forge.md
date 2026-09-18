@@ -488,7 +488,7 @@ L0 book（唯一根）── 主题/卖点/基调/规模
 | --- | --- | --- |
 | `max_depth` | 4（book→volume→arc→chapter→beat 共 5 层） | 到底层强制 `done`，丢弃 `children` 并记 reason |
 | `max_width` | 4 | 超出截断前 4 个，记 warn |
-| `max_calls`（**分阶段配额**，2026-09-01 拍板） | build 卷 1 = **60**；`forge roll` 每卷 = **40**；ingest 抽取 = **30**（`--ingest-max-calls`）。用户明示「可接受更多调用换质量」，卷 1 由 40 放宽至 60 | 各阶段独立计数、独立兜底（模板/上层摘要填充，报告标"预算耗尽"）；CLI `--max-calls` 可整体覆盖 |
+| `max_calls`（**分阶段配额**，2026-09-01 拍板；2026-09-19 校准口径） | **显式 `--max-calls` > 按规模推导 > 命令硬默认**。`build` / `seed` / `shell` 缺省按规模推导（ADR-033 B，`_build_call_budget`：`12 + 卷数N×3 + 每卷章数K×2 + min(人物M,24)`，下限 12；示例 N=3/K=8/M=20 → 57）；`forge resume` 硬默认 **60**、`forge roll` 每卷 **40**、`forge roll-window` 缺省 `width×2+2`；ingest 抽取 = **30**（`--ingest-max-calls`） | 各阶段独立计数、独立兜底（模板/上层摘要填充，报告标"预算耗尽"）；CLI `--max-calls` 可整体覆盖 |
 | 每节点 `max_retries` | 1 | 解析/校验失败重试一次（重试 prompt **携带上一轮的行号诊断**），再失败**回滚该节点全部改动**、沿用上一次可用产物并记 warn（2026-09-16 起由 `BlueprintTxn` 保证），绝不静默跳过 |
 
 **每个节点产出必须过校验才落盘**：schema（`schemas/**`）+ 交叉引用（见 §9 V2）。
@@ -666,7 +666,8 @@ guard 字段，纯确定性快照，供人工核对「哪些层不可静默改�
 novelist forge seed "一句话创意" [--dir DIR] [--mode auto|interactive]
     [--provider fake|lmstudio|deepseek|openai] [--genre-pack 修仙男频]
     [--volumes 3] [--chapters-per-volume 20] [--target-words 2400]
-    [--max-calls 60] [--max-depth 4] [--max-width 4] [--smoke]
+    [--max-calls N] [--max-depth 4] [--max-width 4] [--smoke]
+    # --max-calls 缺省按规模推导（ADR-033 B），见 §7.3
 
 # 模式二（--discard 首版不做）
 novelist forge ingest <path...> [--recursive] [--mode auto|interactive]
@@ -683,6 +684,22 @@ novelist forge validate <dir> [--smoke] [--settings-min N] [--no-report]
 novelist forge rollback <dir> [--to <name>]   # 回退到快照（缺省最近 = build-ok 结果态）
 novelist forge snapshots <dir>        # 列出快照目录
 ```
+
+**子命令全景（19 个，2026-09-19 校准；`novelist forge --help` 为准）**：
+
+| 子命令 | 作用 | 备注 |
+| --- | --- | --- |
+| `seed` / `ingest` | 建书两模式（一句话 / 已有稿子） | §5 / §6 |
+| `build` / `resume` | 递归构建 / 断点续跑 | §7 |
+| `roll` / `roll-window` | 卷细纲滚动 / 未来窗口滚动（承诺门控，ADR-026） | §7.7 / §7.8 |
+| `show` / `validate` | 蓝图进度 / V1–V6 契约校验 | §9 |
+| `rollback` / `snapshots` | 快照回退 / 快照列表 | §7.6 |
+| `review` / `approve` / `revise` | 模块审核闸门（ADR-024）：待审 / 放行 / 打回 | 见 `review.json` |
+| `covenant` / `switches` | 承诺账本 / 明暗线开关 | ADR-026 |
+| `craft` / `lines-replay` | 手改产物 / 线索账本回放转正 | 人工修订后必修（docs/08） |
+| `shell` / `conflicts` | 常驻设定会话壳（§5.5） / **结构冲突人工裁决**（2026-09-16 拍板） | `conflicts` 见 §12 末行 |
+
+> `conflicts` 与 `shell` 是 2026-09-16/09-10 才新增的，早期文档只数到 17 个子命令。
 
 模块（**实现状态**：✅=已建；M3l 全部落地）：
 
@@ -776,7 +793,9 @@ chronicler 的"时间：/约定："行（T1 产物），先接泵再摄入，ing
 5. **schema 对齐 = 文件级 + 条目级双层**：新增 `schemas/file/*.schema.json`；V1 先文件层后条目层；修复 4 处字段差异（B1，实测现状 5 文件全 FAIL）
 6. **后续卷细纲 = `forge roll <vol>` 显式命令**；构建期卷闸门只展开 vol=1，写到卷末章 CLI 提示（B2）
 7. **`role` 是蓝图内部字段、落盘剥离**；`character.role=protagonist` 为主角唯一源，派生 `style.protagonist` + `is_protagonist`（B3）
-8. **预算 = 分阶段配额**：build 卷 1 = 60、roll 每卷 = 40、ingest 抽取 = 30；用户明示「可接受更多调用换质量」，卷 1 由 40 放宽至 60
+8. **预算 = 分阶段配额**：`--max-calls` 显式值优先，否则 build/seed/shell **按规模推导**
+   （ADR-033 B：`12 + N×3 + K×2 + min(M,24)`）；`resume` = 60、`roll` 每卷 = 40、
+   `roll-window` = `width×2+2`、ingest 抽取 = 30。用户明示「可接受更多调用换质量」（2026-09-19 校准）
 9. **重跑 = provenance 保护**：`src=user` 字段永不被模型产物覆盖
 10. **修订 = 影响分析子树重建**（`forge build --diff`）；已写正文不动，差异由一致性引擎消化
 11. **护栏 = 已有 chapters 时默认拒绝**，`--force` 强制；build/roll 前自动 checkpoint，`forge rollback` 可回退

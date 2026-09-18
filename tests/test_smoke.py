@@ -107,10 +107,26 @@ def test_moderation_prechecker():
 
 
 def test_indexdb_upsert_and_audit(tmp_path):
+    """写入必须**真的落库**（2026-09-18：此例原先零断言，写入变 no-op 也照样绿）。
+
+    IndexDb 尚未提供查询 API，故直连 sqlite 校验两张表的行内容。
+    """
     from novelist.storage.indexdb import IndexDb
 
     db = IndexDb(str(tmp_path / ".index.db"))
     db.init()
     db.upsert_fragment("sig:1", "plot_event", 3, 8, '["pt:V017"]', "{}")
     db.write_audit("moderation.blocked", '{"agent":"orchestrator"}', "{}")
-    # 冒烟：能查询到已写条目（intogate 保留给集成）
+
+    with db.connect() as conn:
+        frag = conn.execute("SELECT sig,kind,vol,ch,refs FROM fragments").fetchall()
+        audit = conn.execute("SELECT kind,session FROM audit_log").fetchall()
+
+    assert frag == [("sig:1", "plot_event", 3, 8, '["pt:V017"]')], frag
+    assert audit == [("moderation.blocked", '{"agent":"orchestrator"}')], audit
+
+    # upsert 语义：同 sig 覆盖而非重复
+    db.upsert_fragment("sig:1", "plot_event", 3, 9, "[]", "{}")
+    with db.connect() as conn:
+        rows = conn.execute("SELECT ch FROM fragments WHERE sig='sig:1'").fetchall()
+    assert rows == [(9,)], rows

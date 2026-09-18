@@ -248,7 +248,8 @@ def status(ctx: click.Context, directory: str | None) -> None:
   ② 预算与事件粒度：--gen-tokens --content-tokens --max-events --min-event-words
   ③ 管线开关：--polish --no-bible --event-loop --screenplay --readback
      --event-polish --supplement-settings --no-jit --seam-review --volume-facts
-  ④ Agent 审查（ADR-032）：--agentic-chronicle --agentic-review 及其 --rounds
+  ④ Agent 审查（ADR-032）：--agentic-chronicle --agentic-review 及其
+     --agentic-chronicle-rounds / --agentic-review-rounds
 
 ②③④ 全部可写入 config.toml 的 `[generation]` 段作项目级默认（键名同选项去连字符，
 布尔键用肯定式，如 inject_bible/jit_characters）；优先级：显式 flag > 配置 > 出厂默认。

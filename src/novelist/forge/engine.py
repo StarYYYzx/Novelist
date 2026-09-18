@@ -11,7 +11,8 @@ book ── 设定骨架 + 卷主线一次出齐（写回蓝图 + 落 bible）
 ```
 `deepen=False` 退化为 F1 最小树（book → volume → chapter），存量行为不变。
 
-硬边界（docs/10 §7.3）：max_calls 分阶段配额（build 卷 1 默认 60 / roll 每卷 40）；
+硬边界（docs/10 §7.3）：max_calls 分阶段配额（显式 `--max-calls` 优先；否则 build/seed/shell
+按规模推导 `12 + N×3 + K×2 + min(M,24)`（ADR-033 B，下限 12），`resume` 硬默认 60、`roll` 每卷 40）；
 max_depth=4（book=0 … beat=4，超深强制 done）；max_width=4（children 截断）；
 每节点 max_retries=1（解析失败重试一次，再失败回退父层产物）。
 

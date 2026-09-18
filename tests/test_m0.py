@@ -99,9 +99,13 @@ def test_schema_registry_validates_valid_bible(tmp_path):
 def test_schema_registry_rejects_bad_character(tmp_path):
     from pathlib import Path as P
 
+    from novelist.storage.models import SchemaError, SchemaRegistry as _SR
+
     schemas_root = P("schemas").resolve()
-    reg = SchemaRegistry(root=schemas_root)
-    with pytest.raises(Exception):
+    reg = _SR(root=schemas_root)
+    # 收紧（2026-09-19）：原为裸 `pytest.raises(Exception)` —— 任何异常（含 jsonschema
+    # 未安装、schema 文件缺失）都算通过，等于没断言。这里同时钉住类型与出错字段。
+    with pytest.raises(SchemaError, match=r"bible/characters violated at 0\.name"):
         reg.validate("bible/characters", [{"id": "bad", "name": ""}])  # name 空 -> 校验失败
 
 

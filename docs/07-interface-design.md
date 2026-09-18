@@ -76,7 +76,11 @@ class EmbeddingProvider(Protocol):
 - API Key 来源（`providers/secrets.py`）：**CLI 显式参数 > 环境变量 > 本机 `.env`**
   （gitignored）。`custom` 支持用户手填任意 OpenAI 兼容端点的 base_url + key + model。
 - 每个适配器仅在**运行时加载**对应 SDK（可选依赖），避免冷启动加载全部。
-- `ProviderCapabilities` 不一致时的降级：例如某模型无 tool_calling → 编排器自动切换为"文本 + 后解析工具调用"策略（见 §2.5）。
+- `ProviderCapabilities` 不一致时的降级（2026-09-19 校准，AG-20 能力门控）：
+  某模型无 `tool_calling` → **根本不下发 `tools=`**（`AgentRunner._decide` 按
+  `caps.tool_calling` 门控），编排层退化为**纯文本直出**并留痕（`--loop` 时降级为直出，
+  写进 soft_failures）。**不存在"文本里后解析出 tool_calls"的兜底**——早期设计里的
+  正则/结构化提取从未实现，按当前实现描述。
 
 ### 2.4 内置适配器（现期登记，2026-09-07）
 命名预设统一按 `PRESETS` 维护默认 `base_url` / `model` / `key_env`；CLI 可用
@@ -369,7 +373,7 @@ close_scene(scene_id, {reason})       # 主持人收场；落地 scene.transcrip
 
 | 能力 | 无此能力时的策略 |
 | --- | --- |
-| tool_calling | 文本消息 + 后解析 `tool_calls`（正则/结构化提取），仍走门禁 |
+| tool_calling | **不下发 `tools=`**，Agent 循环退化为纯文本直出并留痕（2026-09-19 校准：原写的"文本 + 后解析 tool_calls"从未实现，勿按旧口径找代码） |
 | json_mode | 退化为"由 LLM 生成 JSON + 宽松解析" |
 | streaming | 关闭流式，改整包返回 |
 | **embedding** | 语义检索退化为关键词+倒排索引；保留 `query_memory` 可用性（07§7.3） |

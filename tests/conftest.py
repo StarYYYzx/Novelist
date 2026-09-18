@@ -45,6 +45,23 @@ def _isolate_secret_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_calllog_writes():
+    """关闭原始调用日志写盘（ADR-035，2026-09-19 补）。
+
+    calllog 默认**自动开启**且落进程 CWD 下的 ``raw-calls/``。跑测试时 CWD 就是仓库根，
+    于是任何真实调用（含桩 provider 路径上的 record）都会在仓库里留下 jsonl——既污染
+    ``git status``，也可能把响应正文写进工作区。`disable_calllog()` 是**粘性**的，
+    自动开启会让位；确需日志的测试（tests/test_calllog.py）显式 `enable_calllog()`
+    即可覆盖本夹具（显式 > 粘性关闭）。
+    """
+    from novelist.core import calllog
+
+    calllog.disable_calllog()
+    yield
+    calllog.disable_calllog()
+
+
 @pytest.fixture
 def ws_factory(tmp_path):
     """返回 `make(pid="proj-test") -> (ws, pid)`：建好项目骨架的工作区。

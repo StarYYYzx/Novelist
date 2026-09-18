@@ -20,6 +20,7 @@ from novelist.core.llm import (
 )
 from novelist.core.session import Budget, SessionInfo
 from novelist.core.tools import (
+    APPROVAL_ALLOW,
     APPROVAL_ASK,
     APPROVAL_DENY,
     SCHEMA_FAIL,
@@ -127,13 +128,12 @@ def test_tool_mode_without_draft_is_not_ok(tmp_path):
     ws, pid = _ws(tmp_path)
     res = produce_chapter(ws, pid, 1, 1, _StubProvider([None]), session=_sess(pid),
                           prefer_direct=False)
-    # 该桩只回文本 → AgentRunner 视为 final → 工具模式无草稿 → 由 AG-1 兜底落盘或判失败
-    if res.ok:
-        assert ws.draft_path(pid, 1, 1).exists(), "ok=True 时草稿必须真实存在"
-        assert any("兜底落盘" in f for f in res.soft_failures), res.soft_failures
-    else:
-        assert not ws.draft_path(pid, 1, 1).exists()
-        assert "未产出草稿" in res.result
+    # 该桩只回文本（长度够）→ AgentRunner 视为 final → 工具模式无草稿
+    # → 由 AG-1 兜底落盘并留痕。**不写 if/else 双分支**：两种互斥行为都判通过，
+    # 实现从"落盘"翻到"判失败"时测试依旧全绿（2026-09-18 收紧）。
+    assert res.ok, res.result
+    assert ws.draft_path(pid, 1, 1).exists(), "ok=True 时草稿必须真实存在"
+    assert any("兜底落盘" in f for f in res.soft_failures), res.soft_failures
 
 
 def test_tool_mode_downgrades_without_tool_capability(tmp_path):
@@ -291,12 +291,32 @@ def test_gate_fails_closed_on_unknown_decision():
 
 
 def test_gate_missing_supervised_profile_does_not_crash():
-    """AG-7：策略文件缺 `supervised` 段时，回退内置兜底档而不是 KeyError。"""
-    gate = PermissionGate(profiles={"strict": {"danger": APPROVAL_DENY}})
+    """AG-7：策略文件缺 `supervised` 段时，回退内置兜底档而不是 KeyError。
+
+    构造要点（2026-09-19 修正）：必须让 session **请求一个不存在的档** —— 此处
+    profiles 只有 `strict`，而 session 用默认 `supervised`，两次取值均 miss，
+    才会走到内置兜底。原写法让 session 直接取 `strict`（该段存在），
+    `check()` 第一行就命中，后两级回退一次都没执行 —— 用例名所述的场景
+    根本没被构造，是**假绿**。
+    """
+    gate = PermissionGate(profiles={"strict": {"sensitive": APPROVAL_ALLOW,
+                                               "danger": APPROVAL_DENY}})
+    assert "supervised" not in gate.profiles  # 前提：默认档确实缺失
+
     reg = ToolRegistry(gate=gate)
-    reg.register(_safe_tool())
-    res = reg.invoke(_sess(profile="strict"), "probe", {"q": "x"})
-    assert res.status == "ok"  # safe 级放行，且未崩
+    for lv in ("safe", "sensitive", "danger"):
+        t = _safe_tool(f"t_{lv}")
+        t.level = lv  # _safe_tool 只造 safe 级，此处改级别以走不同判定分支
+        reg.register(t)
+
+    # 回退链：strict 不命中请求档 → supervised 也缺 → 内置兜底（sensitive=ask / danger=deny）
+    assert reg.invoke(_sess(), "t_safe", {"q": "x"}).status == "ok"
+    # ask 在「无审批通道」的裸 registry 下降级为 deny（AG-10 口径），不崩即达标
+    assert reg.invoke(_sess(), "t_sensitive", {"q": "x"}).status == "denied"
+    assert reg.invoke(_sess(), "t_danger", {"q": "x"}).status == "denied"
+
+    # 对照：命中真实存在的 strict 档时按其配置放行 sensitive（证明上面的 deny 来自兜底而非硬编码）
+    assert reg.invoke(_sess(profile="strict"), "t_sensitive", {"q": "x"}).status == "ok"
 
 
 def test_policy_file_rejects_invalid_decision(tmp_path):

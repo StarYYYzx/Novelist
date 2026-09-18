@@ -261,6 +261,57 @@ def test_resolve_keep_both_renames_candidate(tmp_path):
     assert "pt:lingxiang_jinhua" in ids and "pt:lingxiangjinhua_b" in ids
 
 
+def test_resolve_drop_new_keeps_only_existing(tmp_path):
+    """threads 裁决 `drop-new`：候选丢弃、原伏笔**原样保留**（此前该分支零覆盖）。"""
+    from novelist.forge.conflicts import load_conflicts, open_conflicts, resolve_conflict
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    bp = _bp_with_one_main(ws, pid)
+    bp.upsert("threads", {"id": "pt:lingxiang_jinhua", "desc": "灵相进化极限",
+                          "scope": "book", "status": "unplanned"})
+    art = {"threads": [{"id": "pt:lingxiangjinhua", "desc": "灵相为何能进化",
+                        "scope": "book"}]}
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                      provider=_CaptureFixed([_node_reply(art)]))
+    run_node(ctx, "thread_set")
+    cid = open_conflicts(ws, pid, kind="threads")[0]["id"]
+
+    note = resolve_conflict(ws, pid, cid, "drop-new")
+    assert "丢弃候选" in note
+
+    after = Blueprint.load(ws, pid)
+    ids = [x["id"] for x in after.section("threads")]
+    assert "pt:lingxiang_jinhua" in ids
+    assert "pt:lingxiangjinhua" not in ids  # 无下划线的候选始终未落盘
+    kept = after.find_by_id("threads", "pt:lingxiang_jinhua")
+    assert kept["desc"] == "灵相进化极限", "drop-new 是丢弃，不得改动原伏笔内容"
+    assert not open_conflicts(ws, pid, kind="threads")
+    # 裁决留痕可追溯
+    resolved = load_conflicts(ws, pid)["resolved"]
+    assert resolved and resolved[-1]["choice"] == "drop-new" and resolved[-1]["id"] == cid
+
+
+def test_resolve_rejects_choice_from_other_kind(tmp_path):
+    """裁决取值跨 kind 混用会被拒（`lines` 的 `keep-first` 不适用于 threads）。"""
+    from novelist.forge.conflicts import open_conflicts, resolve_conflict
+
+    ws = Workspace(root=str(tmp_path))
+    pid = "p"
+    ws.create_project(pid)
+    bp = _bp_with_one_main(ws, pid)
+    bp.upsert("threads", {"id": "pt:a", "desc": "旧", "scope": "book"})
+    art = {"threads": [{"id": "pt_a", "desc": "新", "scope": "book"}]}
+    ctx = NodeContext(ws=ws, project_id=pid, bp=bp, pack={},
+                      provider=_CaptureFixed([_node_reply(art)]))
+    run_node(ctx, "thread_set")
+    cid = open_conflicts(ws, pid, kind="threads")[0]["id"]
+    with pytest.raises(ValueError, match="不支持"):
+        resolve_conflict(ws, pid, cid, "keep-first")
+    assert open_conflicts(ws, pid, kind="threads"), "被拒的裁决不得消耗待裁决项"
+
+
 # ---------------------------------------------------------------- 构建级：不污染 + 中止
 
 def test_build_does_not_persist_conflicting_writes(tmp_path):

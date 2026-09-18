@@ -129,9 +129,13 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
       耗时格式化：生成期输出不再裸 `print`，console/server 下可实时转发且有 UTF-8 兜底）、
     `normalize`（确定性文本/数据归一：禁令去重、术语清单拆分与归并——
       装配侧与 Forge 写入侧**共用同一份**）。
-  - `forge/`：`state`（Blueprint/provenance）、`slots`（槽位与缺口）、`ask` + `io_console`（分轮商讨）、
-    `seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、`genres`（类型包）、
-    `validate` + `report`（契约校验与构建报告）。
+  - `forge/`：`state`（Blueprint/provenance + `BlueprintTxn` 事务化落库）、`slots`（槽位与缺口）、
+    `ask` + `io_console`（分轮商讨）、`seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、
+    `genres`（类型包）、`validate` + `report`（契约校验与构建报告）、`snapshot`（双快照/回滚）、
+    `review`（ADR-024 审核闸门）、`covenant`（ADR-026 承诺账本）、`coherence`（细纲连读审查）、
+    `textnorm`（角色名防污染归一）、`console`（`novelist console` 中枢）、`shell`（常驻设定会话壳）、
+    **`conflicts`（结构冲突人工裁决队列，2026-09-16 拍板：主线/伏笔重名**不自动合并**，
+    保留先出现者、候选挂起等 `/resolve`）**。
   - `providers/`：`openai`（OpenAI 兼容基类，含审核拦截识别）、`deepseek`（生成通道）、各厂商 PRESETS、
     `fake`（测试替身）、`secrets`（.env + key）。
   - `storage/`：`workspace`（沙箱 + 原子写）、`checkpoint`（双轨快照）、`indexdb`（SQLite 辅助索引）、

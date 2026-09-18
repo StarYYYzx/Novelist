@@ -1055,6 +1055,30 @@ provenance 标记。
 ⑤取证预算默认收紧可被 CLI 覆盖（`tests/test_m3aa_budget.py` 验证预算不足走回退、充足走 agent）；
 ⑥Forge 尺度（ADR-033）宽度分级与规模预算由 `tests/test_m3aa_forge_scale.py` 覆盖，全量 933 全绿。
 
+### M3ab — `[generation]` 配置层（U7 · 2026-09-15 拍板 / ✅ 已落地）
+
+`chapter` 有约 30 个参数，每次手打既易错又不可复现。U7 把**管线开关与预算**做成项目级
+默认值，落在 `config.toml` 的 `[generation]` 段（`config.GenerationConfig`）：
+
+| 项 | 口径 |
+| --- | --- |
+| 优先级 | **显式 CLI flag > 配置 > 出厂默认**（`config.resolve_opt(explicit, configured, default)`） |
+| 键名 | 选项名去连字符；布尔键用**肯定式**——CLI 的 `--no-bible/--no-jit` 对应 `inject_bible`/`jit_characters` |
+| 收集范围 | 只收管线开关与预算（`GENERATION_KEYS`，18 键）。`--provider/--api-*/--vol/--ch/--policy` 等"每次调用都可能不同"的参数**不进配置**，保持 CLI 专属 |
+| 未知键 | **直接报 `NovelistError`**（防拼错后静默失效） |
+| 无配置段 | 全部字段 `None` → 行为与历史版本逐字节一致（不改任何出厂默认） |
+
+```toml
+[generation]
+event_loop = true
+polish = true
+gen_tokens = 6000
+min_event_words = 120
+```
+
+> 2026-09-19 校准：早期文档只写"CLI 参数"，未记这一层；`docs/命令手册.md` §"chapter
+> 参数分组"与 `novelist chapter --help` 末尾 epilog 同文。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

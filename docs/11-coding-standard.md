@@ -287,16 +287,16 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 
 ---
 
-## 附：体检数据基线（2026-09-18 AST 重测）
+## 附：体检数据基线（2026-09-19 AST 重测）
 
 > 上一版为 2026-09-01（src 8047 行 / 376 函数 / 220 用例），随 M3l–M3aa 大规模落地已全面失效；
 > 本节于 2026-09-12 首次用 AST 重测，**2026-09-15 随「批次 3 + ADR-035」、深夜「Agent 层审计 AG-1…AG-24」、
-> 09-16「Forge 构建原子化」、09-18「批次 A 落盘与权限边界」四次再测**
-> （`scripts/` 不计入）。**对比列保留 2026-09-01 旧值**，便于看演化方向。
+> 09-16「Forge 构建原子化」、09-18「批次 A 落盘与权限边界」、09-19「批次 B 测试真缺口 + 批次 C 文档口径」
+> 五次再测**（`scripts/` 不计入）。**对比列保留 2026-09-01 旧值**，便于看演化方向。
 
 | 指标 | 2026-09-01 | 2026-09-15（实测） | 目标 |
 | --- | --- | --- | --- |
-| src 规模 | 8047 行 | **31856 行 / 91 文件** | 单文件 ≤500 |
+| src 规模 | 8047 行 | **31858 行 / 91 文件** | 单文件 ≤500 |
 | 最大文件 | orchestrator 1280 | **orchestrator 2774**（nodes 2211 / cli 1910 / engine 1389） | 单文件 ≤500 |
 | 函数总数 | 376 | **1223** | — |
 | >50 行函数 | 16 | **92** | 新代码不新增 |
@@ -311,7 +311,7 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | 死代码 | providers REGISTRY、base.py | **已清** ✅（REGISTRY 已投用、`providers/base.py` 已删）；`core/scene_tools.py` 保留（文档记为待接入预留件） | 归零 |
 | 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
 | `[tool.ruff]` / `[tool.mypy]` | 无 | **`[tool.ruff]` 已落（锁定现状，0 告警）；`[tool.mypy]` 仍无**（P2-9 部分完成，ADR-034） | 落地 |
-| 测试 | 22 文件 4128 行 220 用例，无 conftest | **95 文件 19633 行；1122 收集**（1120 passed · 1 skipped · 1 deselected slow）；conftest 已建 105 行 | 夹具统一 |
+| 测试 | 22 文件 4128 行 220 用例，无 conftest | **96 文件 19983 行；1134 收集**（1132 passed · 1 skipped · 1 deselected slow）；conftest 已建 121 行（批次 B 增 autouse `disable_calllog`） | 夹具统一 |
 | schemas / docs | — | **24 个 schema；docs 26 文件 ~9200 行** | — |
 | 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
 | 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |
