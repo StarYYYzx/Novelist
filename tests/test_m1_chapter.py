@@ -55,8 +55,10 @@ def test_produce_chapter_multiple_tools(tmp_path):
     ws, pid = _new_project(tmp_path, "proj-m1b")
     res = produce_chapter(ws, pid, 2, 3, ScriptedProvider(script), prefer_direct=False)
     assert res.ok
-    # write_file 的 path 相对工作区根（session.project 由调用方在工具内对齐——此处 take 落在更上层）
-    assert (tmp_path / "workspace" / "take.md").exists()
+    # 2026-09-18：`write_file` 的 path 基准从"沙箱根"改为**当前项目目录**（跨项目写硬拒），
+    # 故 take 落在 <项目>/workspace/ 下，而不是 tmp_path 这一层。
+    assert (tmp_path / pid / "workspace" / "take.md").exists()
+    assert not (tmp_path / "workspace" / "take.md").exists(), "不得写到项目之外"
     assert ws.draft_path(pid, 2, 3).exists()
 
 

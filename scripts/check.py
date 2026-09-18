@@ -198,6 +198,90 @@ _REQUIRED_GITIGNORE = (
 
 _ROOT_LEFTOVER_RE = re.compile(r"^_(?!_)[^/]*\.(?:py|txt|md|json|log|lock)$")
 
+# (c) safe 级工具白名单（2026-09-18）：`safe` = 门禁自动放行，新增必须显式登记并说明理由，
+# 否则又会长出"绕过审批的旁路"（此前 write_file 就是这样绕过 publish 的 danger 门禁）。
+_SAFE_TOOL_ALLOWLIST = {
+    "read_file", "grep_text",           # 只读观测
+    "query_memory", "get_character_history", "get_plot_events",  # 只读记忆
+    "write_draft",                      # 写草稿区（正文由 publish 转正，仍受 danger 门禁）
+}
+
+# (d) Forge 落盘事务（2026-09-16 事故）：`_apply_*` 是"先写蓝图、后校验"，
+# 内部一旦 save 就会把半成品落进 bible —— 必须交给 `forge/state.blueprint_txn` 统一提交。
+_APPLY_SAVE_FORBIDDEN = ROOT / "src" / "novelist" / "forge" / "nodes.py"
+
+
+def _tool_level(call: ast.Call) -> tuple[str, str]:
+    """从 `Tool(name, desc, level, ...)` 调用里取 (工具名, 级别字符串)。"""
+    name = ""
+    if call.args and isinstance(call.args[0], ast.Constant):
+        name = str(call.args[0].value)
+    for key in ("name", "level"):
+        for kw in call.keywords:
+            if kw.arg == key and isinstance(kw.value, ast.Constant):
+                if key == "name":
+                    name = str(kw.value.value)
+    level = ""
+    if len(call.args) >= 3:
+        lv = call.args[2]
+        if isinstance(lv, ast.Constant):
+            level = str(lv.value)
+        elif isinstance(lv, ast.Name):  # LEVEL_SAFE / LEVEL_SENSITIVE 常量
+            level = lv.id
+    for kw in call.keywords:
+        if kw.arg == "level":
+            if isinstance(kw.value, ast.Constant):
+                level = str(kw.value.value)
+            elif isinstance(kw.value, ast.Name):
+                level = kw.value.id
+    return name, level
+
+
+def _gate_tool_levels() -> list[str]:
+    """扫描 `tools/` 下的 `safe` 级工具，未登记即报错。
+
+    用 AST 而非正则：正则会跨条目误匹配（write_file 被后一个工具的 "safe" 命中）。
+    """
+    bad: list[str] = []
+    tools_dir = ROOT / "src" / "novelist" / "tools"
+    for f in sorted(tools_dir.rglob("*.py")):
+        if "__pycache__" in f.parts:
+            continue
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Name) and fn.id == "Tool"):
+                continue
+            name, level = _tool_level(node)
+            if level in ("safe", "LEVEL_SAFE") and name not in _SAFE_TOOL_ALLOWLIST:
+                bad.append(f"{f.relative_to(ROOT).as_posix()}:{node.lineno} {name}")
+    return bad
+
+
+def _gate_forge_apply_saves() -> list[str]:
+    """`forge/nodes.py` 的 `_apply_*` 函数体内不得出现 `.save(`（必须走事务）。"""
+    bad: list[str] = []
+    if not _APPLY_SAVE_FORBIDDEN.exists():
+        return bad
+    src = _APPLY_SAVE_FORBIDDEN.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:  # pragma: no cover - 语法错误由 G4 报
+        return [f"nodes.py 解析失败：{e}"]
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                node.name.startswith("_apply_"):
+            seg = ast.get_source_segment(src, node) or ""
+            if ".save(" in seg:
+                bad.append(f"{_APPLY_SAVE_FORBIDDEN.relative_to(ROOT).as_posix()}:"
+                           f"{node.lineno} {node.name}()")
+    return bad
+
 
 def gate_hygiene() -> bool:
     _head("G3 · 仓库卫生检查")
@@ -237,12 +321,31 @@ def gate_hygiene() -> bool:
         _say(_FAIL, "tests/test_noval/ 被 git 跟踪（用户手写稿，只读不提交）")
         ok = False
 
+    # (c) safe 级工具白名单
+    unregistered = _gate_tool_levels()
+    if unregistered:
+        _say(_FAIL, f"{len(unregistered)} 个 safe 级工具未登记（safe = 门禁自动放行）：")
+        for x in unregistered:
+            print("        " + x)
+        print("        修法：在 scripts/check.py 的 _SAFE_TOOL_ALLOWLIST 登记并说明理由")
+        ok = False
+
+    # (d) Forge `_apply_*` 不得自行 save（事务化）
+    apply_saves = _gate_forge_apply_saves()
+    if apply_saves:
+        _say(_FAIL, f"{len(apply_saves)} 个 `_apply_*` 在事务外自行落盘（会绕过回滚）：")
+        for x in apply_saves:
+            print("        " + x)
+        print("        修法：删掉 _apply_* 内的 save，交给 forge/state.blueprint_txn 提交")
+        ok = False
+
     r = _run(["git", "config", "--get", "core.hooksPath"])
     if r.stdout.strip() != ".githooks":
         _say(_WARN, "未挂 git hook：跑 python scripts/ai_bootstrap.py（不阻塞，但本地门禁缺失）")
 
     if ok:
-        _say(_OK, "无临时文件入库；.gitignore 关键条目齐备；test_noval 未被跟踪")
+        _say(_OK, "无临时文件入库；.gitignore 关键条目齐备；test_noval 未被跟踪；"
+                  "safe 工具已登记；forge _apply_* 无越权落盘")
     return ok
 
 

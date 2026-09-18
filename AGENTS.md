@@ -146,7 +146,7 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
 |---|---|---|
 | G1 | `ruff check src tests scripts` | A（<3s） |
 | G2 | 密钥扫描：`sk-` / `ghp_` / 私钥块 + 敏感文件是否被 git 跟踪 | A |
-| G3 | 卫生：根目录临时文件残留、`.gitignore` 关键条目、`test_noval` 未被跟踪 | A |
+| G3 | 卫生：根目录临时文件残留、`.gitignore` 关键条目、`test_noval` 未被跟踪、**`safe` 级工具白名单**（safe=自动放行，新增须登记）、**Forge `_apply_*` 不得自行 `bp.save()`**（须走事务） | A |
 | G4 | `pytest` 全量（**强制注入沙箱环境变量**） | B（~90s） |
 | G5 | 文档基线：重算 9 项指标并与 `docs/11` 基线表逐格比对 | B |
 

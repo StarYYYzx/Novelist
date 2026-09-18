@@ -169,6 +169,17 @@ level==danger && profile != allow → wait(HumanDecision); deny if != allow
 ```
 门禁决策来源：CLI 提示 / HTTP 审批端点 / 配置策略文件，三种可并存。
 
+**按参数定级（2026-09-18 新增）**：`Tool.level_fn(session, params) -> level` 可按本次调用的
+参数改写有效分级，用于写类工具的"路径感知"——`write_file` 写 `drafts/`（草稿区）与
+`workspace/`（围读产物）时按 `safe` 自动放行，写 `chapters/`、`project.json` 等受控位置时
+维持 `sensitive`（需审批，无审批通道即拒绝）。**判定失败/返回非法值一律退回声明级别**
+（不放宽，同 AG-6 的 fail-closed 口径）。
+
+**路径基准统一为项目目录（2026-09-18 变更）**：写/删类工具（`write_file`、`delete_file`、
+`write_draft`、`publish`）的 `path` 一律相对**当前项目根**解析，兼容带项目名前缀的写法；
+跨项目读写硬拒。此前 `write_file` 以沙箱根为基准且定级 `safe`，可跨项目写、也能绕过
+`publish` 的 danger 审批直接把内容塞进 `chapters/`。
+
 ### 3.4 权限策略文件（policy，TOML）
 门禁判定引用 `profile`（权限面名，来自 `SessionInfo.permission_profile`）；策略文件定义各 profile 对工具级 `level` 的处置：
 

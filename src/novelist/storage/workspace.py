@@ -175,9 +175,17 @@ class Workspace:
             return f.read()
 
     def write_text(self, path: Path, content: str) -> None:
+        """原子写文本（tmp + rename，与 `write_json` 同一口径）。
+
+        2026-09-18：此前是 `open(path,"w")` 直写——写章中途中断会留下**半截正文**，
+        且旧内容已被截断不可恢复，违反 ADR-016「文件即持久事实源」。正文/草稿/细纲
+        全部走这条通道（orchestrator 写章、tools/writing.write_draft）。
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(content)
+        os.replace(tmp, path)
 
     # ---- SQLite 辅助索引（ADR-016）----
     def index_db(self, project_id: str) -> IndexDb:

@@ -10,6 +10,7 @@ FastAPI REST，封装 CLI/核心能力：项目状态、流水线推进、串行
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -26,7 +27,10 @@ app = FastAPI(title="Novelist API", version="0.1.0")
 
 
 def _workspace() -> Workspace:
-    cfg = load_config()
+    # 2026-09-18：此前 `load_config()` 不传 path → `config.load_config` 直接返回默认 Config，
+    # 于是 config.toml 的 [storage]/[security]/[budget] 对 HTTP 服务**全部无效**（CLI 侧却生效）。
+    # 默认查 `./config.toml`，可用 NOVELIST_CONFIG 覆盖（与 Key 的"显式 > 环境 > .env"同构）。
+    cfg = load_config(os.environ.get("NOVELIST_CONFIG") or "config.toml")
     return Workspace(root=cfg.storage.workspace_root or ".")
 
 

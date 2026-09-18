@@ -53,6 +53,7 @@ class Tool:
         handler: Callable[..., Any],
         parameters: dict | None = None,
         required: list[str] | None = None,
+        level_fn: Callable[[Any, dict], str | None] | None = None,
     ) -> None:
         self.name = name
         self.description = description
@@ -62,6 +63,22 @@ class Tool:
         # 必填参数名（AG-8）：以前 `parameters` 只是给 to_def 展示用、**从不校验**，
         # 模型少传/拼错键会一路走到 handler 里 KeyError → 只回 INTERNAL 无信息。
         self.required = list(required or [])
+        # 按参数动态定级（2026-09-18）：写类工具可依目标路径收紧/放宽，见 filesys.write_file
+        self.level_fn = level_fn
+
+    def effective_level(self, session: Any, params: dict | None = None) -> str:
+        """本次调用的有效分级。默认 `self.level`；`level_fn` 可依参数改写。
+
+        **收紧容易放宽难**：`level_fn` 返回 None / 非法值 / 抛错都退回 `self.level`，
+        绝不因判定失败而降到 safe（否则又是一条静默放行通道，同 AG-6 的教训）。
+        """
+        if self.level_fn is None:
+            return self.level
+        try:
+            got = self.level_fn(session, params or {})
+        except Exception:  # noqa: BLE001 - 定级失败按声明级别处理
+            return self.level
+        return got if got in (LEVEL_SAFE, LEVEL_SENSITIVE, LEVEL_DANGER) else self.level
 
     def invoke(self, session: SessionInfo, params: dict, budget: Budget | None = None) -> Any:
         try:
@@ -198,7 +215,7 @@ class ToolRegistry:
             return fail(NOT_FOUND, {"name": name, "available": sorted(self._tools)})
         # 门禁判定本身也可能抛（如策略 profiles 结构异常）——不能让它穿透成整章失败
         try:
-            decision = self._gate.check(session, tool)
+            decision = self._gate.check(session, tool, params)
         except Exception as e:  # noqa: BLE001 - 门禁异常按拒绝处理（fail-closed）
             return denied(name, f"permission gate error: {type(e).__name__}: {e}")
         if decision == APPROVAL_DENY:
@@ -305,7 +322,8 @@ class PermissionGate:
             profiles[name] = prof
         return cls(profiles=profiles)
 
-    def check(self, session: SessionInfo, tool: Tool) -> str:
+    def check(self, session: SessionInfo, tool: Tool, params: dict | None = None) -> str:
+        """判定本次调用的处置。`params` 用于工具的路径感知定级（2026-09-18）。"""
         prof = self.profiles.get(session.permission_profile)
         if prof is None:  # 回退默认档（AG-7：不做急切求值，缺则用内置兜底）
             prof = self.profiles.get(self.DEFAULT_PROFILE)
@@ -315,9 +333,10 @@ class PermissionGate:
         tool_override = (prof.get("tools") or {}).get(tool.name)
         if tool_override:
             return self._settle(tool_override, tool.name, "tools override")
-        if tool.level == LEVEL_SAFE:
+        level = tool.effective_level(session, params)
+        if level == LEVEL_SAFE:
             return APPROVAL_ALLOW
-        return self._settle(prof.get(tool.level, APPROVAL_DENY), tool.name, f"level={tool.level}")
+        return self._settle(prof.get(level, APPROVAL_DENY), tool.name, f"level={level}")
 
     def _settle(self, decision: Any, tool_name: str, where: str) -> str:
         """合法处置原样返回；非法/缺失一律 deny 并告警（fail-closed）。"""
