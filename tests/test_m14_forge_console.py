@@ -402,3 +402,82 @@ def test_delete_by_index(tmp_path):
     c2.run()
     assert not victim_dir.exists()
     assert any("已删除项目" in ln for ln in io2.out)
+
+
+# ---------------------------------------------------------------------------
+# Ctrl+C 中断语义（2026-09-19 晚真机：审批等待中 Ctrl+C 被吞成 deny，
+# agent 继续弹下一个审批 = "中断无效"；审批期间假心跳误导）
+# ---------------------------------------------------------------------------
+
+
+def test_input_raises_keyboard_interrupt(monkeypatch):
+    """Ctrl+C 在 input 中必须上抛（不得吞成 "" = deny）。"""
+    from novelist.forge.console import FilterableIO
+
+    def _ki_input(prompt=""):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _ki_input)
+    io_ = FilterableIO(lines=[], tty=True)
+    try:
+        io_.input("prompt> ")
+        raised = False
+    except KeyboardInterrupt:
+        raised = True
+    assert raised, "KeyboardInterrupt 被吞了——审批场景会变成 deny 并继续跑"
+
+
+def test_repl_ctrlc_returns_to_prompt_not_exit(tmp_path, monkeypatch):
+    """主提示符 Ctrl+C：打 ^C 回提示符继续（不退出 REPL）。"""
+    state = {"n": 0}
+
+    def _ki_then_lines(prompt=""):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise KeyboardInterrupt
+        return "/q"
+
+    monkeypatch.setattr("builtins.input", _ki_then_lines)
+    io_ = FilterableIO(lines=[], tty=True)
+    c = Console(io=io_, workspace_root=str(tmp_path), provider="fake")
+    c.run()
+    assert any("^C" in ln for ln in io_.out)
+    assert any("已退出控制台" in ln for ln in io_.out)  # 后续 /q 正常退出
+
+
+def test_chat_ctrlc_aborts_turn_keeps_repl(tmp_path, monkeypatch):
+    """对话轮中 Ctrl+C：输出 [已中断]，REPL 存活，不当作 deny。"""
+    from novelist.core.agent_chat import ChatAgent
+
+    def _boom(self, text):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ChatAgent, "ask", _boom)
+    c, io_ = _console(str(tmp_path), lines=[])
+    pid = c._ws.create_project("proj-ki").name
+    from novelist.storage.checkpoint import Checkpoint
+
+    Checkpoint(c._ws).save(pid, {"id": pid, "title": "t"})
+    c.state.project_id = pid
+    monkeypatch.setattr("builtins.input", lambda prompt="": "/q")  # 下一轮退出
+    # 手动触发一轮对话（脚本行里已无输入，直接调 _chat）
+    c._chat("帮我看看进度")
+    assert any("[已中断]" in ln for ln in io_.out)
+    # REPL 主循环仍可正常退出
+    c.dispatch("/q")
+
+
+def test_heartbeat_paused_silences_ticks(tmp_path, monkeypatch, capsys):
+    """heartbeat_paused 期间心跳线程静默（审批等待不再打假心跳）。"""
+    import time as _t
+
+    from novelist.core.output import heartbeat, heartbeat_paused, use_output
+
+    monkeypatch.setenv("NOVELIST_HEARTBEAT_S", "0.05")
+    out: list[str] = []
+    with use_output(out.append):
+        with heartbeat("测试中"):
+            with heartbeat_paused():
+                _t.sleep(0.4)  # 若未暂停：0.4s 内至少打 6 跳
+    ticks = [x for x in out if "测试中仍在进行" in x]
+    assert not ticks, f"暂停期仍打印心跳：{ticks[:3]}"

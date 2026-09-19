@@ -296,9 +296,9 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 
 | 指标 | 2026-09-01 | 2026-09-15（实测） | 目标 |
 | --- | --- | --- | --- |
-| src 规模 | 8047 行 | **34787 行 / 95 文件** | 单文件 ≤500 |
+| src 规模 | 8047 行 | **34830 行 / 95 文件** | 单文件 ≤500 |
 | 最大文件 | orchestrator 1280 | **orchestrator 2852**（nodes 2429 / cli 2058 / engine 1615） | 单文件 ≤500 |
-| 函数总数 | 376 | **1325** | — |
+| 函数总数 | 376 | **1326** | — |
 | >50 行函数 | 16 | **101** | 新代码不新增 |
 | >100 行函数 | 2 | **24** | >100 行归零 |
 | 最大函数 | — | **`orchestrator._produce_chapter_impl` 1132 行 / 51 参数**（P0-1；2026-09-15 已拆出薄包装 `produce_chapter`，impl 本体仍待拆） | 拆成 5 段 |
@@ -311,7 +311,7 @@ builder 函数）、`consistency/rules.py:280 _worldstate_check` 97 行（R-STAT
 | 死代码 | providers REGISTRY、base.py | **已清** ✅（REGISTRY 已投用、`providers/base.py` 已删）；`core/scene_tools.py` 保留（文档记为待接入预留件） | 归零 |
 | 死依赖 | structlog（声明未用） | **仍声明未用**（P2-8 未做） | 归零 |
 | `[tool.ruff]` / `[tool.mypy]` | 无 | **`[tool.ruff]` 已落（锁定现状，0 告警）；`[tool.mypy]` 仍无**（P2-9 部分完成，ADR-034） | 落地 |
-| 测试 | 22 文件 4128 行 220 用例，无 conftest | **105 文件 22195 行；1255 收集**（1253 passed · 1 skipped · 1 deselected slow）；conftest 已建 121 行（批次 B 增 autouse `disable_calllog`） | 夹具统一 |
+| 测试 | 22 文件 4128 行 220 用例，无 conftest | **105 文件 22274 行；1259 收集**（1257 passed · 1 skipped · 1 deselected slow）；conftest 已建 121 行（批次 B 增 autouse `disable_calllog`） | 夹具统一 |
 | schemas / docs | — | **24 个 schema；docs 26 文件 ~9200 行** | — |
 | 分层违规 | 0 | **0**（storage 不反向依赖 core） | 保持 0 |
 | 提交规范 | conventional + 中文 | **保持**（含 2026-09-12 三个修复批次提交） | 保持 |

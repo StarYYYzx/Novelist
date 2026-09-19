@@ -249,6 +249,12 @@ class ChatAgent:
             with call_context(f"chat:{self.project_id}"), heartbeat("主编剧思考中"):
                 run = self.runner.run_chat(text)
             answer = run.final
+        except KeyboardInterrupt:
+            # 审批/生成中 Ctrl+C：补记中断标记，保持 session 双轮配对，再上抛
+            append_session(self.ws, self.project_id,
+                           {"type": "turn", "role": "assistant",
+                            "content": "（本轮被用户中断）"})
+            raise
         except AgentLoopError:
             # 轮次/预算耗尽 → 抢救（AG-13 同语义）：要求不带工具直接答
             with call_context(f"chat:{self.project_id}"):

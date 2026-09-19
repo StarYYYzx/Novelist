@@ -55,9 +55,14 @@ def _io_decision(io: FilterableIO):
     """
 
     def _decide(req) -> str:
+        from ..core.output import heartbeat_paused
+
         io.output(f"[approval] 工具 {req.tool} 请求执行：{req.reason}")
         io.output(f"  参数：{str(req.params)[:200]}")
-        ans = io.ask_free("  允许？[y/N]")
+        # 等待决策期间暂停"思考中"心跳（2026-09-19：审批阻塞 input() 时心跳线程
+        # 继续打假心跳，5 分钟"思考中"实为等输入，误导用户以为卡死去按 Ctrl+C）
+        with heartbeat_paused():
+            ans = io.ask_free("  允许？[y/N]（回车/N 拒绝；Ctrl+C 中止本轮对话）")
         return "allow" if (ans or "").strip().lower() in ("y", "yes") else "deny"
 
     return _decide
@@ -171,8 +176,11 @@ class FilterableIO:
         if self._tty:
             try:
                 value = builtins.input(prompt + " ")
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 return ""
+            # KeyboardInterrupt 不吞（2026-09-19 真机：审批等待中 Ctrl+C 被吞成
+            # "" → _decide 视为 deny → agent 继续弹下一个审批 = "中断无效"体感）。
+            # 让它上抛，由 REPL 主循环 / 对话轮分层处理。
             return value or ""
         return ""
 
@@ -703,6 +711,10 @@ class Console:
         with use_output(self.io.output):
             try:
                 answer = agent.ask(line)
+            except KeyboardInterrupt:
+                # 审批/生成中 Ctrl+C = 中止本轮对话（非退出 REPL、非拒绝该工具）
+                self.io.output("[已中断] 本轮对话中止，agent 会话已保留；可直接继续输入。")
+                return
             except Exception as e:  # noqa: BLE001 - 对话失败不杀 REPL
                 self.io.output(f"[agent error] {type(e).__name__}: {e}")
                 return
@@ -790,7 +802,12 @@ class Console:
         self.io.output("Novelist 控制台。`/help` 看全部命令；`/exit` 退出。")
         while True:
             prompt = f"novelist({self.state.project_id or 'no-project'})> "
-            line = self.io.input(prompt)
+            try:
+                line = self.io.input(prompt)
+            except KeyboardInterrupt:
+                # 主提示符 Ctrl+C：常见 REPL 语义 = 放弃当前行、回提示符，不退出
+                self.io.output("^C")
+                continue
             if line is None:
                 break
             if line == "" and not self.io.lines_pending:

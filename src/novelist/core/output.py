@@ -23,6 +23,7 @@ sink 用 `ContextVar` 而非全局变量——随调用上下文传播，多线�
 
 from __future__ import annotations
 
+import threading
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -76,6 +77,23 @@ def fmt_duration(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+_HB_PAUSED = threading.Event()
+
+
+@contextmanager
+def heartbeat_paused() -> Iterator[None]:
+    """全局暂停所有心跳打印（审批等待输入等阻塞交互期间用）。
+
+    心跳是 daemon 线程，不知晓主线程阻塞在 input()——不暂停会出现
+    "思考中仍在进行"假心跳（2026-09-19 真机 5 分钟假思考事故）。
+    """
+    _HB_PAUSED.set()
+    try:
+        yield
+    finally:
+        _HB_PAUSED.clear()
+
+
 @contextmanager
 def heartbeat(label: str, *, after_s: float | None = None,
               interval_s: float = 5.0) -> Iterator[None]:
@@ -107,6 +125,8 @@ def heartbeat(label: str, *, after_s: float | None = None,
         if stop.wait(after):
             return  # 阈值内完成 → 一跳都不发
         while not stop.wait(interval_s):
+            if _HB_PAUSED.is_set():
+                continue  # 全局暂停（如审批等待输入）：静默但不终止
             line = f"  …{label}仍在进行（已 {fmt_duration(time.monotonic() - started)}）"
             try:
                 if sink is not None:
