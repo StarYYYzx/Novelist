@@ -59,16 +59,18 @@
 - 每次行动前按需从工作区**拉取引用级信息**（标题、要点、人物 ids），正文细节写在文件里。
 - 触发预算阈值时执行**压缩**（04 §5.3）。
 
-### 2.5 常驻对话形态（ADR-036 · 2026-09-19 拍板 / **设计中，docs/08 M3ac**）
+### 2.5 常驻对话形态（ADR-036 · 2026-09-19 拍板 / ✅ 已实现，docs/08 M3ac）
 
 主编剧的**交互态**：`novelist console` 里的自然语通道——用户自由提问/下指令，主编剧经
-`AgentRunner` 自主调工具（读 bible/细纲/记忆、写草稿、查冲突）多轮循环后交付。
+`AgentRunner`（`run_chat`）自主调工具（读 bible/细纲/记忆、写草稿、查冲突）多轮循环后交付。
 - **不新建 REPL**：console 内非 `/` 输入进对话循环；`/` 命令维持确定性键盘分发。
 - **自主边界 = 三级门禁**（§4.3）：safe 自主 / sensitive 当场审批 / danger 默认拒。
 - **与批式编排的关系**：`produce_chapter` 流水线（§8.1 编排式多决策）**不变**；本形态是
   "人和系统之间的调度面"，不是"章节生成的另一入口"——第一版工具面刻意不含
   chapter/build/roll 这类流水线命令。
-- **会话持久化**：`<proj>/workspace/agent/session.jsonl`；切书分段、回放按预算截断。
+- **会话持久化**：`<proj>/workspace/agent/session.jsonl`（按项目分文件，天然隔离）；
+  回放 = 新快照 + 尾部预算窗口。
+- 装配层：`core/agent_chat.py`（ChatAgent + SYSTEM_PROMPT + project_snapshot）。
 
 ## 3. 命名子代理
 
@@ -289,5 +291,6 @@ Agent 请求工具 → 注册表解析级别
 - 角色演员 `character_take` 生产路径：仅 `readback_excerpt`（回读素材）有实现，takes 落地/整合未接。
 - 围读会工具（`scene_tools.py`）仅 tool-mode 挂载，无生产触发路径。
 - 伏笔监理独立伏笔表管理（当前只有 chronicler 事件→伏笔链）。
-- **§2.5 常驻对话形态（ADR-036 / M3ac）**：console 自然语通道 + 结构化查询工具面 +
-  会话持久化，全部**设计中未动码**；console 当前非 `/` 输入仍是拒绝。
+- **§2.5 常驻对话形态（ADR-036 / M3ac）**：✅ 已实现（2026-09-19）——console 非 `/`
+  输入进 `ChatAgent`；M3ac-5 真机验收（FC 在真实 provider 上的 tools 往返）并入批次 D，
+  未验前勿当"已真机证实"。

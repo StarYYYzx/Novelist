@@ -119,9 +119,13 @@ class AgentRunner:
         self._cost = 0.0
 
     # ---- 决策来源：真实 LLM，或测试注入的决策者 ----
-    def _decide(self, context: str) -> AgentDecision:
-        """默认经 LLM 决策（见 run_evidence）；子类/测试可替换。"""
-        self._messages.append(LLMMessage(role="user", content=context))
+    def _decide(self, context: str | None) -> AgentDecision:
+        """默认经 LLM 决策（见 run_evidence）；子类/测试可替换。
+
+        `context=None`（chat 模式首轮）时不追加任何提示——用户消息本身已是 prompt。
+        """
+        if context:
+            self._messages.append(LLMMessage(role="user", content=context))
         result = self.provider.complete(
             # 传**快照**（list 拷贝）：请求一旦发出就不该随后续 append 变化，
             # 否则任何持有 req 的一方（calllog/测试/审计）看到的都是"未来的消息流"。
@@ -183,6 +187,63 @@ class AgentRunner:
 
     def system(self, prompt: str) -> None:
         self._messages.append(LLMMessage(role="system", content=prompt))
+
+    # ---- M3ac（ADR-036 常驻对话 Agent）：会话化 API ----
+
+    def load_messages(self, messages: list[dict]) -> None:
+        """回放会话历史（M3ac-3 持久化的读侧）。
+
+        只接受 `user`/`assistant`/`system` 三种 role——tool 消息脱离配对的
+        assistant.tool_calls 在 OpenAI 协议里非法，跨会话回放只保留文本轮
+        （工具的探索过程是当轮的临时物，不属于长期记忆）。
+        """
+        self._messages = [
+            LLMMessage(role=str(m["role"]), content=str(m.get("content") or ""))
+            for m in messages
+            if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+        ]
+
+    def export_messages(self) -> list[dict]:
+        """导出当前消息流（浅拷贝 dict，调用方改不坏内部状态）。"""
+        return [{"role": m.role, "content": m.content} for m in self._messages]
+
+    def run_chat(self, user_text: str, *, max_rounds: int | None = None) -> SubAgentRun:
+        """对话态一轮（ADR-036）：用户一句话 → 自主调工具 → 给出回答。
+
+        与 `run_evidence` 同一决策环，差异（S-2）：
+        - 用户消息**原样**进入消息流，不包「目标：X」前缀；
+        - 首轮零提示词（用户消息本身就是 prompt）；后续轮用中性继续语，
+          不再是取证子代理口吻的「读证据或输出结论」。
+        结束判据：模型给出无工具调用的文本（final）或达轮次上限（抛 AgentLoopError，
+        调用方可 converge() 抢救——与批式同语义）。
+        """
+        self._messages.append(LLMMessage(role="user", content=user_text))
+        self._rf = "text"
+        rounds = max_rounds or (self.budget.max_rounds or 30)
+        for i in range(rounds):
+            ctx = (None if i == 0 else
+                   "（基于上面的工具结果继续回答用户；已读过的内容不要重复罗列）")
+            try:
+                result = self._decide(ctx)
+            except AgentLoopError as e:
+                self._evidence.append({"kind": "error", "round": i + 1, "detail": str(e)})
+                raise
+            calls = result.tool_calls or []
+            if result.final is not None:
+                self._evidence.append({"kind": "final", "round": i + 1,
+                                       "content": result.final})
+                return SubAgentRun(final=result.final, rounds=i + 1,
+                                   evidence=self._evidence, usage=self.usage)
+            self._evidence.append({
+                "kind": "decide", "round": i + 1,
+                "detail": "; ".join(f"tool={tc.name}" for tc in calls)})
+            if not calls:
+                raise AgentLoopError("LLM 未给出工具调用也未结束")
+            for tc in calls:
+                self._run_tool(AgentDecision(tool_name=tc.name, tool_args=tc.arguments,
+                                             tool_calls=[tc]))
+        self._evidence.append({"kind": "round_limit", "round": rounds, "detail": "达到轮次上限"})
+        raise AgentLoopError("agent loop reached round limit")
 
     def run_loop(self, goal: str, max_rounds: int | None = None) -> str:
         """执行 Agent 循环直到 LLM 给出 final 或达到上限。返回最终结果文本。"""

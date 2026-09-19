@@ -204,6 +204,8 @@ _SAFE_TOOL_ALLOWLIST = {
     "read_file", "grep_text",           # 只读观测
     "query_memory", "get_character_history", "get_plot_events",  # 只读记忆
     "write_draft",                      # 写草稿区（正文由 publish 转正，仍受 danger 门禁）
+    # M3ac-2（2026-09-19）：结构化查询，全只读
+    "list_chapters", "get_bible", "get_outline", "list_conflicts", "get_worldstate",
 }
 
 # (d) Forge 落盘事务（2026-09-16 事故）：`_apply_*` 是"先写蓝图、后校验"，

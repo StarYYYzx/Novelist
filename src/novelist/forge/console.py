@@ -11,6 +11,8 @@
 - 审核/一致性（顶层）：`review`（正文一致性）`feedback` `grant`
 - 统计与设定：`stats` `validate`（顶层欠约束检查，**与 `forge-validate` 不同**）
 - 纪要：`characters-enrich` `enrich-pending` `settings-pending` `settings-allow`
+- 对话（M3ac，2026-09-19）：**非 `/` 输入 = 自然语对话**（主编剧 agent，自主调
+  只读工具查证、可写草稿；写受控路径当场审批）；`agent` 看会话状态
 - 帮助/退出：`help` `exit` / `quit` / `q`
 
 **参数定位纪律（D7，与 cli.py 逐字对齐，勿再混用）**
@@ -35,12 +37,29 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from typing import Any
 
 from click.testing import CliRunner
 
 from ..cli import cli as cli_group
 from ..core.output import use_output
 from ..storage.workspace import Workspace
+
+
+def _io_decision(io: FilterableIO):
+    """门禁审批的 REPL 通道（M3ac-1）：sensitive 工具调用当场问用户。
+
+    与 cli.py `_interactive_decision` 同语义，但走 console 的 FilterableIO
+    （CliRunner 隔离环境里 click.prompt 接触不到真实 stdin）。
+    """
+
+    def _decide(req) -> str:
+        io.output(f"[approval] 工具 {req.tool} 请求执行：{req.reason}")
+        io.output(f"  参数：{str(req.params)[:200]}")
+        ans = io.ask_free("  允许？[y/N]")
+        return "allow" if (ans or "").strip().lower() in ("y", "yes") else "deny"
+
+    return _decide
 
 
 @dataclass
@@ -170,6 +189,8 @@ class Console:
         self.smoke = smoke
         self.state = ConsoleState()
         self._ws = Workspace(root=self.ws_root)
+        # M3ac-1（ADR-036）：对话 agent 按项目惰性创建、跨命令持有（会话内连续对话）
+        self._chat_agents: dict[str, Any] = {}
 
     # —— 工具 ——
 
@@ -523,6 +544,36 @@ class Console:
     def cmd_help(self, args: str) -> None:
         self.io.output(HELP_TEXT)
 
+    # —— 对话 agent（ADR-036 / M3ac-1）——
+
+    def _chat(self, line: str) -> None:
+        """自然语通道：非 / 输入 → 主编剧对话 agent（多轮工具循环后交付回答）。"""
+        if not self._need_project():
+            return
+        from ..core.agent_chat import ChatAgent
+
+        pid = self.state.project_id
+        agent = self._chat_agents.get(pid)
+        if agent is None:
+            agent = ChatAgent(self._ws, pid, self._make_provider(),
+                              decision_fn=_io_decision(self.io))
+            self._chat_agents[pid] = agent
+        with use_output(self.io.output):
+            try:
+                answer = agent.ask(line)
+            except Exception as e:  # noqa: BLE001 - 对话失败不杀 REPL
+                self.io.output(f"[agent error] {type(e).__name__}: {e}")
+                return
+        self.io.output(answer)
+
+    def cmd_agent(self, args: str) -> None:
+        """/agent [status]：查看对话 agent 的会话状态（轮数/用量/成本）。"""
+        agent = self._chat_agents.get(self.state.project_id) if self.state.project_id else None
+        if agent is None:
+            self.io.output("[agent] 尚未开始对话——直接输入自然语即开始（先 /open 选定项目）。")
+            return
+        self.io.output(agent.status_line())
+
     def cmd_exit(self, args: str) -> bool:
         return True
 
@@ -532,7 +583,10 @@ class Console:
         if not line:
             return False
         if not line.startswith("/"):
-            self.io.output(f"[!] 命令必须以 / 开头（输入 {line!r}）——/help 查看。")
+            # M3ac-1（ADR-036，2026-09-19）：非 / 输入 = 自然语对话，喂给对话 agent
+            # （此前是拒绝并提示"必须以 / 开头"——真机里用户两次把命令当自由语输入
+            # 被吞掉，"无法修改"的体感由此而来）。
+            self._chat(line)
             return False
         # 拆出首词（命令名，可含连字符/下划线），其余整串作 args 保留。
         # 容忍 "/" 后空白（如 "/ seed"）；纯 "/"（或仅斜杠+空白）→ 空命令名 → 提示而非崩溃。
@@ -579,6 +633,7 @@ class Console:
             "enrich-pending": self.cmd_enrich_pending,
             "settings-pending": self.cmd_settings_pending,
             "help": self.cmd_help,
+            "agent": self.cmd_agent,
             "exit": self.cmd_exit,
             "quit": self.cmd_exit,
             "q": self.cmd_exit,
@@ -704,10 +759,16 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 
 其他：
   /help                         此帮助
+  /agent                        对话 agent 状态（本轮轮数/用量/成本）
   /exit | /quit | /q            退出
 
+对话（M3ac，2026-09-19）：
+  · 非 / 开头的输入 = 自然语对话——主编剧 agent 会自主调只读工具查证后回答，
+    可写草稿；写受控路径/发布/删除仍需你当场批准或走闸门命令。
+  · 对话历史落 <项目>/workspace/agent/session.jsonl，重开 console 自动续接。
+
 提示：
-  · 所有命令必须以 / 开头。
+  · 命令以 / 开头；自然语直接输入（不再需要前缀）。
   · 顶层正文一致性审查用 /review；构建期模块待审用 /fr-review（二者不同）。
   · 两个 validate 不同：/validate = 顶层欠约束检查；/forge-validate = forge 契约校验。
   · /shell 会话内命令同样以 / 开头（如 /show /build /review /approve /revise）。

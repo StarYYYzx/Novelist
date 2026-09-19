@@ -495,7 +495,12 @@ def test_persisted_queue_uses_named_session_ref(tmp_path):
 # ---------------------------------------------------------------- AG-19 工具集裁剪
 
 def test_registry_profile_selection(tmp_path):
-    """AG-19：`select(profile)` 真正按权限面/证据面裁剪（此前 profile 参数被忽略）。"""
+    """AG-19：`select(profile)` 真正按权限面/证据面裁剪（此前 profile 参数被忽略）。
+
+    2026-09-19（M3ac-2 / T-1）：证据面白名单扩进 5 个结构化查询工具——断言改为以
+    `EVIDENCE_TOOL_NAMES` 为基准，并钉住"证据环只允许 safe 级只读"。
+    """
+    from novelist.core.tools import EVIDENCE_TOOL_NAMES
     from novelist.tools import build_registry
 
     ws, pid = _ws(tmp_path)
@@ -503,8 +508,8 @@ def test_registry_profile_selection(tmp_path):
     assert len(reg.select("safe")) > 0
     assert all(t.level == "safe" for t in reg.select("safe"))
     ev = reg.select("evidence")
-    assert ev and all(t.name in {"read_file", "grep_text", "query_memory",
-                                 "get_character_history", "get_plot_events"} for t in ev)
+    assert ev and all(t.name in EVIDENCE_TOOL_NAMES for t in ev)
+    assert all(t.level == "safe" for t in ev), "证据环只允许 safe 级只读工具"
     assert {d["function"]["name"] for d in reg.to_openai_schema("safe")} == {
         t.name for t in reg.select("safe")}
 

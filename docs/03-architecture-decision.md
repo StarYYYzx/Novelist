@@ -823,7 +823,7 @@
 全量 **1028 passed**；`test_calllog.py` 断言完整 prompt 全文、原始 raw_text、解析 result、异常路径、
 451 拦截、`ctx` 归属均入 `raw-calls/<date>.jsonl`。未启用时不产生任何 `raw-calls/`。
 
-### ADR-036 常驻对话 Agent（自然语通道）：console 嫁接 AgentRunner，三级门禁即自主边界（· 拍板定稿 2026-09-19，**设计中**）
+### ADR-036 常驻对话 Agent（自然语通道）：console 嫁接 AgentRunner，三级门禁即自主边界（· 拍板定稿 2026-09-19，**已实现**（M3ac-1…4 落地；M3ac-5 真机验收并入批次 D））
 
 > 背景/问题：编码 agent（Claude Code / CodeBuddy）的常驻对话范式——用户说意图，agent 自主
 > 规划、调工具、观察、再调、交付——在 novelist 里完全缺位。现状三个构件各缺一截：
@@ -868,6 +868,13 @@
 
 **实现规划**：见 docs/08 **M3ac**（自然语通道 → 结构化查询工具 → 会话持久化 → prompt 与审计 →
 真机验收并入批次 D）。
+
+**落地记录（2026-09-19 同日）**：M3ac-1…4 已实现——`core/agent_chat.py`（ChatAgent +
+SYSTEM_PROMPT + 快照/持久化）、`AgentRunner.run_chat` + `load_messages/export_messages`、
+`tools/query.py` 5 个只读查询工具（双写 EVIDENCE_TOOL_NAMES 与 G3 白名单）、console
+非 `/` 通道 + `/agent status` + `_io_decision` 审批通道。测试 17 例（test_agent_chat +
+test_query_tools）。与 ADR 的一处偏差：会话按**项目分文件**存储，天然隔离，
+"切书段标记"失去必要（更简单的严格隔离），回放 = 该项目的最近窗口。
 
 **风险**：FC 从未真机验证（raw-calls 停在 09-16）——若 DeepSeek `deepseek-v4-flash` 的
 `tool_calling` 实际不可用，AG-20 能力门控会让自然语通道退化为"单轮问答 + 无工具"，

@@ -15,6 +15,7 @@ from . import writing  # noqa: F401  装配副作用（注册工具）
 from . import filesys  # noqa: F401
 from . import memory_tools  # noqa: F401
 from . import governance  # noqa: F401
+from . import query  # noqa: F401
 
 # 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
 # 唯一源在 `core/tools.EVIDENCE_TOOL_NAMES`（`ToolRegistry.select("evidence")` 也用它）。
@@ -45,6 +46,7 @@ def all_tools(ws: Workspace, embedding=None) -> list[Tool]:
         + writing.tools(ws)
         + memory_tools.tools(ws, embedding=embedding)
         + governance.tools(ws)
+        + query.tools(ws)
     )
 
 

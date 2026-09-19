@@ -130,6 +130,8 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
     `writeback`（事件实时回写）、`worldstate`（人物硬状态 + 时间轴/pending）、`tools`（注册表 + 三级门禁）、
     `approval`（审批队列）、`pipeline`（工序状态机）、`orchestrator` + `agent_runner`（Agent 循环）、
     `phase`（分阶段工作流）、`entity`（实体引入状态机）、`scene`（围读会总线）、`export`、`errors`、
+    `agent_chat`（**常驻对话 Agent** 装配层：ChatAgent + 主编剧 SYSTEM_PROMPT + 项目快照 +
+    session.jsonl 持久化，ADR-036/M3ac）、
     `events`、`moderation`、`calllog`（原始 LLM 调用日志，ADR-035：完整 prompt/请求体/原始响应 +
       上下文栈，落盘 `raw-calls/`）、`output`（进度/提示的**统一出口** `emit()` + sink 重定向 +
       耗时格式化：生成期输出不再裸 `print`，console/server 下可实时转发且有 UTF-8 兜底）、
@@ -148,7 +150,8 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
     `fake`（测试替身）、`secrets`（.env + key）。
   - `storage/`：`workspace`（沙箱 + 原子写）、`checkpoint`（双轨快照）、`indexdb`（SQLite 辅助索引）、
     `models`（Schema 校验）。
-  - `tools/`：`filesys` / `writing` / `memory_tools` / `governance`，经 `build_registry()` 装配。
+  - `tools/`：`filesys` / `writing` / `memory_tools` / `governance` / `query`（结构化只读查询：
+    list_chapters/get_bible/get_outline/list_conflicts/get_worldstate），经 `build_registry()` 装配。
   - `cli.py`（click）、`server.py`（FastAPI）、`config.py`（TOML 配置）。
   - **目录结构以真实布局为准**，`docs/08` §2 附有"原图条目 → 实际落点"对照表。
 

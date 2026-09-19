@@ -1079,7 +1079,7 @@ min_event_words = 120
 > 2026-09-19 校准：早期文档只写"CLI 参数"，未记这一层；`docs/命令手册.md` §"chapter
 > 参数分组"与 `novelist chapter --help` 末尾 epilog 同文。
 
-### M3ac — 常驻对话 Agent：console 自然语通道（ADR-036 · 2026-09-19 拍板 / **设计中，未动码**）
+### M3ac — 常驻对话 Agent：console 自然语通道（ADR-036 · 2026-09-19 拍板 / ✅ M3ac-1…4 已落地）
 
 编码 agent 的常驻对话范式（说意图 → agent 自主调工具 → 观察 → 交付）落到 novelist。
 **核心判断：Agent 循环、工具注册表、三级门禁、审批队列全部现成，缺的是对话入口 +
@@ -1087,10 +1087,11 @@ min_event_words = 120
 
 | 子项 | 内容 | 状态 |
 | --- | --- | --- |
-| M3ac-1 自然语通道 | `forge/console.py`：非 `/` 输入从"拒绝"改为喂 `AgentRunner`（带全工具 registry）；`/` 分发一字不动；新增 `/agent status`（本轮调用数/成本/当前书）；`/help` 补说明 | ⬜ |
-| M3ac-2 结构化查询工具 | 新增 4 个只读工具（safe 级，登记 `_SAFE_TOOL_ALLOWLIST`，G3 强校验）：`list_chapters` / `get_bible(section, id?)` / `get_outline(vol, ch)` / `list_conflicts`。消除"文件布局幻觉"，省 token | ⬜ |
-| M3ac-3 会话持久化 | `<proj>/workspace/agent/session.jsonl`；`/open` 切书写段标记、回放只取当前书段落；回放按字符预算取最近窗口 + 首条项目快照 | ⬜ |
-| M3ac-4 主编剧 prompt | 静态规则 system prompt（角色/边界/工具用法/输出风格），入库 + 离线 dump 审计（沿用 `build_system_prompt` 手法）；**项目状态只进首条 user 消息**（DeepSeek 前缀缓存纪律） | ⬜ |
+| M3ac-1 自然语通道 | `forge/console.py`：非 `/` 输入进 `ChatAgent`（原"必须 / 开头"拒绝已替换）；`/agent status`；HELP 补对话说明 | ✅ |
+| M3ac-2 结构化查询工具 | `tools/query.py`：`list_chapters` / `get_bible(section,id?)` / `get_outline(vol,ch)` / `list_conflicts` / `get_worldstate(character_id?)`（含审计增补 T-2）；全 safe 级，登记 G3 白名单 + **双写 `EVIDENCE_TOOL_NAMES`**（T-1，证据环同用） | ✅ |
+| M3ac-3 会话持久化 | `<proj>/workspace/agent/session.jsonl`（**按项目分文件**，天然隔离——比 ADR 的段标记更简单严格）；回放 = 新快照 + 尾部字符预算窗口（6000）；轮末写 usage（S-6） | ✅ |
+| M3ac-4 主编剧 prompt | `core/agent_chat.SYSTEM_PROMPT` 静态规则（角色/边界/工具用法/输出风格/版本戳）；**项目状态只进首条 user 消息**（DeepSeek 前缀缓存纪律） | ✅ |
+| AgentRunner 会话化（审计 S-1/S-2/S-5） | `load_messages/export_messages`；`run_chat`（chat 口吻轮次提示，首轮零提示词）；对话态 `enforce_cost=True` + `max_cost` 硬顶（默认 ¥0.5，`NOVELIST_AGENT_MAX_COST` 覆盖） | ✅ |
 | M3ac-5 真机验收 | 并入批次 D：自然语让 agent 自主读 bible/细纲/冲突并回答 + 一次 sensitive 写草稿走审批。判据：`raw-calls/*.jsonl` 出现 `tools` 与 `tool_calls` 往返 | ⬜ |
 
 **边界（拍板 B）**：safe 自主 / sensitive 当场审批 / danger 默认拒——PermissionGate 现成复用，

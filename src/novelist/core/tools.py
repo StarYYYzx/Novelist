@@ -38,7 +38,9 @@ _ALLOWED_DECISIONS = frozenset({APPROVAL_ALLOW, APPROVAL_ASK, APPROVAL_DENY})
 # 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
 # 定义在 core 侧供 `ToolRegistry.list_defs(profile="evidence")` 使用（tools/__init__ 再导出）。
 EVIDENCE_TOOL_NAMES = frozenset(
-    {"read_file", "grep_text", "query_memory", "get_character_history", "get_plot_events"}
+    {"read_file", "grep_text", "query_memory", "get_character_history", "get_plot_events",
+     # M3ac-2（T-1）：结构化查询同样是只读取证，证据环与对话 agent 共用
+     "list_chapters", "get_bible", "get_outline", "list_conflicts", "get_worldstate"}
 )
 
 
