@@ -876,6 +876,15 @@ SYSTEM_PROMPT + 快照/持久化）、`AgentRunner.run_chat` + `load_messages/ex
 test_query_tools）。与 ADR 的一处偏差：会话按**项目分文件**存储，天然隔离，
 "切书段标记"失去必要（更简单的严格隔离），回放 = 该项目的最近窗口。
 
+**首轮真机复盘（2026-09-19，proj-20260919115034）**：FC 判据**已通过**（raw-calls 出现
+tools 下发与 get_bible/list_chapters 等真实 tool_calls 往返）；同时暴露并修复：
+①**观测预算跨轮泄漏**（`_obs_chars` 不重置，turn2 烧光 32k 后 turn3 工具全废）→
+`run_chat` 轮首归零 + 对话态放宽到 48k；②**无结构化写通道**（agent 反复 read_file
+52KB 蓝图打转、两轮零落地）→ 新增 `update_blueprint`（sensitive，按段按字段合并写 +
+自动 sync_bible）+ `get_bible` 覆盖 `blueprint` 段；③对话轮零可见性 → trace_tools
+工具播报 + 轮首「思考中」+ 心跳；④chat `max_tokens_out` 4000→8000（finish=length
+空输出）；⑤ChatAgent 挂 `chat:<pid>` calllog 锚点。测试 +6（test_agent_chat_ops）。
+
 **风险**：FC 从未真机验证（raw-calls 停在 09-16）——若 DeepSeek `deepseek-v4-flash` 的
 `tool_calling` 实际不可用，AG-20 能力门控会让自然语通道退化为"单轮问答 + 无工具"，
 届时需另拍降级方案（伪工具协议或换 provider）。

@@ -106,6 +106,9 @@ class AgentRunner:
         self._evidence: list[dict] = []
         self._messages: list[LLMMessage] = []
         self._obs_chars = 0
+        # 对话态工具调用播报（2026-09-19，真机 UX）：console 置 True 时每次调用
+        # 经 emit 打一行「→ 调用 xxx(...)」——此前整轮静默，用户看不见 agent 在做什么。
+        self.trace_tools = False
         # 原生工具：有 registry + provider 声明支持 tool_calling 才下发（AG-20 能力门控）
         caps = getattr(provider, "capabilities", None)
         self.native_tools = bool(
@@ -219,6 +222,9 @@ class AgentRunner:
         """
         self._messages.append(LLMMessage(role="user", content=user_text))
         self._rf = "text"
+        # 观测预算是**单轮**语义（真机 bug 修复 2026-09-19）：chat 复用同一 runner 跨轮，
+        # 不重置会让上一轮的读取把 32k 预算烧光，下一轮"工具已不可再调用"。
+        self._obs_chars = 0
         rounds = max_rounds or (self.budget.max_rounds or 30)
         for i in range(rounds):
             ctx = (None if i == 0 else
@@ -240,10 +246,22 @@ class AgentRunner:
             if not calls:
                 raise AgentLoopError("LLM 未给出工具调用也未结束")
             for tc in calls:
+                self._trace(tc)
                 self._run_tool(AgentDecision(tool_name=tc.name, tool_args=tc.arguments,
                                              tool_calls=[tc]))
         self._evidence.append({"kind": "round_limit", "round": rounds, "detail": "达到轮次上限"})
         raise AgentLoopError("agent loop reached round limit")
+
+    def _trace(self, tc: ToolCall) -> None:
+        """工具调用播报（trace_tools=True 时）：对齐编码 agent 的「正在读 xxx」可见性。"""
+        if not self.trace_tools:
+            return
+        from .output import emit
+
+        args = json.dumps(tc.arguments or {}, ensure_ascii=False, default=str)
+        if len(args) > 80:
+            args = args[:77] + "..."
+        emit(f"  → 调用 {tc.name}({args})")
 
     def run_loop(self, goal: str, max_rounds: int | None = None) -> str:
         """执行 Agent 循环直到 LLM 给出 final 或达到上限。返回最终结果文本。"""
@@ -314,6 +332,7 @@ class AgentRunner:
             if not calls:
                 raise AgentLoopError("LLM 未给出工具调用也未结束")
             for tc in calls:  # AG-17：一轮内的多个 tool_calls 全部执行，不再丢弃
+                self._trace(tc)
                 self._run_tool(AgentDecision(tool_name=tc.name, tool_args=tc.arguments,
                                              tool_calls=[tc]))
         # 达到轮次上限——交给调用方决定收敛策略（AG-13）

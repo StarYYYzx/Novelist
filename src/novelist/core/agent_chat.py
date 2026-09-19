@@ -38,9 +38,13 @@ SYSTEM_PROMPT = """你是「主编剧」——Novelist 小说项目的常驻协�
 你们在一个常驻控制台里对话（novelist console）。
 
 # 你的能力
-- 用只读工具查阅项目的任何事实：bible 设定（人物/世界观/伏笔/文风）、细纲、已写章节、
-  实然状态（worldstate：人物当前境界/位置/伤势）、记忆检索、待裁决冲突、待审模块。
+- 用只读工具查阅项目的任何事实：bible 设定（人物/世界观/伏笔/文风）、蓝图
+  （get_bible 的 blueprint / blueprint:<子段>）、细纲、已写章节、实然状态
+  （worldstate：人物当前境界/位置/伤势）、记忆检索、待裁决冲突、待审模块。
 - 写草稿（write_draft 写入 drafts/）与项目内文件（write_file，受控路径需用户当场批准）。
+- **改设定用 `update_blueprint`**（dict 段按键合并、支持点路径如 power_system.levels；
+  list 段按 id 合并条目字段；保存后自动同步 bible）——这是敏感操作，会当场问用户批准。
+  **不要**用 write_file 整份重写 JSON（又长又容易写崩）。
 - 回答创作问题、给修改建议、解释系统状态。
 
 # 你的边界（硬约束，不可逾越）
@@ -57,6 +61,13 @@ SYSTEM_PROMPT = """你是「主编剧」——Novelist 小说项目的常驻协�
   的 power.level 是练气前期」），让用户可以核验。
 - 调了工具就在回答末尾用一行说明读了什么（如「——依据：get_bible(characters)、
   list_chapters」）。不做无谓道歉，不重复用户的话。
+
+# 工具使用纪律（真机教训）
+- **先想清楚要读什么再动手**：优先用结构化查询工具（get_bible/get_outline/list_chapters/
+  get_worldstate/list_conflicts），不要拿 grep_text/read_file 在大文件里盲找。
+- 修改请求**一次说清多处改动就合并成尽量少的 update_blueprint 调用**（set 里可放多个字段），
+  别一个字段一次调用——轮次有限，读两次就该动笔。
+- 读是为了写：确认现状后立刻写，不要反复重读同一文件。
 
 # 版本
 v1（2026-09-19，M3ac-4）"""
@@ -189,11 +200,13 @@ class ChatAgent:
             provider,
             SessionInfo(project_id=project_id, agent="orchestrator",
                         permission_profile="supervised"),
-            budget=Budget(max_tokens_out=4000, max_rounds=max_rounds,
+            budget=Budget(max_tokens_out=8000, max_rounds=max_rounds,
                           max_cost=max_cost),
             registry=registry,
             enforce_cost=True,  # S-5：对话态成本硬顶（自主多轮 + 真实计费，必须有闸）
+            obs_total_budget_chars=48_000,  # 对话态放宽整轮观测预算（读设定是常态）
         )
+        self.runner.trace_tools = True  # 对话态可见性：每次工具调用打一行
         self.runner.system(SYSTEM_PROMPT)
         # 首条 user 消息 = 本次打开时的项目快照（缓存纪律：快照不进 system）
         history = [{"role": "user", "content": project_snapshot(ws, project_id)}]
@@ -201,16 +214,26 @@ class ChatAgent:
         self.runner.load_messages(history)
 
     def ask(self, text: str) -> str:
-        """用户一句话 → agent 多轮循环 → 回答文本。持久化双轮 + 用量。"""
+        """用户一句话 → agent 多轮循环 → 回答文本。持久化双轮 + 用量。
+
+        可见性（2026-09-19 真机 UX）：轮开始即报「思考中」+ 超阈值心跳
+        （此前整轮 44s 零输出）；calllog 挂 `chat:<pid>` 锚点（溯源归属）。
+        """
+        from .calllog import call_context
+        from .output import emit, heartbeat
+
         append_session(self.ws, self.project_id,
                        {"type": "turn", "role": "user", "content": text})
+        emit("… 主编剧思考中（可调工具查证）")
         try:
-            run = self.runner.run_chat(text)
+            with call_context(f"chat:{self.project_id}"), heartbeat("主编剧思考中"):
+                run = self.runner.run_chat(text)
             answer = run.final
         except AgentLoopError:
             # 轮次/预算耗尽 → 抢救（AG-13 同语义）：要求不带工具直接答
-            answer = self.runner.converge("对话抢救：直接回答用户最后的问题，"
-                                          "答不了的部分明说。") or "（本轮达到工具调用上限，未能产出回答）"
+            with call_context(f"chat:{self.project_id}"):
+                answer = self.runner.converge("对话抢救：直接回答用户最后的问题，"
+                                              "答不了的部分明说。") or "（本轮达到工具调用上限，未能产出回答）"
         self.turns += 1
         append_session(self.ws, self.project_id,
                        {"type": "turn", "role": "assistant", "content": answer})

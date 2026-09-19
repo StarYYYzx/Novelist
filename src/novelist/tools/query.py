@@ -66,11 +66,32 @@ def tools(ws: Workspace) -> list[Tool]:
                         "total": len(rows) + len(only_gist)})
 
     def _get_bible(session, params, budget=None):
-        """读 bible 某分区；给 id 精确取一条。"""
+        """读 bible 某分区；给 id 精确取一条。`blueprint` / `blueprint:<子段>` 读蓝图
+        （2026-09-19 真机：agent 不知道布局，反复 read_file 52KB 蓝图打转）。"""
         section = str(params.get("section") or "")
+        if section == "blueprint" or section.startswith("blueprint:"):
+            bp_data = _read_json(session.project_id, "workspace/forge/blueprint.json")
+            if bp_data is None:
+                return ok(data={"found": False, "hint": "尚无蓝图（先 forge seed/build）"})
+            if section == "blueprint":
+                counts = {k: (len(v) if isinstance(v, list) else "dict")
+                          for k, v in bp_data.items() if k not in ("provenance",)}
+                return ok(data={"found": True, "keys": counts,
+                                "meta": {k: (bp_data.get("meta") or {}).get(k)
+                                         for k in ("title", "genre", "logline")},
+                                "hint": "取子段用 blueprint:characters / blueprint:worldview 等"})
+            sub = section.split(":", 1)[1]
+            val = bp_data.get(sub)
+            if val is None:
+                return ok(data={"found": False, "sub": sub,
+                                "available": sorted(bp_data.keys())})
+            body = json.dumps(val, ensure_ascii=False)
+            return ok(data={"found": True, "sub": sub,
+                            "content": body[:8000], "chars": len(body),
+                            "truncated": len(body) > 8000})
         if section not in _BIBLE_SECTIONS:
             return ok(data={"error": f"unknown section {section!r}",
-                            "available": list(_BIBLE_SECTIONS)})
+                            "available": list(_BIBLE_SECTIONS) + ["blueprint", "blueprint:<子段>"]})
         data = _read_json(session.project_id, f"bible/{section}.json")
         if data is None:
             return ok(data={"section": section, "found": False})
