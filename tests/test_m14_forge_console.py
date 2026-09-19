@@ -280,3 +280,33 @@ def test_console_shell_enters_and_exits(tmp_path):
     assert "已退出控制台" in joined     # 最终回到 console 并退出
     # shell 内部 /show 打印了蓝图概览（或会话 banner）
     assert any(k in joined for k in ("缺口", "已填", "extras", "阶段"))
+
+
+def test_tty_run_cli_no_recursion_and_single_capture(tmp_path, monkeypatch):
+    """真机事故（2026-09-19）：tty 形态下 output→print→_CliStream→io.output 自递归
+    （RecursionError）；且捕获双份。此处 tty=True + 命令期间脚本行耗尽触发 print 路径。"""
+    from collections import Counter
+
+    # EOF：builtins.input 抛 EOFError → 主循环应退出（不得空转）
+    def _eof_input(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof_input)
+    io_ = FilterableIO(lines=["/new 递归测试书"], tty=True)
+    c = Console(io=io_, workspace_root=str(tmp_path), provider="fake")
+    c.run()  # 修复前：RecursionError
+    assert any("已切入" in ln for ln in io_.out)
+    dup = [k for k, v in Counter(io_.out).items() if v > 1 and k.strip()]
+    assert not dup, f"输出被重复捕获：{dup[:3]}"
+
+
+def test_tty_eof_exits_repl(tmp_path, monkeypatch):
+    """tty 下 EOF（Ctrl+D）应退出会话，不得空转刷提示符。"""
+    def _eof_input(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof_input)
+    io_ = FilterableIO(lines=[], tty=True)
+    c = Console(io=io_, workspace_root=str(tmp_path), provider="fake")
+    c.run()  # 修复前：无限循环
+    assert any("控制台" in ln for ln in io_.out)

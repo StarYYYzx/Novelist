@@ -162,19 +162,16 @@ def test_compaction_disabled_by_default():
 def test_cli_stream_forwards_incrementally():
     from novelist.forge.console import _CliStream
 
-    seen: list[str] = []
+    from novelist.forge.console import FilterableIO
 
-    class _IO:
-        def output(self, text):
-            seen.append(text)
-
-    st = _CliStream(_IO())
+    io_ = FilterableIO(lines=[], tty=False)  # 非 tty：只捕获不打印
+    st = _CliStream(io_)
     st.write("第一行\n")
-    assert seen == ["第一行"], "应按行即时转发（而非命令结束才刷出）"
+    assert io_.out == ["第一行"], "应按行即时转发（而非命令结束才刷出）"
     st.write("第二")
-    assert seen == ["第一行"]  # 半行不输出
+    assert io_.out == ["第一行"]  # 半行不输出
     st.write("行\n")
-    assert seen == ["第一行", "第二行"]
+    assert io_.out == ["第一行", "第二行"]
     assert st.text() == "第一行\n第二行\n"
 
 
@@ -182,12 +179,9 @@ def test_cli_stream_accepts_bytes():
     """有调用方向 stdout 写 bytes（此前会 TypeError 打死整条命令）。"""
     from novelist.forge.console import _CliStream
 
-    seen: list[str] = []
+    from novelist.forge.console import FilterableIO
 
-    class _IO:
-        def output(self, text):
-            seen.append(text)
-
-    st = _CliStream(_IO())
+    io_ = FilterableIO(lines=[], tty=False)
+    st = _CliStream(io_)
     st.write(b"bytes-line\n")
-    assert seen == ["bytes-line"]
+    assert io_.out == ["bytes-line"]

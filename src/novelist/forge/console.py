@@ -77,29 +77,51 @@ class ConsoleState:
 # —— REPL 输入原语：薄封装，便于测试注入 ——
 
 class _CliStream:
-    """把 click 的 stdout 调用**逐行即时**转发到 REPL io，并累积全文备用（D-14）。"""
+    """run_cli 期间的 stdout 转发器（D-14 流式改造，2026-09-19 递归修复）。
+
+    **必须是终端 sink**：直接写真实 stdout（构造时保存），绝不回调
+    `io.output` / `print`——重定向期间 `print` 会回到本对象，回调即
+    无限递归（RecursionError，真机 /seed 实测）。捕获进 `io.out` 也只在这里
+    做一次（`FilterableIO.output` 在重定向期间改为转发到本对象，不自记）。
+    """
 
     def __init__(self, io_) -> None:
         self._io = io_
+        self._real = sys.stdout  # 构造于重定向前，是真实终端流
         self._buf: list[str] = []
         self._pending = ""
+
+    def _emit_line(self, line: str) -> None:
+        self._io.out.append(line)  # 测试断言统一在这里捕获（唯一记录点）
+        if self._io.is_tty and not self._io.lines_pending:
+            try:
+                self._real.write(line + "\n")
+                self._real.flush()
+            except UnicodeEncodeError:  # D9：真实终端编码不含中文时降级
+                enc = getattr(self._real, "encoding", None) or "utf-8"
+                self._real.write(line.encode(enc, "replace").decode(enc, "replace") + "\n")
+                self._real.flush()
 
     def write(self, text) -> int:
         if not text:
             return 0
-        if isinstance(text, (bytes, bytearray)):  # 有调用方向 stdout 写 bytes（如 bytes 路径回显）
+        if isinstance(text, (bytes, bytearray)):  # 有调用方向 stdout 写 bytes
             text = bytes(text).decode("utf-8", "replace")
         self._buf.append(text)
         self._pending += text
         while "\n" in self._pending:
             line, self._pending = self._pending.split("\n", 1)
             if line.strip():
-                self._io.output(line)
+                self._emit_line(line)
         return len(text)
+
+    def isatty(self) -> bool:
+        # click/rich 会探测 stdout.isatty()；转发器必须应答，否则 AttributeError
+        return False
 
     def flush_line(self) -> None:
         if self._pending.strip():
-            self._io.output(self._pending)
+            self._emit_line(self._pending)
         self._pending = ""
 
     def flush(self) -> None:  # 兼容 TextIO 协议
@@ -135,6 +157,11 @@ class FilterableIO:
     def is_tty(self) -> bool:
         return self._tty
 
+    @property
+    def lines_pending(self) -> bool:
+        """是否还有脚本化输入行未消费（console 主循环据此判 EOF）。"""
+        return bool(self._lines)
+
     def input(self, prompt: str) -> str:
         self.asks.append(prompt)
         if self._lines:
@@ -149,6 +176,12 @@ class FilterableIO:
         return ""
 
     def output(self, text: str) -> None:
+        # run_cli 重定向期间（stdout 是 _CliStream）：转发给流统一捕获与输出，
+        # **不自行 append/print**——否则 print 回到流、流再回调本方法即无限递归
+        # （RecursionError），且 io.out 会记双份（2026-09-19 真机 /seed 事故）。
+        if isinstance(sys.stdout, _CliStream):
+            sys.stdout.write(text + "\n")
+            return
         self.out.append(text)
         # 真实终端（tty 且非脚本注入）直接打印——否则 REPL 全程静默。
         # 注意：本方法同时是 `emit()` 的 sink（见 run_cli），**不得回调 emit**（自递归）。
@@ -706,6 +739,10 @@ class Console:
             prompt = f"novelist({self.state.project_id or 'no-project'})> "
             line = self.io.input(prompt)
             if line is None:
+                break
+            if line == "" and not self.io.lines_pending:
+                # 输入耗尽 / EOF（input 把 EOFError 收成 ""）：退出会话。
+                # 此前此处不退出——真实终端 Ctrl+D 后 REPL 空转刷提示符。
                 break
             # U3 兜底（2026-09-15）：单个命令的未捕获异常不得终止会话（抛栈即丢状态）。
             # run_cli 那层已让 click 异常进 r.exception，这里是第二道网——覆盖 handler
