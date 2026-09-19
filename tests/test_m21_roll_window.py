@@ -86,8 +86,17 @@ def _chapter_script():
                              "plant_desc": "第 3 章来信", "payoff_desc": "卷末见面"}]}),
         _reply({"vol": 1, "title": "V1", "summary": "一卷主线", "key_beats": ["k"],
                 "threads_to_payoff": ["pt:yuwen"]}),
-        _chapter(["事件1"], 1),
-        _chapter(["事件2"], 2),
+        # 事件先行（2026-09-19）：卷一产事件流（2 条 → 切 2 章），章细纲由切片物化
+        _reply({"events": [
+            {"desc": "事件1", "scene": "场景1", "pov": "第三人称限知（主角视角）",
+             "days": 0, "est_words": 800, "climax": True,
+             "characters": ["char:protagonist"], "threads_involved": ["pt:yuwen"],
+             "beads": {"lines": []}},
+            {"desc": "事件2", "scene": "场景2", "pov": "第三人称限知（主角视角）",
+             "days": 1, "est_words": 800, "climax": True,
+             "characters": ["char:protagonist"], "threads_involved": ["pt:yuwen"],
+             "beads": {"lines": []}},
+        ]}),
         _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"],
                 "threads_to_payoff": ["pt:guwu"]}),
     ]

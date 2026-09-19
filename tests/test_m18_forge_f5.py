@@ -81,11 +81,15 @@ def _build_script():
                              "plant_desc": "第 3 章来信", "payoff_desc": "卷末见面"}]}),
         _reply({"vol": 1, "title": "V1", "summary": "一卷主线", "key_beats": ["k"],
                 "threads_to_payoff": ["pt:yuwen"]}),
-        # vol=1 卷闸门内先展开 chapter 1-1 / 1-2，之后才轮到 vol=2
-        *[ _reply({"title": f"章{c}", "pov": "第三人称限知（主角视角）",
-                   "key_events": [f"事件{c}"], "turns": [f"转折{c}"],
-                   "characters": ["char:protagonist"], "threads_involved": ["pt:yuwen"],
-                   "after_days": 0}) for c in range(1, 3) ],
+        # vol=1 卷闸门内先展开**事件流**（2026-09-19 事件先行），之后才轮到 vol=2
+        # 2 条事件 × est_words=800 + climax → 切出 2 章（与本文件既有断言一致）
+        _reply({"events": [
+            {"desc": f"事件{c}", "scene": f"场景{c}", "pov": "第三人称限知（主角视角）",
+             "days": 0 if c == 1 else 1, "est_words": 800, "climax": True,
+             "characters": ["char:protagonist"], "threads_involved": ["pt:yuwen"],
+             "beads": {"lines": []}}
+            for c in range(1, 3)
+        ]}),
         _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"],
                 "threads_to_payoff": ["pt:guwu"]}),
     ]

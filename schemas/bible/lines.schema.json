@@ -22,77 +22,204 @@
         "minLength": 1
       },
       "kind": {
-        "enum": ["main", "subplot", "hidden"],
+        "enum": [
+          "main",
+          "subplot",
+          "hidden"
+        ],
         "description": "main 主线（全书恰好 1 条，target 必填）/ subplot 支线 / hidden 暗线（即伏笔型静默合法）。"
       },
+      "planned_span": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "description": "计划区间（应然·穿珠子）：该线应在本卷哪些章位在场。subplot 建议必填——'不同长度的支线'由此表达；main 可省略（恒在）。start_ch<=end_ch，1 基。",
+        "properties": {
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "start_ch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_ch": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "start_ch",
+          "end_ch"
+        ],
+        "additionalProperties": false
+      },
+      "reveal_points": {
+        "type": "array",
+        "description": "暗线露头/揭示计划（应然）：计划在哪些章位让读者看到线索。hidden 线建议登记，供 bead_view 到期点名。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "vol": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ch": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "vol",
+            "ch"
+          ]
+        }
+      },
       "carrier": {
-        "enum": ["object", "goal", "character", "emotion", "faction", "theme", ""],
+        "enum": [
+          "object",
+          "goal",
+          "character",
+          "emotion",
+          "faction",
+          "theme",
+          ""
+        ],
         "description": "载体类型（可选）：物/行动/人/情感/组织/主题。"
       },
       "scope": {
-        "enum": ["book", "volume"],
+        "enum": [
+          "book",
+          "volume"
+        ],
         "description": "book=跨卷；volume=卷内（闭合时 yield 必填——批2 审计）。"
       },
       "members": {
         "type": "array",
-        "items": { "type": "string", "pattern": "^(char|faction|item|loc|pt|ln):" },
+        "items": {
+          "type": "string",
+          "pattern": "^(char|faction|item|loc|pt|ln):"
+        },
         "description": "线索关联实体 id（事件层词元命中与 Chronicler 校验用）。"
       },
       "status": {
-        "enum": ["dormant", "pending", "active", "suspended", "closed"],
+        "enum": [
+          "dormant",
+          "pending",
+          "active",
+          "suspended",
+          "closed"
+        ],
         "description": "实然。dormant=骨架登记未开；pending=生成期提名待人工转正；active⇄suspended；closed 留档不删。"
       },
       "opened": {
-        "type": ["object", "null"],
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "ch": { "type": "integer", "minimum": 0 }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "additionalProperties": false,
         "description": "事实开启点 = 章纲 lines_present 过人审落定。"
       },
       "last_seen": {
-        "type": ["object", "null"],
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "ch": { "type": "integer", "minimum": 0 }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "additionalProperties": false,
         "description": "最近一次 advance/flicker/weave/reverse 的位置（冷却计算输入）。"
       },
       "progress": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "实然进度，只追加：'v-c [动作] 一句话'。"
       },
       "target": {
-        "type": ["object", "null"],
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "note": { "type": "string" }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "note": {
+            "type": "string"
+          }
         },
         "additionalProperties": false,
         "description": "应然远期落点；main 必填。闭合确定性校验：target.vol==当前卷 → 计划内自动闭合，否则 closing_candidate。"
       },
       "yield": {
-        "type": ["string", "null"],
+        "type": [
+          "string",
+          "null"
+        ],
         "description": "闭合时登记：该线留给主线的收获（情报/能力/盟友/代价），注入下卷卷纲。"
       },
       "closed": {
-        "type": ["object", "null"],
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "ch": { "type": "integer", "minimum": 0 },
-          "reason": { "type": "string" }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       },
       "closing_candidate": {
-        "type": ["object", "null"],
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "ch": { "type": "integer", "minimum": 0 },
-          "note": { "type": "string" }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "note": {
+            "type": "string"
+          }
         },
         "additionalProperties": false,
         "description": "计划外闭合候选：status 不变，章末汇总人工确认。"

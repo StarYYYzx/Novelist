@@ -322,8 +322,16 @@ def test_build_does_not_persist_conflicting_writes(tmp_path):
     bp = _bp_with_one_main(ws, pid, threads=2)
     existing_thread_ids = [x["id"] for x in bp.section("threads")]
 
-    r = build(ws, pid, provider=_CaptureFixed([_node_reply(_two_mains_artifact())]),
-              gate=False, deepen=False, max_calls=40)
+    r = build(ws, pid, provider=_CaptureFixed([
+        _node_reply(_two_mains_artifact()),
+        # 事件先行后 build 还会调用 volume 与 event_stream 节点（脚本须齐备，
+        # 否则最后一条回复被复用 → 解析失败 → 误记节点失败）
+        _node_reply({"vol": 1, "title": "V1", "summary": "s", "key_beats": ["k"]}),
+        _node_reply({"events": [
+            {"desc": "事件1", "scene": "场景1", "pov": "主角", "days": 0,
+             "est_words": 800, "climax": True, "characters": ["char:yelan"],
+             "beads": {"lines": []}}]}),
+    ]), gate=False, deepen=False, max_calls=40)
 
     bible_lines = json.loads(ws.bible_path(pid, "lines").read_text(encoding="utf-8"))
     assert [x["id"] for x in bible_lines if x.get("kind") == "main"] == ["ln:main"]

@@ -84,8 +84,14 @@ def save_lines(ws, project_id: str, lines: list[dict]) -> None:
 
 def new_line(ln_id: str, desc: str, *, kind: str = "subplot", carrier: str = "",
              scope: str = "book", members: list[str] | None = None,
-             target: dict | None = None, status: str = "dormant") -> dict:
-    """骨架登记工厂（蓝图 book 节点 / 提名转正共用）。"""
+             target: dict | None = None, status: str = "dormant",
+             planned_span: dict | None = None,
+             reveal_points: list | None = None) -> dict:
+    """骨架登记工厂（蓝图 book 节点 / 提名转正共用）。
+
+    `planned_span`（应然·穿珠子，2026-09-19）：{start_ch, end_ch}——支线"不同长度"的载体；
+    `reveal_points`：暗线的计划露头/揭示章位（[{vol, ch}]）。
+    """
     return {
         "id": str(ln_id),
         "desc": str(desc),
@@ -101,6 +107,8 @@ def new_line(ln_id: str, desc: str, *, kind: str = "subplot", carrier: str = "",
         "yield": None,
         "closed": None,
         "closing_candidate": None,
+        "planned_span": _norm_span(planned_span),
+        "reveal_points": [r for r in (reveal_points or []) if isinstance(r, dict)],
     }
 
 
@@ -214,6 +222,217 @@ def line_card(ln: dict, vol: int, ch: int, k: int, *, note: str = "") -> str:
     if note:
         card += f" | 本章:{note}"
     return card
+
+
+SPAN_OVERDUE_GRACE = 1     # 支线 span 到期后宽限章数（超过即计入超期欠账）
+PAYOFF_OVERDUE_GRACE = 1   # 伏笔回收窗口后宽限章数
+WHITELIST_DESC_CHARS = 34  # 可用线清单里的描述截断
+
+
+def _norm_span(span) -> dict | None:
+    """规整 planned_span：非法/缺失 → None（不落脏值）。"""
+    if not isinstance(span, dict):
+        return None
+    try:
+        a, b = int(span.get("start_ch") or 0), int(span.get("end_ch") or 0)
+    except (TypeError, ValueError):
+        return None
+    if a < 1 or b < a:
+        return None
+    try:
+        v = int(span.get("vol") or 1)
+    except (TypeError, ValueError):
+        v = 1
+    return {"vol": max(1, v), "start_ch": a, "end_ch": b}
+
+
+def span_of(ln: dict) -> tuple[int, int, int] | None:
+    """取该线的计划区间 (vol, start_ch, end_ch)；无区间返回 None。"""
+    sp = _norm_span(ln.get("planned_span"))
+    return (sp["vol"], sp["start_ch"], sp["end_ch"]) if sp else None
+
+
+def _reveal_hits(ln: dict, vol: int, ch: int) -> bool:
+    """该暗线是否在本章位（vol, ch）有露头/揭示计划。"""
+    for rp in ln.get("reveal_points") or []:
+        if not isinstance(rp, dict):
+            continue
+        try:
+            rv, rc = int(rp.get("vol") or 0), int(rp.get("ch") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rc == ch and rv in (0, vol):
+            return True
+    return False
+
+
+def payoff_due(threads: list[dict], vol: int, ch: int) -> list[dict]:
+    """伏笔回收窗口命中本章的清单（应然，来自蓝图 threads 的 payoff_window）。"""
+    out = []
+    for t in threads or []:
+        w = t.get("payoff_window") if isinstance(t, dict) else None
+        if not isinstance(w, dict):
+            continue
+        try:
+            wv, a, b = int(w.get("vol") or 0), int(w.get("start_ch") or 0), int(w.get("end_ch") or 0)
+        except (TypeError, ValueError):
+            continue
+        if wv in (0, vol) and a <= ch <= b:
+            out.append(t)
+    return out
+
+
+def payoff_overdue(threads: list[dict], vol: int, ch: int) -> list[dict]:
+    """超窗未回收的伏笔（已过 end_ch + 宽限，且仍未 returned）。"""
+    out = []
+    for t in threads or []:
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("status") or "") in ("returned", "closed", "done", "paid"):
+            continue
+        w = t.get("payoff_window")
+        if not isinstance(w, dict):
+            continue
+        try:
+            wv, b = int(w.get("vol") or 0), int(w.get("end_ch") or 0)
+        except (TypeError, ValueError):
+            continue
+        if wv and wv < vol:
+            out.append(t)
+        elif wv in (0, vol) and b and ch > b + PAYOFF_OVERDUE_GRACE:
+            out.append(t)
+    return out
+
+
+def bead_view(lines: list[dict], threads: list[dict], vol: int, ch: int, k: int, *,
+              tail_phase: bool = False, opening_phase: bool = False,
+              ) -> tuple[str, list[str]]:
+    """**穿珠子位置视图**（章纲层唯一决策层，2026-09-19 拍板）。
+
+    与 `chapter_view` 的差别（真机实证的病根）：
+    - 旧版**只注入 active 线**——账本全 dormant 时模型一张卡都看不到，于是**自造 ln: id**
+      （照 pt: 伏笔清单起名），落账时全部悬空丢弃 → 线永远不流转；
+    - 本版按**计划区间**判定在场集合，并显式给出【可用线 id 清单】（禁自造 id 的白名单），
+      给出三类强制动作（必须开启 / 必须收束 / 超期欠账）与伏笔回收窗口。
+
+    返回 (注入块, 告警列表)。账本无可用线时返回 ("", [])——不注入，行为与旧版一致。
+    """
+    warns: list[str] = []
+    ledger = [ln for ln in lines if isinstance(ln, dict) and not is_dead(ln)
+              and ln.get("status") != "pending"]
+    if not ledger:
+        return "", warns
+
+    main = [ln for ln in ledger if ln.get("kind") == "main"]
+    opening_due: list[dict] = []
+    closing_due: list[dict] = []
+    never_opened: list[dict] = []   # 区间已走完却从未开启（漏开欠账，批 2026-09-19）
+    planned: list[dict] = []
+    for ln in ledger:
+        if ln.get("kind") == "main":
+            continue
+        sp = span_of(ln)
+        if sp:
+            sv, a, b = sp
+            st = ln.get("status")
+            if sv not in (0, vol):
+                continue                    # 计划在别的卷 → 本卷不催
+            if a == ch and st == "dormant":
+                opening_due.append(ln)
+            if b == ch:
+                if st in ("active", "suspended"):
+                    closing_due.append(ln)      # 已开线 → 到期必须收束 + 登记 yield
+                elif st == "dormant":
+                    never_opened.append(ln)     # 从未开启就被走到区间终点 → 漏开
+            if a <= ch <= b:
+                planned.append(ln)
+        if ln.get("kind") == "hidden" and _reveal_hits(ln, vol, ch):
+            planned.append(ln)
+    # 已在场（active/suspended）永远注入——它们已经开线，必须被处理
+    for ln in ledger:
+        if ln.get("status") in ("active", "suspended") and ln not in planned:
+            planned.append(ln)
+    on_stage: list[dict] = []
+    for ln in [*main, *planned]:
+        if ln not in on_stage:
+            on_stage.append(ln)
+
+    # ---- 超期欠账（确定性）----
+    overdue: list[dict] = []
+    for ln in on_stage:
+        limit = COOLDOWN_CH.get(str(ln.get("kind")), 0)
+        if not limit:
+            continue
+        gap = ch_gap((vol, ch), ln.get("last_seen") or ln.get("opened"), k)
+        if gap is not None and gap > limit:
+            overdue.append(ln)
+    for ln in ledger:
+        sp = span_of(ln)
+        if not sp or ln.get("kind") == "main" or ln.get("status") == "closed":
+            continue
+        sv, _a, _b = sp
+        if sv and sv < vol:
+            overdue.append(ln)              # 跨卷欠账：计划卷已过仍未收
+        elif sv in (0, vol) and ch > _b + SPAN_OVERDUE_GRACE:
+            overdue.append(ln)
+    for ln in never_opened:
+        if ln not in overdue:
+            overdue.append(ln)   # 区间走完仍未开启 = 欠账（比冷却更硬）
+    for ln in ledger:
+        if ln.get("due"):
+            overdue.append(ln)
+
+    if not on_stage:
+        return "", warns
+
+    # ---- 组装注入块 ----
+    rows = [line_card(ln, vol, ch, k,
+                      note=("强制推进（超期欠账）" if ln in overdue else ""))
+            for ln in on_stage]
+    block = "【本章在线的线索】（按本章动作处理：推进剧情，不是复述进度）\n" + "\n".join(rows)
+    if opening_due:
+        block += ("\n【本章必须开启】（区间起点＝本章，必须给出 open 动作并写 note 目标）\n"
+                  + "\n".join(f"- {ln['id']}" for ln in opening_due))
+    if closing_due:
+        block += ("\n【本章必须收束】（区间终点＝本章，必须 close 并登记 yield："
+                  "这条线留给主线的收获——情报/能力/盟友/代价）\n"
+                  + "\n".join(f"- {ln['id']}" for ln in closing_due))
+    if overdue:
+        block += ("\n【超期欠账】（下列线已超出计划窗口/冷却，本章必须处置："
+                  "open/flicker 补场、advance 推进、close 收束或显式 suspend 并写原因）\n"
+                  + "\n".join(f"- {ln['id']}" for ln in overdue))
+    due_th = payoff_due(threads, vol, ch)
+    if due_th:
+        block += ("\n【伏笔回收窗口命中本章】（本章应给出回收，或写明推迟理由）\n"
+                  + "\n".join(f"- {t.get('id')}（{str(t.get('desc') or '')[:40]}）" for t in due_th))
+    od_th = payoff_overdue(threads, vol, ch)
+    if od_th:
+        block += ("\n【伏笔超窗未回收】\n"
+                  + "\n".join(f"- {t.get('id')}（超窗，需回收或改期）" for t in od_th))
+
+    # ---- 可用线 id 白名单（唯一合法来源，禁自造）----
+    usable = [ln for ln in ledger if ln.get("status") in ("dormant", "active", "suspended")]
+    if usable:
+        block += ("\n【可用线 id 清单】（lines_present 只能从这里选；"
+                  "**禁止自造 ln: id**——伏笔(pt:)与线索(ln:)是两套账，不得互相顶替）\n"
+                  + "\n".join(
+                      f"- {ln['id']}｜{KIND_CN.get(str(ln.get('kind')), '线')}｜{ln.get('status')}"
+                      f"｜{str(ln.get('desc') or '')[:WHITELIST_DESC_CHARS]}"
+                      for ln in usable))
+    closed = [ln for ln in lines if isinstance(ln, dict) and is_dead(ln)]
+    if closed:
+        block += ("\n【已闭合线索·禁复活】已收束，不得再当活线写："
+                  + "、".join(str(ln.get("id")) for ln in closed))
+    if tail_phase and any(ln.get("status") == "dormant" for ln in ledger):
+        warns.append("收尾期告警：本章不得开新线（open 动作将被拒绝）")
+    if opening_phase:
+        hid = [ln["id"] for ln in ledger if ln.get("kind") == "hidden"
+               and ln.get("status") == "dormant"]
+        if hid:
+            warns.append("开篇期告警：暗线只许埋不许揭——" + "、".join(hid))
+    if overdue:
+        warns.append("超期欠账：" + "、".join(str(ln.get("id")) for ln in overdue))
+    return block, warns
 
 
 def chapter_view(lines: list[dict], vol: int, ch: int, k: int, *,
@@ -349,7 +568,17 @@ def apply_chapter_actions(ws, project_id: str, lines: list[dict], vol: int, ch: 
             continue
         ln = by_id.get(lid)
         if ln is None:
-            warns.append(f"{lid}: 账本无此线（lines_present 声明悬空），忽略")
+            # 2026-09-19 修：真机实证——模型照 pt: 伏笔清单自造 ln: id（ln:jiuzhu 等），
+            # 旧行为"悬空 → 忽略"导致 42 章声明全丢、账本永远不流转。现改为**登记提名**：
+            # 模型仍无开线权（ADR-025），但提案可见、可人审转正，且告警写清原因。
+            if register_pending(lines, lid, note or f"章纲 {vol}-{ch} 声明（自动提名）",
+                                kind="subplot"):
+                changed = True
+                warns.append(f"{lid}: 账本无此线 → 已登记为**待转正提案**"
+                             f"（lines_present 声明悬空；请用【可用线 id 清单】中的 id，"
+                             f"或由人审 /review lines 转正）")
+            else:
+                warns.append(f"{lid}: 账本无此线且提名失败（id 非法？），忽略")
             continue
         if is_dead(ln):
             warns.append(f"{lid}: 死线复活拦截（已 closed，{action} 被拒）")

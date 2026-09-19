@@ -155,10 +155,12 @@ _BOOK_OUTPUT_PROTOCOL = """{
   "locations": [{"id": "loc:xxx", "name": "地名", "category": "类别", "desc": "描述"}],
   "items": [{"id": "item:xxx", "name": "物品名", "type": "consumable|equipment|artifact|material|currency|other", "desc": "描述"}],
   "style": {"tense": "过去|现在", "narration": "叙事风格说明", "glossary": [{"term": "术语", "note": "解释"}]},
-  "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1, "carrier": "回收后若载体将持续出场可填 object|goal|character|emotion|faction|theme，否则省略"}],
+  "threads": [{"id": "pt:xxx", "desc": "伏笔内容", "scope": "book|volume", "target_vol": 1, "carrier": "回收后若载体将持续出场可填 object|goal|character|emotion|faction|theme，否则省略", "parent_line": "ln:xxx（本伏笔依附的线索 id，可省略）", "payoff_window": {"vol": 1, "start_ch": 10, "end_ch": 14}}],
   "lines": [{"id": "ln:xxx", "desc": "线索内容一句话", "kind": "main|subplot|hidden",
              "carrier": "object|goal|character|emotion|faction|theme", "scope": "book|volume",
-             "members": ["char:xxx"], "target": {"vol": 1, "note": "远期落点一句话"}}],
+             "members": ["char:xxx"], "target": {"vol": 1, "note": "远期落点一句话"},
+             "planned_span": {"vol": 1, "start_ch": 3, "end_ch": 12},
+             "reveal_points": [{"vol": 1, "ch": 11, "note": "露头方式"}]}],
   "volumes": [{"vol": 1, "title": "卷名", "summary": "本卷主线", "key_beats": ["关键转折"],
                "threads_to_payoff": ["pt:xxx"]}],
   "time_origin": "故事时间原点（t=0 锚点）"
@@ -276,6 +278,12 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
 8. lines 线索骨架 2–6 条：**主线（kind=main）恰好 1 条**且必须给 target（远期落点）；
    支线 subplot 1–4 条（跨章串联剧情的才算——1-2 章就完结的微线不要登记）；
    暗线 hidden 0–2 条；每条给 carrier（载体类型）与 members（关联实体 id）。
+8b. **计划区间（穿珠子，必填）**：每条 subplot 给 planned_span={{vol, start_ch, end_ch}}
+   （本卷内的起止章位——"不同长度的支线"由它表达；跨度 4–30 章为宜）；
+   每条 hidden 给 reveal_points=[{{vol, ch}}]（计划露头/揭示的章位，1–3 个）。
+   没有区间的支线在构建期不会被点名，等于白登记。
+8c. threads（伏笔）若已知依附的线索，给 parent_line="ln:xxx"；回收窗口明确的
+   给 payoff_window={{vol, start_ch, end_ch}}（超窗未回收会被构建期记为欠账）。
 
 按以下 JSON 输出（键名严格一致，缺省用空对象/空数组）：
 {_BOOK_OUTPUT_PROTOCOL}"""
@@ -540,6 +548,136 @@ def planned_titles(bp: Blueprint, vol: int, ch: int, *, n: int = 2) -> list[str]
     return [t for t in titles if t][-n:]
 
 
+def _event_stream_prompt(ctx: NodeContext) -> tuple[str, str]:
+    """**事件流节点**（事件先行、章节后置，2026-09-19 拍板）。
+
+    按"节（arc）"产出**连续事件流**（不绑章）：每条事件带 场景/视角/时间跨度/预估字数/
+    携带的线索动作与伏笔，供正文侧按"目标字数 + 切点线索"切章。
+
+    与 chapter 节点的根本差别：不再"每章恰好 2–3 个事件 + 必须有钩子"（那会把章节变成
+    填表单位，真机实证导致 ch12 起 72 章单人独角戏），而是按故事逻辑连续推进事件。
+    """
+    bp = ctx.bp
+    meta = bp.get("meta") or {}
+    scale = meta.get("scale") or {}
+    vol = int(ctx.vol or 1)
+    K = int(scale.get("chapters_per_volume", 20) or 20)
+    tw = int(scale.get("target_words_per_chapter", 2400) or 2400)
+    volume = next((v for v in bp.section("volumes") if v.get("vol") == vol), None) or {}
+    child = ctx.child or {}
+    arc_block = json.dumps(child, ensure_ascii=False) if child else "（本节未给 brief——按卷主线自行分节）"
+    # 线索骨架（含计划区间/露头点）→ 事件流据此安排"哪条线该在场"
+    led = _lines_ledger(ctx)
+    line_rows = []
+    for ln in led:
+        sp = ln.get("planned_span") or {}
+        span = (f"v{sp.get('vol', vol)}.{sp.get('start_ch')}-{sp.get('end_ch')}"
+                if isinstance(sp, dict) and sp.get("start_ch") else "无区间")
+        rp = "、".join(f"v{r.get('vol')}.{r.get('ch')}" for r in (ln.get("reveal_points") or [])
+                       if isinstance(r, dict))
+        line_rows.append(f"- {ln.get('id')}（{ln.get('kind')}，{span}"
+                         + (f"，露头点 {rp}" if rp else "")
+                         + f"）{(str(ln.get('desc') or ''))[:40]}")
+    lines_block = "\n".join(line_rows) if line_rows else "（本卷无线索骨架——先由 book 节点登记）"
+    th_rows = []
+    for t in bp.section("threads"):
+        w = t.get("payoff_window") or {}
+        win = (f"回收窗口 v{w.get('vol', vol)}.{w.get('start_ch')}-{w.get('end_ch')}"
+               if isinstance(w, dict) and w.get("start_ch") else "窗口未定")
+        th_rows.append(f"- {t.get('id')}｜{win}｜{str(t.get('desc') or '')[:40]}"
+                       + (f"｜依附 {t.get('parent_line')}" if t.get("parent_line") else ""))
+    threads_block = "\n".join(th_rows) if th_rows else "（本书暂无伏笔）"
+    cards = bp.section("characters")
+    cast = "、".join(f"{c.get('id')}({c.get('name')})" for c in cards if c.get("id")) or "（无角色卡）"
+    wv_block = _worldview_block(bp, constraint="事件的修为表现/资源/社会常识必须与它一致")
+    prev_block = ""
+    if ctx.prev_gist:
+        prev_block = ("\n\n【上一节末尾事件（承接用）】\n"
+                      + json.dumps(ctx.prev_gist, ensure_ascii=False)[:800])
+    target_events = max(4, min(30, int(K * tw / 800) or 6))
+
+    user = f"""你是**事件流规划师**。为第 {vol} 卷的这一节产出**连续事件流**（不划分章节）。{wv_block}
+
+【本卷主线】{json.dumps({k: volume.get(k) for k in ("title", "summary", "key_beats") if volume.get(k)}, ensure_ascii=False)}
+【本节 brief】{arc_block}{prev_block}
+
+【线索骨架（哪条线该在场由区间决定）】
+{lines_block}
+
+【伏笔与回收窗口】
+{threads_block}
+
+【可用角色】{cast}
+
+【纪律】
+1. 只写事件，**不要划分章节、不要写章节标题**——章由后置切分决定。
+2. 事件数约 {target_events} 条；每条 desc 一句话（含动作与结果，40–80 字）；
+   est_words 为该事件正文预估字数（400–1200，全节合计 ≈ {K * tw} 字的合理份额）。
+3. 场景/an 视角连续：scene 写具体地点，pov 写视角人物；days 为距上一事件的天数（同日填 0）。
+   场景切换、视角切换、时间跳（days>0）、高潮收束——这些是**切章的自然位置**，请让它们清晰可辨。
+4. 线索动作：只引用上面【线索骨架】里的 ln: id（禁止自造）；区间起点的事件给 open，
+   区间终点的事件给 close 并在 note 里写 yield（留给主线的收获）；其余给 advance/flicker。
+   被指派 open/close 的事件，请在自己这一条里同时标注 climax=true（切章用）。
+5. 伏笔动作：threads_involved 只能引用上面清单里的 pt: id；回收窗口内的事件应承担回收。
+6. characters 写本章事件出场角色 id；每条事件至少 2 个角色（独角戏事件仅限确有必要时）。
+7. 允许主线休眠（连续若干条事件走支线），但不得整节不给主线一个 flicker。
+8. turn/tension/hook 可选：turn=本事件的转折，tension=张力来源，hook=若在此处断章可用的钩子。
+
+【输出 JSON】
+{{"events": [
+  {{"desc": "一句话事件", "scene": "地点", "pov": "视角人物", "days": 0,
+    "est_words": 800, "climax": false,
+    "characters": ["char:xxx"], "threads_involved": ["pt:xxx"],
+    "beads": {{"lines": [{{"id": "ln:xxx", "action": "open|advance|flicker|close", "note": "一句话（close 须含 yield=…）"}}]}},
+    "turn": "", "tension": "", "hook": ""}}
+]}}
+只输出 JSON。"""
+    return "你是网文事件流规划师。", user
+
+
+def _apply_event_stream(ctx: NodeContext, art: dict) -> list[str]:
+    """事件流落盘：**按节追加**到 outline/events/vol-<v>.json（不落蓝图段）。"""
+    from ..core import chapter_layout as CL
+
+    warns: list[str] = []
+    # `_APPLY[kind](ctx, node)` 传入的是**整包 node**（含 artifact/decide/…），
+    # 与其它 apply 同口径：先取 node["artifact"]。
+    art = art.get("artifact") if isinstance(art, dict) and isinstance(art.get("artifact"), dict) else art
+    evs = art.get("events") if isinstance(art, dict) else None
+    if not isinstance(evs, list) or not evs:
+        raise ValueError("event_stream 未产出 events 数组")
+    norm: list[dict] = []
+    for i, e in enumerate(evs):
+        if not isinstance(e, dict) or not str(e.get("desc") or "").strip():
+            continue
+        row = {
+            "id": f"ev:{ctx.vol}-{len(norm) + 1}",
+            "desc": str(e.get("desc"))[:300],
+            "scene": str(e.get("scene") or ""),
+            "pov": str(e.get("pov") or ""),
+            "days": int(e.get("days") or 0),
+            "est_words": int(e.get("est_words") or 0),
+            "climax": bool(e.get("climax")),
+            "characters": [str(c) for c in (e.get("characters") or []) if str(c).startswith("char:")],
+            "threads_involved": [str(t) for t in (e.get("threads_involved") or []) if str(t).startswith("pt:")],
+            "beads": {"lines": [x for x in ((e.get("beads") or {}).get("lines") or [])
+                                if isinstance(x, dict) and str(x.get("id") or "").startswith("ln:")]},
+            "turn": str(e.get("turn") or "")[:200],
+            "tension": str(e.get("tension") or "")[:200],
+            "hook": str(e.get("hook") or "")[:200],
+        }
+        arc_id = str((ctx.child or {}).get("id") or "")
+        if arc_id:
+            row["arc"] = arc_id
+        norm.append(row)
+    if not norm:
+        raise ValueError("event_stream 事件全部非法（缺 desc）")
+    existing = CL.load_events(ctx.ws, ctx.project_id, ctx.vol)
+    CL.save_events(ctx.ws, ctx.project_id, ctx.vol, [*existing, *norm])
+    warns.append(f"vol {ctx.vol}: 事件流 +{len(norm)} 条（累计 {len(existing) + len(norm)}）")
+    return warns
+
+
 def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     bp = ctx.bp
     meta = bp.get("meta") or {}
@@ -574,9 +712,12 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
     threads_bp = [t for t in bp.section("threads") if t.get("id")]
     threads_block = "；".join(
         f"{t['id']}（{str(t.get('desc') or '')[:24]}）" for t in threads_bp[:12]) or "（本书暂无伏笔）"
-    # ADR-025：章纲层线索视图（唯一决策层）——active 全量单行卡 + 冷却告警置顶 +
-    # closed 禁复活负清单；lines_present 动作由本节点产出并过人审（事实开启点）。
-    from ..core.lines import chapter_view
+    # 穿珠子位置视图（bead_view，2026-09-19 起替代 chapter_view）：
+    # 按**计划区间**算出本章该在场的线 + 必须开启/必须收束/超期欠账 + 伏笔回收窗口
+    # + 【可用线 id 清单】白名单（禁止自造 ln: id——真机实证的病根：旧版只注入 active，
+    # 账本全 dormant 时模型看不到任何线，于是照 pt: 清单自造 ln:jiuzhu 等悬空 id，
+    # 42 章声明被静默丢弃）。
+    from ..core.lines import bead_view
     from ..core.phase import Phase, PhasePolicy, VolumeContext
 
     lines_block = ""
@@ -587,15 +728,24 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
         _phase, _why = _policy.judge(_vctx, ch)
         ledger = _lines_ledger(ctx)
         if ledger:
-            lines_block, _lwarns = chapter_view(
-                ledger, vol, ch, int(scale.get("chapters_per_volume", 20) or 20),
+            lines_block, _lwarns = bead_view(
+                ledger, bp.section("threads"), vol, ch,
+                int(scale.get("chapters_per_volume", 20) or 20),
                 tail_phase=_phase is Phase.TAIL, opening_phase=_phase is Phase.OPENING)
             if lines_block:
-                lines_rule = ("\n\n" + lines_block
-                              + "\n\n9. lines_present：为上列每条 active 线给一个本章动作"
-                                "（advance 推进 / flicker 露头（主线休眠章合法形态）/"
-                                "suspend 显式挂起）；dormant 线按计划 open；动作目标写在 note。"
-                                "已闭合线不得出现在 lines_present。")
+                lines_rule = (
+                    "\n\n" + lines_block
+                    + "\n\n9. lines_present：**只能引用【可用线 id 清单】里的 id**"
+                      "（禁止自造 ln: id；pt: 是伏笔账、ln: 是线索账，不得互相顶替）。"
+                      "在线的每条线都要给动作：advance 推进 / flicker 露头（主线休眠章合法形态）"
+                      " / suspend 显式挂起并写原因；区间起点＝本章的线必须 open；"
+                      "区间终点＝本章的线必须 close **并在 note 里写 yield**"
+                      "（这条线留给主线的收获：情报/能力/盟友/代价）；超期欠账必须本章处置。"
+                      "已闭合线不得出现。"
+                    + "\n10. 若确认需要一条账本里没有的新线，**不要放进 lines_present**，"
+                      "改写在 line_proposals（形如 [{\"id\": \"ln:new_xxx\","
+                      " \"desc\": \"一句话\", \"kind\": \"subplot\"}]）——"
+                      "它只作提名待审，不会直接生效。")
     except Exception:  # noqa: BLE001 - 线索视图任何异常降级为无注入
         lines_block = ""
     anchors_block = _anchors_block(ctx)
@@ -672,7 +822,8 @@ def _chapter_prompt(ctx: NodeContext) -> tuple[str, str]:
   "hook": "章末钩子一句话",
   "characters": ["char:xxx"],
   "threads_involved": ["伏笔清单中的 pt:xxx"],
-  "lines_present": [{{"id": "ln:xxx", "action": "open|advance|suspend|flicker|close", "note": "本章这条线做什么（一句话）"}}],
+  "lines_present": [{{"id": "ln:xxx", "action": "open|advance|suspend|flicker|close", "note": "本章这条线做什么（一句话；close 时 note 须写 yield=…）"}}],
+  "line_proposals": [{{"id": "ln:new_xxx", "desc": "新线一句话（仅提名待审）"}}],
   "after_days": 0
 }}
 只输出 JSON。"""
@@ -1334,7 +1485,9 @@ def _apply_lines_skeleton(ctx: NodeContext, rows: list) -> list[str]:
                        carrier=str(r.get("carrier") or ""),
                        scope=str(r.get("scope") or "book"),
                        members=[str(m) for m in (r.get("members") or []) if m],
-                       target=r.get("target") if isinstance(r.get("target"), dict) else None)
+                       target=r.get("target") if isinstance(r.get("target"), dict) else None,
+                       planned_span=r.get("planned_span") if isinstance(r.get("planned_span"), dict) else None,
+                       reveal_points=[x for x in (r.get("reveal_points") or []) if isinstance(x, dict)])
         skeleton.append(row)
     mains = [x for x in skeleton if x["kind"] == "main"]
     if len(mains) == 0 and skeleton:
@@ -1366,6 +1519,16 @@ def _apply_lines_skeleton(ctx: NodeContext, rows: list) -> list[str]:
             conflicts.append((dict(anchor), dict(row)))
 
     for row in write_rows:
+        # 计划区间/露头点归一（2026-09-19）：非法或缺失 → None/[]，不落脏值
+        try:
+            from ..core.lines import _norm_span
+
+            row["planned_span"] = _norm_span(row.get("planned_span"))
+            row["reveal_points"] = [r for r in (row.get("reveal_points") or [])
+                                    if isinstance(r, dict)]
+        except Exception:  # noqa: BLE001 - 归一失败不阻断骨架落库
+            row.setdefault("planned_span", None)
+            row.setdefault("reveal_points", [])
         existing = bp.find_by_id("lines", row["id"])
         if existing is None:
             bp.upsert("lines", dict(row))
@@ -1690,6 +1853,12 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
                          "note": str(x.get("note") or "")[:80]})
     if acts:
         gist["lines_present"] = acts
+    # 新线提案（2026-09-19）：模型没有开线权（ADR-025），提案只进 pending 待转正。
+    proposals: list[dict] = []
+    for x in art.get("line_proposals") or []:
+        if isinstance(x, dict) and str(x.get("id") or "").startswith("ln:"):
+            proposals.append({"id": str(x["id"]), "desc": str(x.get("desc") or "")[:200],
+                              "kind": str(x.get("kind") or "subplot")})
     md = render_gist_md(gist, vol, ch, names)
     p = ctx.ws.outline_chapter_path(ctx.project_id, vol, ch)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1712,6 +1881,19 @@ def _apply_chapter(ctx: NodeContext, node: dict) -> list[str]:
                     ctx.ws, ctx.project_id, ledger, vol, ch, acts,
                     tail_phase=_phase is Phase.TAIL,
                     opening_phase=_phase is Phase.OPENING))
+                if proposals:
+                    from ..core.lines import register_pending, save_lines
+
+                    added = [p for p in proposals
+                             if register_pending(ledger, p["id"], p["desc"], kind=p["kind"])]
+                    if added:
+                        try:
+                            save_lines(ctx.ws, ctx.project_id, ledger)
+                        except Exception:  # noqa: BLE001 - 提名落盘失败不阻断细纲
+                            pass
+                        lp_warns.append(
+                            f"chapter {vol}-{ch}: {len(added)} 条新线提案已登记待转正（pending，"
+                            "由人审确认后才可用）：" + "、".join(p["id"] for p in added))
         except Exception as e:  # noqa: BLE001 - 线索落账失败不阻断细纲（ADR-021 降级纪律）
             lp_warns.append(f"chapter {vol}-{ch}: lines_present 落账失败"
                             f"（{type(e).__name__}），细纲已正常落盘")
@@ -1843,6 +2025,7 @@ def _apply_beat(ctx: NodeContext, node: dict) -> list[str]:
 # ---- 节点执行 ----
 _PROMPTS: dict[str, Callable[[NodeContext], tuple[str, str]]] = {
     "book": _book_prompt,
+    "event_stream": _event_stream_prompt,
     "volume": _volume_prompt,
     "chapter": _chapter_prompt,
     "worldview": _worldview_prompt,
@@ -1857,6 +2040,7 @@ _PROMPTS: dict[str, Callable[[NodeContext], tuple[str, str]]] = {
 }
 _APPLY: dict[str, Callable[[NodeContext, dict], list[str]]] = {
     "book": _apply_book,
+    "event_stream": _apply_event_stream,
     "volume": _apply_volume,
     "chapter": _apply_chapter,
     "worldview": _apply_worldview,
@@ -1908,6 +2092,9 @@ def _node_out_tokens(kind: str, bp: Any) -> int:
     其余节点输出规模与卷数无关，维持 2600。
     """
     base = 2600
+    if kind == "event_stream":
+        # 一轮可含 ~30 条事件（每条 desc+字段 ≈ 200 token）→ 2600 会被截断成残缺 JSON
+        return 7000
     if kind == "book":
         try:
             n = int(((bp.get("meta.scale") or {}).get("volumes")) or 1)

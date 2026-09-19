@@ -83,24 +83,39 @@ def _chapter_artifact(ch: int) -> dict:
 
 
 def _ag1_script(volumes: int = 2, chapters: int = 2) -> list[dict]:
-    """按引擎真实调用顺序排脚本：seed → book → v1 → v1 的 chapters → v2…（卷闸门）。"""
+    """按引擎真实调用顺序排脚本：seed → book → v1 → v1 的**事件流** → v2…（卷闸门）。"""
     script = [{"final": SEED_REPLY}, {"final": _node_reply(BOOK_ARTIFACT)}]
     for v in range(1, volumes + 1):
         script.append({"final": _node_reply(_volume_artifact(v))})
         if v == 1:
-            for c in range(1, chapters + 1):
-                script.append({"final": _node_reply(_chapter_artifact(c))})
+            script.append({"final": _node_reply(_event_stream_artifact(chapters, v))})
     return script
 
 
+def _event_stream_artifact(n: int = 2, vol: int = 1) -> dict:
+    """事件流脚本回复（2026-09-19 事件先行改造）。
+
+    每条事件 est_words=3000 + climax=True → 切章器每条切出一章（目标 2400/下限 1488），
+    因此 n 条事件 == 切出 n 章——下游"应有 N 章"的断言语义不变。
+    """
+    return {"events": [
+        {"desc": f"第{i}个事件：主角在本节推进到第{i}个节点并留下后果。",
+         "scene": f"场景{i}", "pov": "林源", "days": 1 if i > 1 else 0,
+         "est_words": 3000, "climax": True,
+         "characters": ["char:yelan"], "threads_involved": [],
+         "beads": {"lines": []}}
+        for i in range(1, n + 1)
+    ]}
+
+
 def _build_script(volumes: int = 2, chapters: int = 2) -> list[dict]:
-    """build-only 脚本（蓝图已建，无 seed 提炼项）：book → v1 → v1 的 chapters → v2…"""
+    """build-only 脚本（蓝图已建，无 seed 提炼项）：book → v1 → v1 事件流 → v2…"""
     script = [{"final": _node_reply(BOOK_ARTIFACT)}]
     for v in range(1, volumes + 1):
         script.append({"final": _node_reply(_volume_artifact(v))})
         if v == 1:
-            for c in range(1, chapters + 1):
-                script.append({"final": _node_reply(_chapter_artifact(c))})
+            # 事件先行：卷一产出一条事件流（含 chapters 条事件 → 切出 chapters 章）
+            script.append({"final": _node_reply(_event_stream_artifact(chapters, v))})
     return script
 
 
@@ -322,7 +337,9 @@ def test_ag1_seed_to_chapter_production(ws_factory):
     assert [v["vol"] for v in vols] == [1, 2]
     assert vols[0]["chapter_range"] == [1, 2]
     gist = parse_gist(ws, pid, 1, 1)
-    assert gist and gist["key_events"] == ["事件1-1", "事件1-2"]
+    # 事件先行：章 key_events = 该章切片内的事件（1 条 est_words=3000 的事件即切一章）
+    assert gist and len(gist["key_events"]) == 1
+    assert "第1个事件" in gist["key_events"][0]
     assert parse_cast_decl(ws.outline_chapter_path(pid, 1, 1).read_text(encoding="utf-8")) == ["叶蓝"]
     # bible 完整
     chars = json.loads(ws.bible_path(pid, "characters").read_text(encoding="utf-8"))
@@ -371,9 +388,11 @@ def test_engine_resume_is_idempotent(ws_factory, capsys):
     # resume：全部节点已落盘 → 不再调用 LLM，calls_used 不增长
     r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True, deepen=False, gate=False)
     assert r2.calls_used == 0  # 续跑零新调用（2026-09-19 起 calls_used 为本轮计数）
-    assert r2.chapters_written == 0
+    # 章细纲由事件流切片**确定性物化**（零 LLM）：续跑仍有 2 章产物，但不是"新生成"
+    assert r2.chapters_written == 2
     # 落盘内容未被破坏
-    assert parse_gist(ws, pid, 1, 2)["key_events"] == ["事件2-1", "事件2-2"]
+    _g2 = parse_gist(ws, pid, 1, 2)["key_events"]
+    assert _g2 and "第2个事件" in _g2[0]
     capsys.readouterr()
 
 

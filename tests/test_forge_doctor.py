@@ -163,3 +163,97 @@ def test_build_no_doctor_skips(ws_factory):
                 deepen=False, gate=False, doctor=False)
     assert res.ok
     assert not ws._abs(f"{pid}/{DOCTOR_REL}").exists()  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# 线账规划态守卫（2026-09-19 穿珠子落地，L1-3）
+# ---------------------------------------------------------------------------
+
+
+def _bp_lines(ws, pid, *, lines, threads=None, cps=20):
+    bp = Blueprint.blank()
+    bp.data["meta"] = {"title": "t", "genre": "修仙", "logline": "x",
+                       "scale": {"volumes": 1, "chapters_per_volume": cps,
+                                 "target_words_per_chapter": 100}}
+    bp.data["lines"] = lines
+    bp.data["threads"] = threads or []
+    bp.save(ws, pid)
+    return bp
+
+
+def test_line_checks_clean(ws_factory):
+    from novelist.core.lines import new_line
+
+    ws, pid = ws_factory("proj-doc-line-clean")
+    bp = _bp_lines(ws, pid, lines=[
+        new_line("ln:main", "主线", kind="main", carrier="theme",
+                 target={"vol": 1, "note": "n"}),
+        new_line("ln:sub1", "支线", kind="subplot", carrier="emotion",
+                 planned_span={"vol": 1, "start_ch": 2, "end_ch": 8}),
+        new_line("ln:hi1", "暗线", kind="hidden", carrier="object",
+                 reveal_points=[{"vol": 1, "ch": 5}]),
+    ])
+    assert precheck(bp) == []
+
+
+def test_line_checks_main_missing_and_duplicate(ws_factory):
+    from novelist.core.lines import new_line
+
+    ws, pid = ws_factory("proj-doc-line-main")
+    # 缺主线 → block
+    bp = _bp_lines(ws, pid, lines=[new_line("ln:s", "s", carrier="emotion")])
+    lv = [f["level"] for f in precheck(bp)]
+    assert "block" in lv
+    # 双主线 → block
+    bp2 = _bp_lines(ws, pid, lines=[
+        new_line("ln:m1", "m1", kind="main", carrier="theme"),
+        new_line("ln:m2", "m2", kind="main", carrier="theme")])
+    issues = [f["issue"] for f in precheck(bp2)]
+    assert any("主线不唯一" in i for i in issues)
+
+
+def test_line_checks_span_and_hollow_and_dangling(ws_factory):
+    from novelist.core.lines import new_line
+
+    ws, pid = ws_factory("proj-doc-line-guard")
+    bp = _bp_lines(ws, pid, lines=[
+        new_line("ln:main", "主线", kind="main", carrier="theme"),
+        new_line("ln:s1", "无区间支线", kind="subplot", carrier="emotion"),
+        new_line("ln:s2", "超规模支线", kind="subplot", carrier="character",
+                 planned_span={"vol": 1, "start_ch": 3, "end_ch": 99}),
+        new_line("ln:h1", "无露头暗线", kind="hidden", carrier="object"),
+    ], threads=[{"id": "pt:d", "name": "n", "desc": "d", "status": "planted",
+                 "parent_line": "ln:ghost"}], cps=20)
+    issues = [f["issue"] for f in precheck(bp)]
+    assert any("缺 planned_span" in i for i in issues)
+    assert any("超出卷章数" in i for i in issues)
+    assert any("缺 reveal_points" in i for i in issues)
+    assert any("parent_line 悬空" in i for i in issues)
+    # 倒挂区间：登记时被 _norm_span 归 None（不落脏值）→ doctor 报"缺 planned_span"
+    inv = new_line("ln:s3", "倒挂", kind="subplot", carrier="emotion",
+                   planned_span={"vol": 1, "start_ch": 9, "end_ch": 3})
+    assert inv["planned_span"] is None
+
+
+def test_apply_lines_skeleton_passes_span_through(ws_factory):
+    """book 骨架登记必须透传 planned_span / reveal_points（2026-09-19 缺口修复）。"""
+
+    from novelist.forge import nodes as N
+
+    ws, pid = ws_factory("proj-doc-line-span")
+    bp = Blueprint.blank()
+    bp.data["meta"] = {"title": "t", "genre": "修仙", "logline": "x",
+                       "scale": {"volumes": 1, "chapters_per_volume": 20,
+                                 "target_words_per_chapter": 100}}
+    bp.save(ws, pid)
+    ctx = N.NodeContext(ws=ws, project_id=pid, bp=bp, provider=None, pack={})
+    warns = N._apply_lines_skeleton(ctx, [
+        {"id": "ln:sub1", "desc": "支线", "kind": "subplot", "carrier": "emotion",
+         "planned_span": {"vol": 1, "start_ch": 2, "end_ch": 10},
+         "reveal_points": [{"vol": 1, "ch": 4}]},
+    ])
+    # 只登记支线 → 引擎会提示缺主线（预期告警，不阻断透传本身）
+    assert warns == ["lines 骨架缺主线（kind=main 恰好 1 条），请人工补登"]
+    row = bp.section("lines")[0]
+    assert row["planned_span"] == {"vol": 1, "start_ch": 2, "end_ch": 10}
+    assert row["reveal_points"] == [{"vol": 1, "ch": 4}]

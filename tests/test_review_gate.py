@@ -18,7 +18,8 @@ from novelist.forge.seed import _init_blueprint, _parse_seed_spec
 from novelist.providers.fake import ScriptedProvider
 
 from test_m13_forge_f1 import (SEED_REPLY, _build_script,
-                               _chapter_artifact, _node_reply, _volume_artifact)
+                         _event_stream_artifact,
+                               _node_reply, _volume_artifact)
 
 
 def _seeded_project(ws_factory, pid: str):
@@ -213,7 +214,7 @@ def test_approve_then_resume_completes(ws_factory):
     set_switch(ws, pid, "outline_volume", False)
     set_switch(ws, pid, "outline_chapter", False)
     r2 = build(ws, pid, provider=ScriptedProvider([
-        {"final": _node_reply(_chapter_artifact(1))},
+        {"final": _node_reply(_event_stream_artifact(1))},
         {"final": _node_reply(_volume_artifact(2))}]),
         max_calls=60, resume=True, deepen=False)
     assert r2.ok and r2.chapters_written >= 1, r2.warnings

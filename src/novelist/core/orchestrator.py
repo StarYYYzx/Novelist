@@ -1717,6 +1717,25 @@ def _produce_chapter_impl(
     gist_text_for_events = ""
     try:
         _gist_p = ws.outline_chapter_path(project_id, vol, ch)
+        if not _gist_p.exists():
+            # 事件先行（2026-09-19 拍板）：章细纲是**切片派生物**——事件流存在而本章细纲
+            # 尚未物化时，就按事件流切片就地物化（路径/格式与旧版一致，下游零改动）。
+            from . import chapter_layout as _CL
+
+            if _CL.has_stream(ws, project_id, vol):
+                _tw = 2400
+                try:
+                    from ..forge.state import Blueprint as _BP
+
+                    _tw = int(((_BP.load(ws, project_id).get("meta.scale") or {})
+                               .get("target_words_per_chapter")) or 2400)
+                except Exception:  # noqa: BLE001 - 蓝图不可读时用默认章长
+                    _tw = 2400
+                _sl = _CL.chapter_slice(
+                    _CL.load_events(ws, project_id, vol), ch, target_words=_tw,
+                    min_words=max(600, int(_tw * 0.62)), max_words=int(_tw * 1.75))
+                if _sl is not None:
+                    _CL.materialize_outline(ws, project_id, vol, _sl)
         if _gist_p.exists():
             gist_text_for_events = _gist_p.read_text(encoding="utf-8")
     except Exception:  # noqa: BLE001

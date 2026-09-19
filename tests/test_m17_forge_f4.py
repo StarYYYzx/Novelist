@@ -22,6 +22,7 @@ from novelist.forge.engine import build, roll
 from novelist.forge.genres import load_pack_for
 from novelist.forge.seed import _init_blueprint, _parse_seed_spec
 from novelist.providers.fake import ScriptedProvider
+from novelist.forge.state import Blueprint
 
 SEED_META = {"title": "t", "genre": "修仙", "logline": "x",
              "scale": {"volumes": 2, "chapters_per_volume": 2, "target_words_per_chapter": 100}}
@@ -77,11 +78,14 @@ def _deepen_script(chapters=2):
         # thread_set
         _reply({"threads": [{"id": "pt:yuwen", "desc": "玉牌之谜", "scope": "volume", "target_vol": 1,
                              "plant_desc": "第 1 章遗物现世", "payoff_desc": "卷末揭秘"}]}),
-        # volume 1 →（卷闸门）chapter 1-1/1-2 → volume 2（引擎实际消费顺序）
+        # volume 1 →（卷闸门）**事件流**（2026-09-19 事件先行）→ volume 2
+        # 事件数 = chapters（每条 est_words=800 + climax → 各切一章）
         _reply({"vol": 1, "title": "V1", "summary": "一卷主线", "key_beats": ["k"]}),
-        *[ _reply({"title": f"章{c}", "pov": "第三人称限知（主角视角）",
-                   "key_events": [f"事件{c}"], "turns": [f"转折{c}"],
-                   "characters": ["char:yelan"], "after_days": 0}) for c in range(1, chapters + 1) ],
+        _reply({"events": [
+            {"desc": f"事件{c}", "scene": f"场景{c}", "pov": "第三人称限知（主角视角）",
+             "days": 0 if c == 1 else 1, "est_words": 800, "climax": True,
+             "characters": ["char:yelan"], "beads": {"lines": []}}
+            for c in range(1, chapters + 1)]}),
         _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"]}),
     ]
 
@@ -92,8 +96,10 @@ def test_deepen_side_branches(ws_factory, capsys):
     _init_bp(ws, pid)
     r = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60, gate=False)
     assert r.ok, r.warnings
-    # 旁支调用计数：book1 + worldview1 + system2 + cg1 + style1 + ts1 + vol2 + ch2 = 11
-    assert r.calls_used == 11, r.calls_used
+    # 旁支调用计数（事件先行后）：book1 + worldview1 + system2 + cg1 + style1 + ts1
+    # + vol1 + vol2 + event_stream1 = 10（原先 vol1 下还有 chapter×2）
+    assert r.calls_used == 10, r.calls_used
+    assert r.chapters_written == 2, "事件流切片应切出 2 章"
     # settings 落库（system 产物）
     settings = json.loads(ws.bible_path(pid, "settings").read_text(encoding="utf-8"))
     ids = {s["id"] for s in settings}
@@ -132,18 +138,39 @@ def test_arc_and_beat_layers(ws_factory, capsys):
     ws, pid = ws_factory("proj-f4b")
     _init_bp(ws, pid)
     script = _deepen_script()
-    # volume 1 改为 expand 出 1 个 arc
+    # volume 1 改为 expand 出 1 个 arc（arc 节点会多消费一次回复——必须插在
+    # vol1 之后、event_stream 之前，否则后续回复全部错位）
     script[7] = _reply({"vol": 1, "title": "V1", "summary": "一卷主线"}, "expand",
                        [{"id": "arc-1", "brief": "立足宗门", "focus": "外门试炼"}])
-    # chapter 1-1 改为 expand（触发 beat）
-    script[9] = _reply({"title": "章1", "pov": "第三人称限知（主角视角）",
-                        "key_events": ["事件1"], "turns": ["转折1"],
-                        "characters": ["char:yelan"], "after_days": 0},
-                       "expand", [{"id": "beat1", "brief": "玉牌认主的节拍"}])
-    # beat 回复必须插在 chapter 1-1 之后、1-2 之前（引擎 DFS 顺序）
-    script.insert(10, _reply({"beats": ["拍1：拾玉（低）", "拍2：认主（高）"]}))
+    script.insert(8, _reply({"title": "立足宗门", "brief": "立足宗门", "focus": "外门试炼",
+                             "chapters_hint": "第 1–2 章"}))
     r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False)
     assert r.ok, r.warnings
+    # 事件先行后 build 不再逐章调 chapter 节点 → beat 层由节点直调验证（引擎对
+    # expand 分支的后续处理不变：chapter expand → beat 节点写回 gist.beats）。
+    from novelist.forge.nodes import NodeContext, run_node
+
+    bp_obj = Blueprint.load(ws, pid)
+    ctx_ch = NodeContext(ws=ws, project_id=pid, bp=bp_obj,
+                         provider=ScriptedProvider([
+                             _reply({"title": "章1", "pov": "第三人称限知（主角视角）",
+                                     "key_events": ["事件1"], "turns": ["转折1"],
+                                     "characters": ["char:yelan"], "after_days": 0},
+                                    "expand", [{"id": "beat1", "brief": "玉牌认主的节拍"}]),
+                             _reply({"beats": ["拍1：拾玉（低）", "拍2：认主（高）"]}),
+                         ]),
+                         pack={}, vol=1, ch=1)
+    res_ch = run_node(ctx_ch, "chapter")
+    assert res_ch.ok and res_ch.decide == "expand"
+    ctx_b = NodeContext(ws=ws, project_id=pid, bp=bp_obj,
+                        provider=ctx_ch.provider, pack={}, vol=1, ch=1,
+                        child={"id": "beat1", "brief": "玉牌认主的节拍"})
+    res_b = run_node(ctx_b, "beat")
+    assert res_b.ok
+    # 引擎在 beat 之后会 _persist_node（nodes/beat-1-1.json）；直调路径需手动补上
+    from novelist.forge.engine import _persist_node
+
+    _persist_node(ws, pid, "beat:1:1", res_b)
     # arc 落盘（自定决策：outline/arcs.json 独立文件）
     arcs = json.loads(ws._abs(f"{pid}/outline/arcs.json").read_text(encoding="utf-8"))
     assert [a["id"] for a in arcs] == ["arc:arc-1"] and arcs[0]["vol"] == 1
@@ -163,13 +190,28 @@ def test_arc_and_beat_layers(ws_factory, capsys):
 def test_max_width_truncation_warning(ws_factory, capsys):
     ws, pid = ws_factory("proj-f4w")
     _init_bp(ws, pid)
-    script = _deepen_script()
-    # worldview expand 给 6 个 children（> max_width=4）→ 截断告警，system 只跑 4 次
-    script[1] = _reply({"name": "落霞界"}, "expand",
-                       [{"id": f"sys{i}", "brief": f"维度{i}"} for i in range(1, 7)])
-    for i in range(1, 5):
-        script[1 + i] = _reply({"title": f"d{i}", "kind": "power",
-                                "settings": [{"id": f"set:d{i}", "keywords": ["k"], "text": "t"}]})
+    # 显式重排脚本（事件先行后调用序列为：book → wv → 子节点×N → cg → style →
+    # thread_set → vol1 → event_stream → vol2）：子回复数必须与 max_width_list 对齐，
+    # 多给或少给都会错位消费（F4 隐藏 bug 的教训）。
+    script = [
+        _reply(BOOK_ART),
+        # worldview expand 给 6 个 children（> max_width_list=3）→ 截断告警
+        _reply({"name": "落霞界"}, "expand",
+               [{"id": f"sys{i}", "brief": f"维度{i}"} for i in range(1, 7)]),
+        *[_reply({"title": f"d{i}", "kind": "power",
+                  "settings": [{"id": f"set:d{i}", "keywords": ["k"], "text": "t"}]})
+          for i in range(1, 4)],
+        _reply(None, "done"),                                  # character_group
+        _reply({"narration": "白描"}),                          # style
+        _reply({"threads": [{"id": "pt:yuwen", "desc": "玉牌之谜",
+                             "scope": "volume", "target_vol": 1}]}),   # thread_set
+        _reply({"vol": 1, "title": "V1", "summary": "一卷主线", "key_beats": ["k"]}),
+        _reply({"events": [
+            {"desc": "事件1", "scene": "场景1", "pov": "主角", "days": 0,
+             "est_words": 800, "climax": True, "characters": ["char:yelan"],
+             "beads": {"lines": []}}]}),
+        _reply({"vol": 2, "title": "V2", "summary": "二卷主线", "key_beats": ["k"]}),
+    ]
     r = build(ws, pid, provider=ScriptedProvider(script), max_calls=60, gate=False,
               max_width_list=3)  # ADR-033 A：宽类压到 3，6 个子节点仍被截断
     assert r.ok

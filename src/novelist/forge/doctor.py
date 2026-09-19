@@ -102,7 +102,74 @@ def precheck(bp: Blueprint) -> list[dict]:
             out.append({"level": "warn", "module": "volumes",
                         "issue": f"第 {v.get('vol')} 卷 arc 缺 goal/outcome（承上启下断档）",
                         "advice": "roll/重生成该卷卷纲时补 arc 四要素"})
+
+    out.extend(_line_checks(bp, scale))
     return out
+
+
+def _line_checks(bp: Blueprint, scale: dict) -> list[dict]:
+    """线账规划态守卫（2026-09-19 穿珠子落地；运行态欠账由 bead_view.warns 报）。"""
+    res: list[dict] = []
+    lines = bp.section("lines") or []
+    threads = bp.section("threads") or []
+    if not lines:
+        return res
+    line_ids = {str(x.get("id") or "") for x in lines}
+
+    # ① 主线缺失 / 不唯一（一硬多警中的"硬"）
+    mains = [x for x in lines if x.get("kind") == "main"]
+    if not mains:
+        res.append({"level": "block", "module": "lines",
+                    "issue": "线索骨架缺主线（kind=main 恰好 1 条）",
+                    "advice": "补登主线或重跑 book 节点——没有主线 bead_view 无法计算主线珠"})
+    elif len(mains) > 1:
+        res.append({"level": "block", "module": "lines",
+                    "issue": f"主线不唯一：{'、'.join(str(x.get('id')) for x in mains)}",
+                    "advice": "保留一条（/conflicts 裁决），其余转 subplot"})
+
+    # ② 空壳线卡：缺 carrier（载体六类之一）——空壳进注入层是噪声
+    hollow = [x.get("id") for x in lines if not str(x.get("carrier") or "").strip()]
+    if hollow:
+        res.append({"level": "warn", "module": "lines",
+                    "issue": f"{len(hollow)} 条线缺载体（carrier 空）：{'、'.join(str(x) for x in hollow[:6])}",
+                    "advice": "carrier 六类选一：物/行动/人/情感/组织/主题"})
+
+    # ③ 支线区间：缺 planned_span 或区间非法/超全书规模
+    try:
+        cps = int(scale.get("chapters_per_volume") or 0)
+    except (TypeError, ValueError):
+        cps = 0
+    for x in lines:
+        if x.get("kind") != "subplot":
+            continue
+        sp = x.get("planned_span")
+        if not isinstance(sp, dict) or not sp.get("start_ch") or not sp.get("end_ch"):
+            res.append({"level": "warn", "module": "lines",
+                        "issue": f"{x.get('id')}（支线）缺 planned_span——'不同长度的支线'无从表达",
+                        "advice": "登记 {vol, start_ch, end_ch}，或明确该线为全书贯穿（转 main/hidden）"})
+            continue
+        b = int(sp["end_ch"])
+        # 倒挂区间在登记时已被 _norm_span 归 None，此处不可能出现 a > b
+        if cps and b > cps:
+            res.append({"level": "warn", "module": "lines",
+                        "issue": f"{x.get('id')} planned_span 终点 {b} 超出卷章数 {cps}",
+                        "advice": "跨卷支线请拆分登记，或修正卷章规模"})
+
+    # ④ 暗线缺 reveal_points：到不了"计划露头"，bead_view 永远不点名
+    for x in lines:
+        if x.get("kind") == "hidden" and not (x.get("reveal_points") or []):
+            res.append({"level": "warn", "module": "lines",
+                        "issue": f"{x.get('id')}（暗线）缺 reveal_points——无人知道它何时露头",
+                        "advice": "登记计划揭示章位 [{vol, ch, note}]"})
+
+    # ⑤ 伏笔 parent_line 悬空：指向不存在的线 id（真机 09-19 形态的反向）
+    dangling = [t.get("id") for t in threads
+                if str(t.get("parent_line") or "") and str(t.get("parent_line")) not in line_ids]
+    if dangling:
+        res.append({"level": "warn", "module": "threads",
+                    "issue": f"{len(dangling)} 条伏笔 parent_line 悬空：{'、'.join(str(x) for x in dangling[:6])}",
+                    "advice": "改指向存在的 ln: id，或删除 parent_line"})
+    return res
 
 
 _DOCTOR_SYSTEM = """你是长篇网文的蓝图体检医生。给你一本书的蓝图摘要与预检信号，你要找出

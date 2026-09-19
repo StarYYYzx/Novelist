@@ -427,9 +427,11 @@ def test_seed_consult_completes_then_builds(ws_factory, monkeypatch):
     vol_reply = json.dumps({"artifact": {"vol": 1, "title": "初入修行", "summary": "觉醒",
                                          "key_beats": ["觉醒"]}, "decide": "done", "reason": "r"},
                            ensure_ascii=False)
-    ch_reply = json.dumps({"artifact": {"title": "章 1", "pov": "第三人称限知",
-                                        "key_events": ["事件1"], "turns": [], "after_days": 0},
-                           "decide": "done", "reason": "r"}, ensure_ascii=False)
+    ch_reply = json.dumps({"artifact": {"events": [
+        {"desc": "事件1", "scene": "场景1", "pov": "第三人称限知", "days": 0,
+         "est_words": 3000, "climax": True, "characters": ["char:yelan"],
+         "beads": {"lines": []}}]},
+        "decide": "done", "reason": "r"}, ensure_ascii=False)  # 事件流（事件先行）
     replies = [
         json.dumps({"genre": "修仙", "template_suggestion": "修仙男频", "logline": "五五开",
                     "protagonist_hint": {"name": "叶蓝", "gender": "male", "cheat": "五五开系统"},
@@ -439,16 +441,31 @@ def test_seed_consult_completes_then_builds(ws_factory, monkeypatch):
         '{"worldview.name": ["落霞界"]}',
         '{"style.tone": ["热血激昂"]}',
         '{"threads": ["云纹玉牌之谜"]}',
+        # 商讨多轮候选（事件先行后构建期少了一次章调用，此处补一条候选回复保对齐）
+        '{"meta.genre": ["修仙"]}',
         book_reply, vol_reply, ch_reply,
     ]
 
     class ScriptLLM:
+        """**按 prompt 内容应答**的脚本化 LLM（2026-09-19 事件先行改造）。
+
+        原先按调用序号排队，构建期节点个数一变（chapter×N → event_stream×1）就整体错位；
+        内容匹配对"调用次数漂移"免疫：认得出问的是什么节点，就回什么。
+        """
+
         def __init__(self, texts):
-            self.texts = list(texts)
+            self.texts = list(texts)   # 兼容旧签名：剩余的都当候选轮回复
             self.calls = 0
 
         def complete(self, req):
             self.calls += 1
+            prompt = req.messages[-1].content
+            if "立项设定师" in prompt:
+                return LLMResult(ok=True, content=book_reply, finish_reason="stop", blocked=False)
+            if "事件流规划师" in prompt:
+                return LLMResult(ok=True, content=ch_reply, finish_reason="stop", blocked=False)
+            if "本卷主线" in prompt or "卷弧提示" in prompt:
+                return LLMResult(ok=True, content=vol_reply, finish_reason="stop", blocked=False)
             text = self.texts.pop(0) if self.texts else '{"decide": "done"}'
             return LLMResult(ok=True, content=text, finish_reason="stop", blocked=False)
 
@@ -456,7 +473,7 @@ def test_seed_consult_completes_then_builds(ws_factory, monkeypatch):
                    mode="interactive", volumes=1, chapters_per_volume=1, target_words=100,
                    max_calls=60, gate=False)
     assert res.quit_early is False
-    assert res.ok is True
+    assert res.ok is True, res.warnings
     assert res.build.get("ok") is True
     assert res.build.get("volumes_written") == 1
     state = ForgeState.load(ws, pid)
@@ -500,9 +517,11 @@ def test_cli_resume_build_branch(ws_factory, monkeypatch):
                        "decide": "done", "reason": "r"}, ensure_ascii=False)
     vol = json.dumps({"artifact": {"vol": 1, "title": "卷一", "summary": "s", "key_beats": ["k"]},
                       "decide": "done", "reason": "r"}, ensure_ascii=False)
-    ch = json.dumps({"artifact": {"title": "章1", "pov": "第三人称限知", "key_events": ["e"],
-                                  "turns": [], "after_days": 0},
-                     "decide": "done", "reason": "r"}, ensure_ascii=False)
+    ch = json.dumps({"artifact": {"events": [
+        {"desc": "事件1", "scene": "场景1", "pov": "第三人称限知", "days": 0,
+         "est_words": 3000, "climax": True, "characters": ["char:yelan"],
+         "beads": {"lines": []}}]},
+        "decide": "done", "reason": "r"}, ensure_ascii=False)  # 事件流（事件先行）
     monkeypatch.setattr("novelist.cli._make_cli_provider",
                         lambda p, **kw: ScriptedProvider([{"final": book}, {"final": vol}, {"final": ch}]))
     runner = CliRunner()

@@ -489,6 +489,37 @@
               "theme"
             ],
             "description": "伏笔载体（ADR-025 批2）：回收后载体预期持续出场时登记，卷末审计据此提名升级为线。"
+          },
+          "parent_line": {
+            "type": "string",
+            "pattern": "^ln:",
+            "description": "伏笔所依附的线索 id（ADR-025 批2 / 2026-09-19）：'一条线索上附着大量伏笔'——登记后该伏笔的埋/收动作会随该线的在场注入，不再孤立。"
+          },
+          "payoff_window": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "计划回收窗口（应然）：超窗未回收由 bead_view 计入超期欠账。",
+            "properties": {
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "start_ch": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end_ch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "start_ch",
+              "end_ch"
+            ],
+            "additionalProperties": false
           }
         },
         "additionalProperties": true
@@ -544,7 +575,10 @@
             }
           },
           "target": {
-            "type": "object",
+            "type": [
+              "object",
+              "null"
+            ],
             "properties": {
               "vol": {
                 "type": "integer",
@@ -563,6 +597,56 @@
               "suspended",
               "closed"
             ]
+          },
+          "planned_span": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "计划区间（应然·穿珠子）：该线应在本卷哪些章位在场。subplot 建议必填——'不同长度的支线'由此表达；main 可省略（恒在）。start_ch<=end_ch，1 基。",
+            "properties": {
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "start_ch": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end_ch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "start_ch",
+              "end_ch"
+            ],
+            "additionalProperties": false
+          },
+          "reveal_points": {
+            "type": "array",
+            "description": "暗线露头/揭示计划（应然）：计划在哪些章位让读者看到线索。hidden 线建议登记，供 bead_view 到期点名。",
+            "items": {
+              "type": "object",
+              "properties": {
+                "vol": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "ch": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "vol",
+                "ch"
+              ]
+            }
           }
         },
         "additionalProperties": true

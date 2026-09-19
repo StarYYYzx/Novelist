@@ -244,6 +244,20 @@ def _run_node_loop(
         return None
 
 
+def _last_stream_gist(ws, project_id: str, vol: int) -> dict | None:
+    """事件流的尾部事件 → 下一节的承上 gist（节间因果连续）。"""
+    from ..core import chapter_layout as _CL
+
+    evs = _CL.load_events(ws, project_id, vol)
+    if not evs:
+        return None
+    tail = evs[-1]
+    return {"title": "（上一节末尾事件）", "key_events": [str(tail.get("desc") or "")],
+            "turns": [str(tail.get("turn") or "")] if tail.get("turn") else [],
+            "characters": tail.get("characters") or []}
+
+
+
 def _log_round_summary(log, *, kind: str, calls_used: int, max_calls: int,
                        nodes_done: int, nodes_failed: int, elapsed_s: float,
                        gate_halted: bool, budget_exhausted: bool,
@@ -446,6 +460,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
     nodes_failed = 0   # 重试后仍失败（改动已回滚、沿用上一次可用产物）的节点数
     streak = _FailStreak()
     chapters_written = 0
+    events_written = 0
     volumes_written = 0
     budget_exhausted = False
     interrupted = False
@@ -626,67 +641,63 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             # 卷闸门（docs/10 §7.1 B2）：仅 vol=1 展开 chapter
             if vol != 1:
                 continue
-            for ch in range(1, K + 1):
-                if budget_exhausted:
-                    warnings.append(f"chapter 1-{ch}: 预算耗尽，未生成（剩余 {K - ch + 1} 章）")
-                    break
-                gist_path = ws.outline_chapter_path(project_id, 1, ch)
-                if resume and gist_path.exists():
-                    continue
-                prev = None
-                if ch > 1:
-                    from ..core.bible import parse_gist
+            # ---- 事件先行（2026-09-19 拍板）：按节产出**连续事件流**，章由切分后置 ----
+            # 此前是"章节先行"：逐章调用 chapter 节点产细纲（每章 2–3 事件 + 钩子），
+            # 章边界与事件归属在动笔前锁死。真机实证（proj-20260919164352）：每章只看得到
+            # 前一章 gist → ch12 起 72 章只有主角一人出场（局部延续、全局失向）；且与
+            # "章节是阅读切片"的文学规律相悖。现改为：事件流（按节，可多调用换质量）
+            # → 确定性切章 → 物化章细纲（路径/格式不变，下游零改动）。
+            from ..core import chapter_layout as CL
 
-                    prev = parse_gist(ws, project_id, 1, ch - 1)
-                ctx_ch = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
-                                     pack=pack, spec=spec, vol=1, ch=ch, prev_gist=prev,
-                                     arcs=vol_arcs or None)
-                # G4 修复（2026-09-05）：连读审查禁令注入本章细纲 prompt（细纲层
-                # 也规避母题重复，而不是等问题固化到账本、正文期才拦）。
-                if coherence_review and ch >= 2:
-                    try:
-                        from .coherence import load_coherence_bans
-
-                        ctx_ch.extra["coherence_bans"] = load_coherence_bans(
-                            ws, project_id, 1, ch)
-                    except Exception:  # noqa: BLE001
-                        ctx_ch.extra["coherence_bans"] = []
-                res_ch = _call(ctx_ch, "chapter", 2, vol=1, ch=ch)
-                if res_ch is not None and res_ch.ok:
-                    chapters_written += 1
-                    gated_c = _gated("chapter")
-                    if gated_c:
-                        mark_pending(ws, project_id, bp, gated_c, log_fn=log,
-                                     vol=1, ch=ch)
-                        raise _GateHalt(gated_c)
-                    # ---- 细纲连读审查（方案 A，用户 2026-09-05）：opt-in，≥2 章触发 ----
-                    # 失败/单章静默跳过；findings 落盘后由正文生成侧读取注入禁令。
-                    if coherence_review and ch >= 2:
-                        try:
-                            from .coherence import run_coherence_review
-
-                            fnd = run_coherence_review(ws, project_id, bp, provider, 1, ch,
-                                                       count_hook=_count_hook)
-                            if fnd:
-                                nm = len(fnd.get("motif_repeats") or [])
-                                nc = len(fnd.get("causal_issues") or [])
-                                log(f"[coherence] 1-{ch} 连读审查：母题重复{nm} 因果{nc}")
-                        except Exception as e:  # noqa: BLE001
-                            warnings.append(f"coherence 1-{ch}: {type(e).__name__}: {e}"[:120])
-                bp.save(ws, project_id)
-                # F4b：chapter expand → beat 节点（重场戏拍级提示，每章至多 1 次）
-                if deepen and res_ch is not None and res_ch.ok \
-                        and res_ch.decide == "expand" and res_ch.children:
-                    briefs = "; ".join(
-                        str((c if isinstance(c, dict) else {"brief": str(c)}).get("brief") or "")
-                        for c in res_ch.children[:max_width]).strip("; ")
-                    ctx_b = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
-                                        pack=pack, vol=1, ch=ch,
-                                        child={"id": f"beat{ch}", "brief": briefs})
-                    res_b = _call(ctx_b, "beat", 3, vol=1, ch=ch,
-                                  child=ctx_b.child)
-                    _persist_node(ws, project_id, f"beat:1:{ch}", res_b)
+            _tw = int((bp.get("meta.scale") or {}).get("target_words_per_chapter", 2400) or 2400)
+            _minw = max(600, int(_tw * 0.62))
+            _maxw = int(_tw * 1.75)
+            _stream_have = CL.load_events(ws, project_id, 1)
+            if resume and _stream_have:
+                log(f"[事件流] 续跑：已有 {len(_stream_have)} 条事件，跳过生成")
+            else:
+                # 事件流按需**多轮**生成：一轮最多 ~30 条事件，本卷目标 K×tw 字，
+                # 因此循环调用直到覆盖目标（多调用换质量，2026-09-19 拍板）。
+                _target_total = K * _tw
+                _rounds_cap = max(1, (K + 9) // 10)   # 每轮约覆盖 10 章量级
+                _rounds = 0
+                while _rounds < _rounds_cap:
+                    _so_far = CL.load_events(ws, project_id, 1)
+                    if sum(CL.est_words(e) for e in _so_far) >= int(_target_total * 0.9):
+                        break
+                    if budget_exhausted:
+                        warnings.append("event_stream: 预算耗尽，事件流提前收束")
+                        break
+                    _item = vol_arcs[_rounds % len(vol_arcs)] if vol_arcs else None
+                    ctx_ev = NodeContext(ws=ws, project_id=project_id, bp=bp, provider=provider,
+                                         pack=pack, spec=spec, vol=1, ch=0,
+                                         child=_item if isinstance(_item, dict) else None,
+                                         arcs=vol_arcs or None,
+                                         prev_gist=_last_stream_gist(ws, project_id, 1))
+                    res_ev = _call(ctx_ev, "event_stream", 2, vol=1, ch=0)
+                    if res_ev is not None and res_ev.ok:
+                        events_written += 1
+                        gated_e = _gated("chapter")
+                        if gated_e:
+                            mark_pending(ws, project_id, bp, gated_e, log_fn=log, vol=1, ch=1)
+                            raise _GateHalt(gated_e)
+                    else:
+                        warnings.append("event_stream: 本轮未产出事件，停止扩写")
+                        break
                     bp.save(ws, project_id)
+                    _rounds += 1
+            events = CL.load_events(ws, project_id, 1)
+            if events:
+                slices = CL.slice_chapters(events, target_words=_tw, min_words=_minw,
+                                           max_words=_maxw)
+                for _sl in slices:
+                    CL.materialize_outline(ws, project_id, 1, _sl)
+                chapters_written = len(slices)
+                log(f"[事件流] {CL.summary(events, target_words=_tw, min_words=_minw, max_words=_maxw)}"
+                    f"｜切章理由 {CL.event_counts_by_break(events, target_words=_tw, min_words=_minw, max_words=_maxw)}")
+            else:
+                warnings.append("事件流为空（预算/解析失败）：本卷未切出章节；"
+                                "旧版按章细纲生成结果如已存在仍可用于正文")
     except _GateHalt as g:
         gate_halted = True
         warnings.append(f"审核闸门暂停（待处置：{g.modules}）——build/resume 在处置后可续跑")
