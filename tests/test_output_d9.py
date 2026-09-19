@@ -72,6 +72,43 @@ def test_emit_survives_unencodable_output(monkeypatch, capsys):
     assert all(ch.isascii() for ch in "".join(fake.written))
 
 
+# ---------- UX-2（2026-09-19）：长操作心跳 ----------
+
+def test_heartbeat_fires_after_threshold():
+    """超过阈值的操作至少收到一跳「仍在进行」。"""
+    import time
+
+    lines: list[str] = []
+    with output.use_output(lines.append):
+        with output.heartbeat("测试任务", after_s=0.01, interval_s=0.02):
+            time.sleep(0.12)
+    ticks = [ln for ln in lines if "仍在进行" in ln]
+    assert ticks, "阈值后应有心跳输出"
+    assert any("测试任务" in ln for ln in ticks)
+
+
+def test_heartbeat_silent_when_fast():
+    """阈值内完成的操作一跳都不发（短调用不被打扰）。"""
+    lines: list[str] = []
+    with output.use_output(lines.append):
+        with output.heartbeat("快任务", after_s=60.0):
+            pass
+    assert not [ln for ln in lines if "仍在进行" in ln]
+
+
+def test_heartbeat_never_breaks_main_flow():
+    """sink 抛异常时心跳静默退出，主流程不受影响。"""
+    import time
+
+    def broken_sink(_line: str) -> None:
+        raise RuntimeError("sink 故障")
+
+    with output.use_output(broken_sink):
+        with output.heartbeat("坏 sink", after_s=0.01, interval_s=0.02):
+            time.sleep(0.08)  # 心跳尝试触发但 sink 坏 → 不得抛
+    # 无异常即通过
+
+
 @pytest.mark.parametrize("seconds,expected", [(125, "02:05"), (7325, "2:02:05")])
 def test_fmt_duration_roundtrip(seconds, expected):
     assert output.fmt_duration(seconds) == expected

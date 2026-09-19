@@ -6,7 +6,7 @@
 - 项目导航：`projects` / `ls` / `new <标题>` / `open <id>`
 - 构建链（forge）：`seed` `build` `resume` `shell` `roll` `roll-window`
   `ingest` `forge-validate` `show` `craft` `covenant` `lines-replay`
-  `rollback` `snapshots` `fr-review` `fr-approve` `fr-revise` `fr-switches`
+  `rollback` `snapshots` `fr-review` `fr-approve` `fr-approve-all` `fr-revise` `fr-switches`
 - 正文/流水线（顶层）：`chapter` `run` `status` `draft` `export`
 - 审核/一致性（顶层）：`review`（正文一致性）`feedback` `grant`
 - 统计与设定：`stats` `validate`（顶层欠约束检查，**与 `forge-validate` 不同**）
@@ -18,7 +18,7 @@
   validate/rollback/snapshots/ingest(SOURCE 后)/lines-replay，及顶层 run/status/
   review/feedback/grant/export/stats/draft/characters-enrich/enrich-pending/
   settings-pending/chapter(--vol/--ch)
-- `--dir` option：seed、fr-review/fr-approve/fr-revise/fr-switches
+- `--dir` option：seed、fr-review/fr-approve/fr-approve-all/fr-revise/fr-switches
 - `--vol`/`--ch` option：chapter、lines-replay
 - provider 透传仅对接收 `--provider` 的命令注入（见 `_PROVIDER_CMDS`），
   其余（run/status/craft/show/covenant/validate/rollback 等）不注入，避免多余 flag。
@@ -393,13 +393,26 @@ class Console:
         self.run_cli(argv)
 
     def cmd_fr_approve(self, args: str) -> None:
-        module = args.strip()
-        if not module:
-            self.io.output("[!] 用法：/fr-approve <模块> [--remember]")
+        parts = args.strip().split()
+        if not parts:
+            self.io.output("[!] 用法：/fr-approve <模块|all> [--remember]")
             return
         if not self._need_project():
             return
-        self.run_cli(["forge", "approve", module, "--dir", self._project_loc()])
+        # 2026-09-19 修复：此前 --remember 写在用法里却不透传（flag 被吃掉）
+        extra = [p for p in parts[1:] if p.startswith("--")]
+        self.run_cli(["forge", "approve", parts[0], *extra, "--dir", self._project_loc()])
+
+    def cmd_fr_approve_all(self, args: str) -> None:
+        parts = args.strip().split()
+        if not parts:
+            self.io.output("[!] 用法：/fr-approve-all <模块|all> [--off]  "
+                           "（批准待审并永久关闭审核；--off 恢复审核）")
+            return
+        if not self._need_project():
+            return
+        extra = [p for p in parts[1:] if p.startswith("--")]
+        self.run_cli(["forge", "approve-all", parts[0], *extra, "--dir", self._project_loc()])
 
     def cmd_fr_revise(self, args: str) -> None:
         module = args.strip()
@@ -548,6 +561,7 @@ class Console:
             "lines-replay": self.cmd_lines_replay,
             "fr-review": self.cmd_fr_review,
             "fr-approve": self.cmd_fr_approve,
+            "fr-approve-all": self.cmd_fr_approve_all,
             "fr-revise": self.cmd_fr_revise,
             "fr-switches": self.cmd_fr_switches,
             "chapter": self.cmd_chapter,
@@ -664,7 +678,8 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 
 构建期审核（forge review 系列）：
   /fr-review [模块]             查看待审模块（无参列 pending，给模块看全文）
-  /fr-approve <模块>            审核通过该模块
+  /fr-approve <模块|all> [--remember]  审核通过（all=批量批准全部待审）
+  /fr-approve-all <模块|all> [--off]   放行机制：批准待审并永久关审核；--off 恢复
   /fr-revise <模块> "<建议>"    按建议重生成模块并展示差异
   /fr-switches [模块 on|off]    查看/设置模块审核开关
 

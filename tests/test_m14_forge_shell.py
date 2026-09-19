@@ -270,3 +270,50 @@ def test_shell_review_empty_pending_prompts(tmp_path):
     io = FakeIO(lines=["/review", "/exit"])
     run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
     assert any("无待审模块" in ln for ln in io.out)
+
+
+# ---------- UX-1（2026-09-19）：/approve all 与 /approve-all 放行机制 ----------
+
+def test_shell_approve_all_keyword_clears_all_pending(tmp_path):
+    """`/approve all`：批量批准全部待审。"""
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    _mark_pending(ws, pid, "outline_volume")
+    _mark_pending(ws, pid, "style")
+    io = FakeIO(lines=["/approve all", "/exit"])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    from novelist.forge.review import load_review
+    assert not (load_review(ws, pid).get("pending") or {})
+    assert any("批量通过" in ln for ln in io.out)
+
+
+def test_shell_approve_all_command_closes_switch(tmp_path):
+    """`/approve-all <模块>`：批准待审 + 永久关开关，留痕 approve-all。"""
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    _mark_pending(ws, pid, "worldview")
+    io = FakeIO(lines=["/approve-all worldview", "/exit"])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    from novelist.forge.review import load_review
+    cfg = load_review(ws, pid)
+    assert not (cfg.get("pending") or {})
+    assert cfg["switches"]["worldview"] is False
+    assert cfg["switches"]["style"] is True  # 其他模块不动
+    assert cfg["history"][-1]["decision"] == "approve-all"
+
+
+def test_shell_approve_all_off_resumes(tmp_path):
+    """`/approve-all all off`：恢复审核（开关重开）。"""
+    ws, pid = _ws(tmp_path)
+    bp = _blank_bp()
+    bp.save(ws, pid)
+    io = FakeIO(lines=["/approve-all all", "/approve-all all off", "/exit"])
+    run_shell(ws, pid, bp, io=io, provider=FakeProvider(), slots=[])
+    from novelist.forge.review import load_review
+    cfg = load_review(ws, pid)
+    assert all(cfg["switches"].values()), "off 后全部开关应恢复"
+    decisions = [h["decision"] for h in cfg["history"]]
+    assert "approve-all" in decisions and "review-resume" in decisions
+    assert any("恢复审核" in ln for ln in io.out)

@@ -1325,7 +1325,13 @@ class _UsageCounter:
 
     def complete(self, req, **kwargs):
         self.calls += 1
-        res = self._inner.complete(req, **kwargs)
+        # UX-2（2026-09-19）：整章链路单次调用实测最长达 16s，期间零输出。
+        # 在计数器这一**唯一收口**挂心跳，覆盖生成/续写/拍展开/JIT/编纂全部嵌套调用；
+        # 阈值内完成的短调用一跳都不发（heartbeat 语义）。
+        from .output import heartbeat
+
+        with heartbeat("模型生成"):
+            res = self._inner.complete(req, **kwargs)
         usage = getattr(res, "usage", None)
         if usage is not None:
             self.tokens_in += int(getattr(usage, "tokens_in", 0) or 0)

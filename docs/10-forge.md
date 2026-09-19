@@ -299,7 +299,8 @@ REPL（`/exit` 才退出）。二者共享 `detect_gaps` + transcript，阶段�
 | `/exit` | 退出：无缺口 → `seeded`；仍有缺口 → 保持 `consulting`（待 resume/shell 续） |
 | `/show` | 打印已填设定概览 + 未填缺口 + extras 登记状态 |
 | `/review [模块]` | 处置审核闸门：无参列出 pending 模块；给模块名显示其评审稿全文 |
-| `/approve <模块> [--remember]` | 审核通过该模块（写入账本/设定；`--remember` 永久关该模块把关） |
+| `/approve <模块|all> [--remember]` | 审核通过（`all`=批量批准全部待审；`--remember` 永久关把关） |
+| `/approve-all <模块|all> [off]` | **放行机制（2026-09-19 拍板）**：批准待审 + 永久关闭该模块审核开关；`all`=全模块放行（后续构建零人工审核）；加 `off` 恢复审核。放权/收权均写 history 留痕 |
 | `/revise <模块> "<建议>"` | 按建议重生成模块并展示差异（仍待审，需再 `/approve`） |
 | `/build` | 触发构建；required 缺口未满时先补齐推荐值并 confirm（默认 y），再调构建引擎 |
 | `/save` | 立即落盘 blueprint（每轮已有自动保存，此处为手动保险） |

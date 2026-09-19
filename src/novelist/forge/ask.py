@@ -401,17 +401,64 @@ def _llm_dispatch(bp: Blueprint, qs: list[RoundQuestion], line: str, provider,
         return None
 
 
+def _match_enum_token(q: "RoundQuestion", token: str) -> str | None:
+    """单个 token → 合法候选 id；不认得返回 None。
+
+    接受三种写法：候选 id 本身、序号（"2"）、中文名 / 「中文名 (id)」标签反查。
+    """
+    token = (token or "").strip()
+    if not token:
+        return None
+    if token.isdigit():
+        n = int(token)
+        if 1 <= n <= len(q.candidates):
+            return q.candidates[n - 1]
+    enum = q.slot.enum or []
+    if token in enum:
+        return token
+    labels = q.slot.enum_labels or {}
+    for cand in enum:
+        lbl = labels.get(cand)
+        if not lbl:
+            continue
+        if token == lbl or token == f"{lbl} ({cand})" or token == f"{lbl}({cand})":
+            return cand
+    return None
+
+
+def split_multi_enum(q: "RoundQuestion", raw: str) -> tuple[list[str], list[str]]:
+    """多选枚举拆分校验（UX-3，2026-09-19）：返回 (合法 id 列表, 未识别 token 列表)。
+
+    背景：工艺卡槽位的提示文案写"多选用顿号/逗号分隔"，但 `_dispatch_value` 的 enum
+    分支只收单值——真机用户按提示输入 5 张卡被整体拒答、静默回退成模板默认。
+    现在逐 token 校验、**部分接受**：合法项采纳，未识别项由调用方明确回显。
+    """
+    tokens = [t for t in re.split(r"[、，,；;/\s]+", raw or "") if t.strip()]
+    valid: list[str] = []
+    invalid: list[str] = []
+    for t in tokens:
+        hit = _match_enum_token(q, t)
+        (valid.append(hit) if hit else invalid.append(t))
+    # 去重保序
+    valid = list(dict.fromkeys(valid))
+    return valid, invalid
+
+
 def _dispatch_value(q: RoundQuestion, raw: str) -> str | None:
     """确定性护栏：把自由语里的某个值转成合法槽值；非法返回 None（拒答）。"""
     raw = (raw or "").strip()
     if not raw:
         return None
     cands = q.candidates
-    if raw.isdigit():  # 数字 → 候选序号（用户可能说“选 2”）
-        n = int(raw)
-        if 1 <= n <= len(cands):
-            return cands[n - 1]
-    if q.slot.candidates_from == "enum":  # enum 单选：值必须落在合法候选项
+    if q.slot.candidates_from == "enum":
+        if getattr(q.slot, "multi", False):  # UX-3：多选枚举（工艺卡等）
+            valid, _invalid = split_multi_enum(q, raw)
+            return "、".join(valid) if valid else None
+        if raw.isdigit():  # 数字 → 候选序号（用户可能说"选 2"）
+            n = int(raw)
+            if 1 <= n <= len(cands):
+                return cands[n - 1]
+        # enum 单选：值必须落在合法候选项
         enum = q.slot.enum or []
         if raw in enum:
             return raw
@@ -424,6 +471,10 @@ def _dispatch_value(q: RoundQuestion, raw: str) -> str | None:
             if raw == lbl or raw == f"{lbl} ({cand})" or raw == f"{lbl}({cand})":
                 return cand
         return None
+    if raw.isdigit():  # 数字 → 候选序号（用户可能说"选 2"）
+        n = int(raw)
+        if 1 <= n <= len(cands):
+            return cands[n - 1]
     return raw  # 自由文本/模板槽：直接采纳
 
 
@@ -593,14 +644,24 @@ def _run_consult_impl(
             attempts[key] = attempts.get(key, 0) + 1
             val = _dispatch_value(q, raw)
             if val is None:  # 非法值（如 enum 非候选）→ 拒答
+                # UX-3：多选槽给出逐项诊断（哪些不认得），不再一句"非法"了事
+                is_multi = q.slot.candidates_from == "enum" and getattr(q.slot, "multi", False)
+                bad = split_multi_enum(q, raw)[1] if is_multi else []
                 if attempts[key] >= _RETRY_LIMIT:
                     _fill_one_recommended(bp, q, ws, project_id, result, answered_keys, notes=None)
-                    warnings.append(f"「{q.slot.key}」已多次答复未能落到合法值，强制取推荐值")
+                    # UX-3：回退必须写清"丢了什么"——此前只说"强制取推荐值"，
+                    # 用户的输入内容从警告里消失（真机：5 张工艺卡静默丢 4 张）
+                    warnings.append(f"「{q.slot.key}」多次答复未能落到合法值"
+                                    f"（最近一次输入：{raw[:60]}），强制取推荐值")
                 else:
                     append_transcript(ws, project_id, "ask.reject", key=key, value=raw[:120],
                                       reason="value not valid")
-                    io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」只能取 {q.candidates}，"
-                              f"你这句「{raw[:30]}」已保留，稍后可重答。")
+                    if bad:
+                        io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」未识别：{'、'.join(bad)}；"
+                                  f"合法候选：{q.candidates}（可直接报序号，如 1 3 5）。")
+                    else:
+                        io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」只能取 {q.candidates}，"
+                                  f"你这句「{raw[:30]}」已保留，稍后可重答。")
                 continue
             path = _apply_slot_value(bp, q.slot, val, "user", 1.0)
             if path is None:

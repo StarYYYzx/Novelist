@@ -10,9 +10,10 @@ import json
 
 from novelist.forge.engine import build, revise_module
 from novelist.forge.nodes import revise_book_section
-from novelist.forge.review import (REVIEW_MODULES, diff_section, load_review,
-                                   pending_modules, render_review_md,
-                                   resolve_pending, set_switch, switch_on)
+from novelist.forge.review import (REVIEW_MODULES, approve_all, diff_section,
+                                   load_review, pending_modules, render_review_md,
+                                   resolve_all_pending, resolve_pending,
+                                   set_all_switches, set_switch, switch_on)
 from novelist.forge.seed import _init_blueprint, _parse_seed_spec
 from novelist.providers.fake import ScriptedProvider
 
@@ -50,6 +51,101 @@ def test_set_switch_roundtrip(ws_factory):
     set_switch(ws, pid, "characters", False)
     assert not switch_on(ws, pid, "characters")
     assert switch_on(ws, pid, "worldview")  # 其他模块不受影响
+
+
+# ---- UX-1（2026-09-19）：批量批准与 approve-all 放行机制 ----
+
+def _pend(ws, pid, *mods):
+    """造 pending：直接写配置（等价于 build 闸门挂起，但不动 LLM）。"""
+    cfg = load_review(ws, pid)
+    for m in mods:
+        cfg["pending"][m] = {"file": f"workspace/forge/reviews/{m}.md",
+                             "node": REVIEW_MODULES[m]["kind"], "at": "2026-09-19 10:00:00"}
+    from novelist.forge.review import save_review
+    save_review(ws, pid, cfg)
+
+
+def test_approve_all_pending_clears_everything(ws_factory):
+    """`/approve all`：批量批准全部待审，逐模块留痕。"""
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-all")
+    _pend(ws, pid, "worldview", "characters", "style")
+    mods = resolve_all_pending(ws, pid)
+    assert mods == ["characters", "style", "worldview"]
+    assert not pending_modules(ws, pid)
+    hist = load_review(ws, pid)["history"]
+    assert len(hist) == 3 and all(h["note"] == "approve all" for h in hist)
+    # 未 remember → 开关仍开（下次构建还会审）
+    assert switch_on(ws, pid, "worldview")
+
+
+def test_approve_all_pending_remember_closes_switches(ws_factory):
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-allrm")
+    _pend(ws, pid, "worldview", "style")
+    resolve_all_pending(ws, pid, remember=True)
+    assert not switch_on(ws, pid, "worldview") and not switch_on(ws, pid, "style")
+    assert switch_on(ws, pid, "characters")  # 未涉及的模块不动
+
+
+def test_approve_all_target_module_closes_switch(ws_factory):
+    """`/approve-all <模块>`：批准待审 + 永久关开关（编码 agent 的 allow-always）。"""
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-aamod")
+    _pend(ws, pid, "worldview")
+    msg = approve_all(ws, pid, "worldview")
+    assert "worldview" in msg and "不再审核" in msg
+    assert not pending_modules(ws, pid)
+    assert not switch_on(ws, pid, "worldview")
+    hist = load_review(ws, pid)["history"]
+    assert hist[-1]["decision"] == "approve-all" and hist[-1]["remember"]
+
+
+def test_approve_all_all_without_pending_still_closes_all(ws_factory):
+    """`/approve-all all` 在无 pending 时也要把开关全关（用户意图=以后都别审）。"""
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-aaall")
+    msg = approve_all(ws, pid, "all")
+    assert "后续构建不再人工审核" in msg
+    cfg = load_review(ws, pid)
+    assert not any(cfg["switches"].values()), "全部开关应已关闭"
+    assert any(h["decision"] == "approve-all" for h in cfg["history"])
+
+
+def test_approve_all_off_resumes_review(ws_factory):
+    """`/approve-all <模块|all> off`：重新打开开关恢复审核，pending 不动。"""
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-aaoff")
+    approve_all(ws, pid, "all")
+    _pend(ws, pid, "style")
+    msg = approve_all(ws, pid, "style", off=True)
+    assert "恢复审核" in msg
+    assert switch_on(ws, pid, "style")
+    assert not switch_on(ws, pid, "worldview")  # 其他模块仍关
+    assert "style" in pending_modules(ws, pid)  # off 不动 pending
+    hist = load_review(ws, pid)["history"]
+    assert hist[-1]["decision"] == "review-resume"
+
+
+def test_approve_all_unknown_target_rejected(ws_factory):
+    import pytest
+
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-aabad")
+    with pytest.raises(ValueError, match="未知模块"):
+        approve_all(ws, pid, "nope")
+
+
+def test_approve_all_all_unblocks_build(ws_factory):
+    """端到端：approve-all all 之后 build 不再被闸门拦（开关全关 → _gated 为空）。"""
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-aabuild")
+    approve_all(ws, pid, "all")
+    res = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)),
+                max_calls=60, deepen=False)
+    assert not res.gate_halted, res.warnings
+    assert not pending_modules(ws, pid)
+
+
+def test_set_all_switches_roundtrip(ws_factory):
+    ws, pid, _ = _seeded_project(ws_factory, "proj-gate-swall")
+    set_all_switches(ws, pid, False)
+    assert not any(load_review(ws, pid)["switches"].values())
+    set_all_switches(ws, pid, True)
+    assert all(load_review(ws, pid)["switches"].values())
 
 
 def test_diff_section_reports_changes():

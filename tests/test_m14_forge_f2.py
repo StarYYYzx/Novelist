@@ -114,6 +114,67 @@ def test_render_round_shows_cn_labels_not_only_ids():
     assert "伏笔与回收 (foreshadowing)" in txt
 
 
+# ---------- UX-3（2026-09-19）：多选枚举 ----------
+
+def _multi_round():
+    from novelist.forge.ask import RoundQuestion
+    enum = ["chapter-rhythm", "foreshadowing", "invincible-flow", "shuangwen", "system-flow"]
+    slot = Slot("style.craft_cards", "题材工艺卡", "recommended", "free",
+                candidates_from="enum", enum=enum, group=3)
+    slot.enum_labels = {"system-flow": "系统流", "chapter-rhythm": "网文章节节奏"}
+    slot.multi = True
+    return RoundQuestion(slot, enum, "")
+
+
+def test_dispatch_multi_enum_accepts_dunhao_list():
+    """真机事故（2026-09-19）：用户按提示输入 5 张卡（顿号分隔）被整体拒答并静默回退。
+    现在 multi=True 的 enum 槽逐 token 校验、全部采纳。"""
+    from novelist.forge.ask import _dispatch_value
+    q = _multi_round()
+    raw = "chapter-rhythm、foreshadowing、invincible-flow、shuangwen、system-flow"
+    val = _dispatch_value(q, raw)
+    assert val is not None
+    assert set(val.split("、")) == set(q.slot.enum)
+
+
+def test_dispatch_multi_enum_partial_accept_and_invalid_reported():
+    """部分接受：合法项采纳，未识别项可被调用方点名回显。"""
+    from novelist.forge.ask import _dispatch_value, split_multi_enum
+    q = _multi_round()
+    valid, invalid = split_multi_enum(q, "系统流、shuangwen，不存在的卡 2")
+    assert valid == ["system-flow", "shuangwen", "foreshadowing"]  # "2"=序号第二张
+    assert invalid == ["不存在的卡"]
+    assert _dispatch_value(q, "系统流、shuangwen，不存在的卡") == "system-flow、shuangwen"
+
+
+def test_dispatch_multi_enum_all_invalid_rejected():
+    """全部未识别 → 拒答（不写槽位），由调用方走重试/回退。"""
+    from novelist.forge.ask import _dispatch_value
+    q = _multi_round()
+    assert _dispatch_value(q, "甲、乙、丙") is None
+    assert _dispatch_value(q, "99") is None  # 序号越界
+
+
+def test_dispatch_multi_enum_dedup_and_single_token():
+    from novelist.forge.ask import _dispatch_value
+    q = _multi_round()
+    assert _dispatch_value(q, "shuangwen shuangwen、shuangwen") == "shuangwen"
+    assert _dispatch_value(q, "系统流") == "system-flow"  # 单 token 照常
+
+
+def test_craft_cards_slot_is_multi_and_hint_consistent():
+    """守卫：提示文案宣称"多选"的槽位必须 multi=True（防文案/校验再分叉）。
+
+    真机事故形态：slots.py 提示"多选用顿号/逗号分隔"，_dispatch_value 却只收单值。
+    """
+    from novelist.forge.slots import default_slots
+    for s in default_slots():
+        if "多选" in (s.ask or ""):
+            assert s.multi, f"{s.key} 提示多选但未标 multi"
+    slot = next(s for s in default_slots() if s.key == "style.craft_cards")
+    assert slot.multi, "工艺卡是多选槽位"
+
+
 def test_dispatch_parse_dispatch_json():
     """分派产物解析：answers/extras 抽取；畸形输入 → None。"""
     from novelist.forge.ask import _parse_dispatch

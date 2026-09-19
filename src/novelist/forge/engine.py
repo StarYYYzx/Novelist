@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..core.llm import ModerationBlockedError
-from ..core.output import emit
+from ..core.output import emit, heartbeat
 from ..storage.workspace import Workspace
 from . import genres as _genres
 from .nodes import (CHILD_KIND, LEAF_KINDS, NodeContext, chapter_range_of, run_node,
@@ -355,8 +355,12 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             warnings.append(f"{label}: 预算耗尽（{calls_used}/{max_calls}），未生成")
             return None
         started = calls_used + 1
+        # UX-2（2026-09-19）：调用**开始前**先报"生成中"，长调用挂心跳——
+        # 此前只有完成行，book 节点实测 17–21s 零输出，用户无从判断在跑还是卡死。
+        log(f"[{started}/{max_calls} 调用] {label} … 生成中")
         try:
-            res = run_node(ctx, kind)
+            with heartbeat(label):
+                res = run_node(ctx, kind)
             calls_used = started
             nodes_done += 1
             streak.reset()
@@ -915,8 +919,10 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             warnings.append(f"{label}: 预算耗尽（{calls_used}/{max_calls}），未生成")
             return None
         started = calls_used + 1
+        log(f"[{started}/{max_calls} 调用] {label} … 生成中")  # UX-2：调用前可见
         try:
-            res = run_node(ctx, kind)
+            with heartbeat(label):
+                res = run_node(ctx, kind)
             calls_used = started
             nodes_ok += 1
             streak.reset()
@@ -1295,10 +1301,12 @@ def _roll_window_impl(ws: Workspace, project_id: str, *, provider, vol: int,
         old = parse_gist(ws, project_id, vol, ch) or {"key_events": []}
         prev_ke = list(old.get("key_events") or []) if isinstance(old, dict) else []
         started = calls_used + 1
+        log(f"[{started}/{budget} 调用] chapter {vol}-{ch} 窗口重生成 … 生成中")  # UX-2
         try:
-            res = _rerun_chapter(ws, project_id, bp, provider,
-                                 vol=vol, ch=ch,
-                                 extra_instruction=_window_instruction(vol, ch, old))
+            with heartbeat(f"chapter {vol}-{ch} 窗口重生成"):
+                res = _rerun_chapter(ws, project_id, bp, provider,
+                                     vol=vol, ch=ch,
+                                     extra_instruction=_window_instruction(vol, ch, old))
             calls_used = started
         except (ValueError, ModerationBlockedError) as e:  # noqa: BLE001
             calls_used = started

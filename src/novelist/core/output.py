@@ -74,3 +74,52 @@ def fmt_duration(seconds: float) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+@contextmanager
+def heartbeat(label: str, *, after_s: float | None = None,
+              interval_s: float = 5.0) -> Iterator[None]:
+    """长操作心跳（UX-2，2026-09-19）：超过阈值未完成就每 interval_s 报一次「仍在进行」。
+
+    背景：构建/生成的单次 LLM 调用实测 15–21s（book 节点），期间零输出，用户无从判断
+    是"在跑"还是"卡死"。心跳用**守护线程 + Event** 实现：不碰 provider、不引入流式，
+    零风险止血（真 streaming 属 ADR-036 第二版）。
+
+    - `after_s`：首跳阈值，缺省读 `NOVELIST_HEARTBEAT_S`（默认 8s；<=0 立即起跳，测试用）。
+    - 心跳异常绝不打断主流程（全部吞掉）；线程 daemon=True，进程退出不留尾巴。
+    - sink 是 ContextVar，**心跳线程不继承上下文**——进入时显式捕获当前 sink。
+    """
+    import os
+    import threading
+    import time
+
+    if after_s is None:
+        try:
+            after_s = float(os.environ.get("NOVELIST_HEARTBEAT_S", "8"))
+        except (TypeError, ValueError):
+            after_s = 8.0
+    after = max(after_s, 0.01)
+    sink = _SINK.get()
+    stop = threading.Event()
+    started = time.monotonic()
+
+    def _tick() -> None:
+        if stop.wait(after):
+            return  # 阈值内完成 → 一跳都不发
+        while not stop.wait(interval_s):
+            line = f"  …{label}仍在进行（已 {fmt_duration(time.monotonic() - started)}）"
+            try:
+                if sink is not None:
+                    sink(line)
+                else:
+                    emit(line)
+            except Exception:  # noqa: BLE001 - 心跳失败绝不打断主流程
+                return
+
+    t = threading.Thread(target=_tick, name="novelist-heartbeat", daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=1.0)

@@ -352,13 +352,17 @@ def _run_seed_impl(
     try:
         pack_list = _genres.list_packs()
         last_err = "seed 提炼返回空内容"
+        from ..core.output import emit, heartbeat  # UX-2：提炼期可见性
+
+        emit("[seed] 提炼中（一句话 → 立项要素）…")
         for _ in range(_SEED_RETRIES + 1):
             try:
-                res = provider.complete(LLMRequest(
-                      messages=[LLMMessage(role="system", content=SEED_SYSTEM),
-                                LLMMessage(role="user", content=_seed_user_prompt(brief, pack_list, genre_pack))],
-                      temperature=0.4, max_tokens_out=4000, response_format="json_object",
-                      thinking=True))  # 判断类：种子结构化归纳，开思考
+                with heartbeat("seed 提炼"):
+                    res = provider.complete(LLMRequest(
+                          messages=[LLMMessage(role="system", content=SEED_SYSTEM),
+                                    LLMMessage(role="user", content=_seed_user_prompt(brief, pack_list, genre_pack))],
+                          temperature=0.4, max_tokens_out=4000, response_format="json_object",
+                          thinking=True))  # 判断类：种子结构化归纳，开思考
                 if res.blocked:
                     raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")
                 if not (res.content or "").strip():

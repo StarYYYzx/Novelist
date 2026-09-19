@@ -37,9 +37,16 @@ class Slot:
     why: str = ""
     confidence_threshold: float = 0.6  # provenance 低于此值视为低置信缺口
     enum_labels: dict[str, str] = field(default_factory=dict)  # 末尾追加：不破坏位置参数构造
+    # UX-3（2026-09-19）：多选枚举槽位（如题材工艺卡）——`_dispatch_value` 对 multi=True
+    # 的 enum 槽按顿号/逗号/空白/序号拆分逐 token 校验、部分接受；False 维持单选语义。
+    multi: bool = False
 
     def _with_enum_labels(self, labels: dict[str, str]) -> "Slot":
         self.enum_labels = labels or {}
+        return self
+
+    def _with_multi(self) -> "Slot":
+        self.multi = True
         return self
 
 
@@ -127,7 +134,7 @@ def default_slots() -> list[Slot]:
              "启用哪些题材工艺卡？（多选用顿号/逗号分隔；直接回车=不启用）",
              "enum", _craft_ids(), "", 3,
              "style.craft_cards，规范'怎么呈现'（如系统流的【】发言、单章节奏、伏笔分级）", 0.6)
-        ._with_enum_labels(_craft_labels()),
+        ._with_enum_labels(_craft_labels())._with_multi(),
         # 轮 4：人物与伏笔
         # 2026-09-06 用户拍板：感情线先问模式再问对象（原槽位直接问"对象是谁"，
         # 模式不选 → cast 节点自作主张加/不加感情戏）。

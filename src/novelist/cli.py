@@ -1166,16 +1166,46 @@ def forge_review(ctx: click.Context, module: str | None, directory: str | None) 
 @click.pass_context
 def forge_approve(ctx: click.Context, module: str, remember: bool,
                   directory: str | None) -> None:
-    """审核通过：清除 pending；--remember 同时永久关闭该模块审核开关。"""
-    from novelist.forge.review import REVIEW_MODULES, resolve_pending
+    """审核通过：清除 pending；`all` 批量批准全部待审；--remember 同时永久关闭审核开关。"""
+    from novelist.forge.review import REVIEW_MODULES, resolve_all_pending, resolve_pending
 
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
+    if module == "all":
+        mods = resolve_all_pending(ws, project_id, remember=remember,
+                                   note="cli approve all")
+        if not mods:
+            click.echo("approve all：无待审模块。")
+        else:
+            click.echo(f"approve all ✓（{len(mods)} 个模块：{'、'.join(mods)}）"
+                       + ("（后续不再审核这些模块）" if remember else ""))
+        return
     if module not in REVIEW_MODULES:
-        raise click.ClickException(f"未知模块 {module}；可选：{', '.join(REVIEW_MODULES)}")
+        raise click.ClickException(f"未知模块 {module}；可选：all 或 {', '.join(REVIEW_MODULES)}")
     resolve_pending(ws, project_id, module, decision="approved",
                     remember=remember)
     click.echo(f"approve {module} ✓" + ("（后续不再审核该模块）" if remember else ""))
+
+
+@forge.command("approve-all")
+@click.argument("target")
+@click.option("--off", is_flag=True, default=False,
+              help="恢复审核（重新打开开关；不动 pending）")
+@click.option("--dir", "directory", default=None, help="目标项目目录")
+@click.pass_context
+def forge_approve_all(ctx: click.Context, target: str, off: bool,
+                      directory: str | None) -> None:
+    """放行机制（2026-09-19 拍板）：approve-all <模块|all> = 批准待审 + 永久关闭审核开关；
+    approve-all <模块|all> --off = 恢复审核。放权/收权均写入 history 留痕。"""
+    from novelist.forge.review import approve_all as _approve_all
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    try:
+        msg = _approve_all(ws, project_id, target, off=off, note="cli approve-all")
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(msg)
 
 
 @forge.command("revise")

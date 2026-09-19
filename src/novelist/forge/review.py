@@ -126,6 +126,80 @@ def resolve_pending(ws: Any, project_id: str, module: str, *,
     save_review(ws, project_id, cfg)
 
 
+def resolve_all_pending(ws: Any, project_id: str, *, remember: bool = False,
+                        note: str = "") -> list[str]:
+    """批量批准全部 pending 模块；remember=True 同时永久关这些模块的开关。
+
+    返回批准的模块名列表（按字典序）。放权要留痕：history 里每模块一条
+    `decision="approve"`（note 标记 "approve all"），可追溯。
+    """
+    cfg = load_review(ws, project_id)
+    mods = sorted((cfg.get("pending") or {}).keys())
+    for m in mods:
+        resolve_pending(ws, project_id, m, decision="approve",
+                        remember=remember, note=note or "approve all")
+    return mods
+
+
+def set_all_switches(ws: Any, project_id: str, on: bool) -> None:
+    """批量开关全部审核模块（`/approve-all all` 的 off 反向操作也走这里）。"""
+    cfg = load_review(ws, project_id)
+    for m in cfg["switches"]:
+        cfg["switches"][m] = bool(on)
+    save_review(ws, project_id, cfg)
+
+
+def approve_all(ws: Any, project_id: str, target: str, *, off: bool = False,
+                note: str = "") -> str:
+    """`/approve-all <模块|all>`（2026-09-19 拍板：放权机制 + off 恢复审核）。
+
+    - 默认（off=False）：批准目标 pending（`approve --remember` 语义）并**永久关开关**
+      ——该模块后续构建不再人工审核。
+    - off=True：**重新打开开关**恢复审核（不动 pending——pending 里挂着的仍要处置）。
+
+    返回给用户看的说明文字。放权/收权都写 history（decision 分别为
+    `approve-all` / `review-resume`），不静默。
+    """
+    if target != "all" and target not in REVIEW_MODULES:
+        raise ValueError(f"未知模块 {target!r}；可选：all 或 {', '.join(REVIEW_MODULES)}")
+    cfg = load_review(ws, project_id)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    if off:
+        if target == "all":
+            set_all_switches(ws, project_id, True)
+            mods = sorted(REVIEW_MODULES)
+        else:
+            set_switch(ws, project_id, target, True)
+            mods = [target]
+        cfg = load_review(ws, project_id)
+        for m in mods:
+            cfg["history"].append({"module": m, "decision": "review-resume",
+                                   "remember": False, "note": (note or "approve-all off")[:200],
+                                   "at": now})
+        save_review(ws, project_id, cfg)
+        return f"已恢复审核：{'、'.join(mods)}（后续构建将重新挂起待审）"
+    if target == "all":
+        mods = resolve_all_pending(ws, project_id, remember=True,
+                                   note=note or "approve-all all")
+        # pending 为空时也要把开关全关（用户意图是"以后都别审"）
+        already_clear = sorted(m for m in REVIEW_MODULES if m not in mods)
+        set_all_switches(ws, project_id, False)
+        cfg = load_review(ws, project_id)
+        for m in already_clear:
+            cfg["history"].append({"module": m, "decision": "approve-all",
+                                   "remember": True, "note": (note or "approve-all all")[:200],
+                                   "at": now})
+        save_review(ws, project_id, cfg)
+        return ("已放行全部模块（含待审 " + ("、".join(mods) if mods else "无")
+                + "）——**后续构建不再人工审核任何模块**（/approve-all all off 恢复）")
+    # 单模块：清 pending（如有）+ 关开关
+    had_pending = target in (cfg.get("pending") or {})
+    resolve_pending(ws, project_id, target, decision="approve-all",
+                    remember=True, note=note or "approve-all")
+    return (f"已放行模块 {target}" + ("（清了待审）" if had_pending else "（本就不在待审）")
+            + "，该模块后续不再审核（/approve-all " + target + " off 恢复）")
+
+
 def stage_pending_for_revise(ws: Any, project_id: str, module: str,
                              suggestions: str) -> None:
     """把修改建议记入 pending（revise 重生成后仍待审）。"""

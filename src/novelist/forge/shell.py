@@ -20,10 +20,12 @@ from ..storage.workspace import Workspace
 from .ask import (  # noqa: PLC2701 - 复用 ask 的已有护栏/分派，避免复制
     _apply_slot_value, _build_questions, _default_of, _dispatch_value,
     _extras_banner, _fill_one_recommended, _llm_dispatch, _record_extras,
-    _render_bp_overview, _render_round, _RETRY_LIMIT, _settle_round)
+    _render_bp_overview, _render_round, _RETRY_LIMIT, _settle_round,
+    split_multi_enum)
 from .io_console import AnswerIO, ConsoleIO
 from .review import (
-    load_review, resolve_pending, stage_pending_for_revise,
+    approve_all as review_approve_all,
+    load_review, resolve_all_pending, resolve_pending, stage_pending_for_revise,
 )
 from .slots import Slot, default_slots, detect_gaps
 from .state import Blueprint, ForgeState, append_transcript
@@ -34,7 +36,8 @@ HELP_TEXT = """会话命令（一律以 / 开头）：
   /exit           退出会话（未收敛缺口保留，退到 consulting 待 resume）
   /show           查看已填设定概览 + 补充设想登记状态
   /review [模块]   查看待审模块（无参列 pending，给模块名看全文）
-  /approve 模块   审核通过该模块（写入账本/设定）
+  /approve 模块|all [--remember]  审核通过（all=批量批准全部待审；--remember=永久关开关）
+  /approve-all 模块|all [off]  放行机制：批准待审并永久关闭该模块审核；加 off 恢复审核
   /revise 模块"建议"  按建议重生成并经审批（仍待审）
   /build          触发构建（仍缺 required 时先补齐推荐值并确认再构建）
   /conflicts      列出待裁决结构冲突（第二条主线 / 伏笔近重复）
@@ -152,6 +155,9 @@ def run_shell(ws: Workspace, project_id: str, bp: Blueprint, *,
             if key in ("approve",):
                 _cmd_approve(ws, project_id, io, arg)
                 continue
+            if key in ("approve-all", "approve_all"):
+                _cmd_approve_all(ws, project_id, io, arg)
+                continue
             if key in ("revise",):
                 if not provider:
                     io.notify("[shell] revise 需要 LLM（provider 未配置）")
@@ -224,7 +230,7 @@ def _notify_pending_left(ws: Workspace, project_id: str, io: AnswerIO) -> None:
     pending = sorted((load_review(ws, project_id).get("pending") or {}))
     if pending:
         io.notify(f"  剩余待审：{'、'.join(pending)}——下一步 /review <模块> 看全文，"
-                  "或 /approve <模块> 直接通过")
+                  "或 /approve <模块> 直接通过；全部放行用 /approve-all all")
     else:
         io.notify("  已无待审模块——可以 /build 继续构建。")
 
@@ -261,13 +267,23 @@ def _cmd_review(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
 
 
 def _cmd_approve(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
-    """/approve 模块 [--remember]：通过审核模块。"""
+    """/approve 模块|all [--remember]：通过审核模块（all=批量批准全部待审）。"""
     if not arg:
-        io.notify('[shell] 用法：/approve <模块> [--remember]')
+        io.notify('[shell] 用法：/approve <模块|all> [--remember]')
         return
     parts = arg.split()
     module = parts[0]
     remember = "--remember" in parts[1:]
+    if module == "all":
+        mods = resolve_all_pending(ws, project_id, remember=remember,
+                                   note="shell approve all")
+        if not mods:
+            io.notify("[shell] 无待审模块。")
+            return
+        io.notify(f"[shell] 已批量通过 {len(mods)} 个模块：{'、'.join(mods)}"
+                  + ("（永久关闭这些模块把关）" if remember else "") + "。")
+        _notify_pending_left(ws, project_id, io)
+        return
     cfg = load_review(ws, project_id)
     if module not in (cfg.get("pending") or {}):
         io.notify(f"[shell] 无此待审模块 {module!r}（/review 查看 pending）。")
@@ -280,6 +296,23 @@ def _cmd_approve(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None
         return
     io.notify(f"[shell] 已通过审核：{module}"
               + ("（永久关闭该模块把关）" if remember else "") + "。")
+    _notify_pending_left(ws, project_id, io)
+
+
+def _cmd_approve_all(ws: Workspace, project_id: str, io: AnswerIO, arg: str) -> None:
+    """/approve-all 模块|all [off]：批准待审 + 永久关审核开关；off=恢复审核。"""
+    if not arg:
+        io.notify('[shell] 用法：/approve-all <模块|all> [off]')
+        return
+    parts = arg.split()
+    target = parts[0]
+    off = "off" in parts[1:]
+    try:
+        msg = review_approve_all(ws, project_id, target, off=off, note="shell approve-all")
+    except ValueError as e:
+        io.notify(f"[shell] {e}")
+        return
+    io.notify(f"[shell] {msg}")
     _notify_pending_left(ws, project_id, io)
 
 
@@ -330,15 +363,25 @@ def _dispatch_free_text(bp: Blueprint, qs: list[Any], line: str, provider,
         attempts[key] = attempts.get(key, 0) + 1
         val = _dispatch_value(q, raw)
         if val is None:
+            # UX-3：多选槽给逐项诊断（与 ask.py 同口径）
+            bad = (split_multi_enum(q, raw)[1]
+                   if q.slot.candidates_from == "enum" and getattr(q.slot, "multi", False)
+                   else [])
             if attempts[key] >= _RETRY_LIMIT:
-                io.notify(f"[提示] 「{q.slot.key}」多次未落合法值，本轮按推荐值。")
+                io.notify(f"[提示] 「{q.slot.key}」多次未落合法值"
+                          + (f"（未识别：{'、'.join(bad)}）" if bad else "")
+                          + f"，本轮按推荐值；你的输入「{raw[:40]}」未采纳。")
                 _fill_one_recommended(bp, q, ws, project_id, result,
                                       answered_keys, "dispatch.reject-limit")
             else:
                 append_transcript(ws, project_id, "ask.reject", key=key,
                                   value=raw[:120], reason="value not valid")
-                io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」只能取 {q.candidates}，"
-                          f"你这句「{raw[:30]}」已保留，可重答。")
+                if bad:
+                    io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」未识别：{'、'.join(bad)}；"
+                              f"合法候选：{q.candidates}（可直接报序号，如 1 3 5）。")
+                else:
+                    io.notify(f"[提示] 「{q.slot.ask or q.slot.label}」只能取 {q.candidates}，"
+                              f"你这句「{raw[:30]}」已保留，可重答。")
             continue
         path = _apply_slot_value(bp, q.slot, val, "user", 1.0)
         if path is None:
