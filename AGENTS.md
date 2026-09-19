@@ -116,7 +116,10 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   **`Agent层审计与修复方案-2026-09-15.md`**（Agent/工具调用专项审计 AG-1…AG-24 + 四批修复方案；
   含"默认 mode=tool 不落盘"「工具定义从未下发」等 8 组离线复现与 6 项待拍板）、
   **`Forge构建事故与修复-2026-09-16.md`**（真机事故：失败节点半成品落进 bible → 已改为
-  `BlueprintTxn` 事务化落库 + 失败不落盘 + 连续 3 节点失败中止；含 2 项待拍板）。
+  `BlueprintTxn` 事务化落库 + 失败不落盘 + 连续 3 节点失败中止；含 2 项待拍板）、
+  **`prompt组装与多Agent结构审计-2026-09-19.md`**（34 个 LLM 交互点全枚举：09-12 批次 2 修复项
+  复验全成立；新缺口 10 项 P1 / 11 项 P2，含 beats 人物层丢失、审校无实然状态、构建链
+  承上启下断档；另审 ADR-036 的 AgentRunner 会话化缺口 S-1…S-6 与工具面 T-1…T-3）。
   另有运行期证据：`novel_workspace/_harness/`（含 `prompt作用审计.md`「prompt 有没有接上链路」、
   `前两章问题归因报告.md`、以及实测导出的 prompt dump）。
 - `src/novelist/`：
