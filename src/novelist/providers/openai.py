@@ -45,6 +45,7 @@ class OpenAICompatibleProvider:
         model: str = "gpt-4o-mini",
         timeout_s: float = 60.0,
         supports_reasoning_roundtrip: bool = False,
+        supports_thinking: bool = True,
         max_retries: int = 2,
         retry_backoff_s: float = 0.8,
     ) -> None:
@@ -57,6 +58,9 @@ class OpenAICompatibleProvider:
         # 思考型后端的工具多轮：需回传 assistant 的 reasoning_content。
         # 仅对真正支持的后端（如 DeepSeek v4）开启，OpenAI 等不主动发，避免未知字段。
         self.supports_reasoning_roundtrip = supports_reasoning_roundtrip
+        # 思考字段（thinking / reasoning_effort）是否可下发；中转网关常不支持
+        # （2026-09-19 北邮网关实测：带上即 400 UnsupportedParamsError）。
+        self.supports_thinking = supports_thinking
         # 瞬时错误重试（AG-16）：默认 2 次、指数退避；0 可关。
         self.max_retries = max(0, int(max_retries))
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
@@ -92,7 +96,9 @@ class OpenAICompatibleProvider:
         exc: BaseException | None = None
         try:
             payload = build_payload(
-                req, self.model, supports_reasoning_roundtrip=self.supports_reasoning_roundtrip
+                req, self.model,
+                supports_reasoning_roundtrip=self.supports_reasoning_roundtrip,
+                supports_thinking=self.supports_thinking,
             )
 
             headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -214,6 +220,7 @@ def build_payload(
     model: str,
     *,
     supports_reasoning_roundtrip: bool = False,
+    supports_thinking: bool = True,
 ) -> dict:
     """组装 OpenAI / DeepSeek 兼容 chat/completions 请求体（纯函数，便于测试）。
 
@@ -254,14 +261,17 @@ def build_payload(
         payload["tools"] = req.tools
 
     thinking = req.thinking
-    if thinking is True:
-        payload["thinking"] = {"type": "enabled"}
-    elif thinking is False:
-        payload["thinking"] = {"type": "disabled"}
-    if req.reasoning_effort and thinking is not False:
-        payload["reasoning_effort"] = req.reasoning_effort
-    # 思考 enabled 时 DeepSeek 忽略 temperature；disabled/None 照常下发。
-    if req.temperature is not None and thinking is not True:
+    # supports_thinking=False（如 litellm 类中转网关，未开该字段会直接 400
+    # UnsupportedParamsError）：整段思考参数不下发，按普通 OpenAI 兼容端点走。
+    if supports_thinking:
+        if thinking is True:
+            payload["thinking"] = {"type": "enabled"}
+        elif thinking is False:
+            payload["thinking"] = {"type": "disabled"}
+        if req.reasoning_effort and thinking is not False:
+            payload["reasoning_effort"] = req.reasoning_effort
+    # 思考 enabled 时 DeepSeek 忽略 temperature；disabled/None/网关不支持思考时照常下发。
+    if req.temperature is not None and not (supports_thinking and thinking is True):
         payload["temperature"] = req.temperature
 
     if req.response_format == "json_object":

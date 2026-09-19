@@ -133,7 +133,8 @@ def create(
         )
 
     if name == "deepseek":
-        return factor_factory_provider(name, factory, api_key=api_key, model=model, **kw)
+        return factor_factory_provider(name, factory, api_key=api_key, model=model,
+                                       base_url=api_base, **kw)
 
     preset = PRESETS.get(name, {})
     if api_base is None and name == "custom":
@@ -153,9 +154,11 @@ def create(
     )
 
 
-def factor_factory_provider(name: str, factory, *, api_key=None, model=None, **kw):
+def factor_factory_provider(name: str, factory, *, api_key=None, model=None,
+                            base_url=None, **kw):
     """DeepSeek：走特化适配器（思考型 / 禁 pro / reasoning roundtrip）。
 
-    api_base 与 preset 无关（DeepSeek 用固定官方端点，覆盖用 api_key/model）。
+    `base_url` 可覆盖端点（2026-09-19）：显式 `--api-base` > 环境变量
+    `DEEPSEEK_API_BASE`（.env）> 官方端点；协议一致，仅网关不同。
     """
-    return factory(api_key=api_key, model=model, **kw)
+    return factory(api_key=api_key, model=model, base_url=base_url, **kw)

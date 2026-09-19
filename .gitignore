@@ -61,6 +61,8 @@ screen1.png
 
 # DeepSeek API key（明文，绝不入库）
 novel_workspace/_harness/.deepseek_key
+# 北邮网关 API key（明文，绝不入库）
+novel_workspace/_harness/bupt-api-key.txt
 
 # 多服务商 API key 集中存放（方案 A，明文；一行 KEY=VAL，绝不入库）
 # 搜索路径见 providers/secrets.py load_env_files

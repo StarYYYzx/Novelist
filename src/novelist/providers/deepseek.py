@@ -24,7 +24,12 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
-    """DeepSeek LLM 适配器（OpenAI 兼容协议，v4 系列，支持按请求思考）。"""
+    """DeepSeek LLM 适配器（OpenAI 兼容协议，v4 系列，支持按请求思考）。
+
+    端点优先级（2026-09-19 增加网关支持）：显式 `base_url` 参数 >
+    环境变量 `DEEPSEEK_API_BASE`（可在 gitignored 的 `.env` 里设，用于接校内/中转
+    OpenAI 兼容网关）> 官方 `https://api.deepseek.com`。协议完全一致，仅端点不同。
+    """
 
     DEEPSEEK_BASE = "https://api.deepseek.com"
 
@@ -34,17 +39,30 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         api_key: str | None = None,
         model: str | None = None,
         timeout_s: float = 60.0,
+        base_url: str | None = None,
     ) -> None:
-        key = resolve_api_key(
-            api_key,
-            ["DEEPSEEK_API_KEY", "DeepSeek-API-KEY"],
-        )
+        import os as _os
+
+        base = (base_url or _os.environ.get("DEEPSEEK_API_BASE") or self.DEEPSEEK_BASE)
+        _official = base.rstrip("/") == self.DEEPSEEK_BASE
+        # 密钥与端点配对（2026-09-19）：走第三方/校内网关时，官方 key 无效；
+        # 网关专用 key 变量优先，避免"宿主 shell 里的官方 DEEPSEEK_API_KEY 盖住
+        # .env 里的网关 key"（环境变量 > .env 的既定优先级所致）。
+        key_names = ["DEEPSEEK_API_KEY", "DeepSeek-API-KEY"]
+        if not _official:
+            key_names = ["DEEPSEEK_GATEWAY_API_KEY", *key_names]
+        key = resolve_api_key(api_key, key_names)
+        # 思考字段：官方端点支持；第三方/校内网关（base 非官方）默认不下发
+        # （litellm 类代理未开该字段 → 400）。可用 NOVELIST_DEEPSEEK_THINKING=1/0 覆盖。
+        _flag = _os.environ.get("NOVELIST_DEEPSEEK_THINKING")
+        supports_thinking = _official if _flag is None else _flag not in ("0", "false", "False")
         super().__init__(
-            base_url=self.DEEPSEEK_BASE,
+            base_url=base,
             api_key=key,
             model=model or DEEPSEEK_DEFAULT_MODEL,
             timeout_s=timeout_s,
-            supports_reasoning_roundtrip=True,
+            supports_reasoning_roundtrip=_official,
+            supports_thinking=supports_thinking,
         )
         self.provider_name = "deepseek"
 

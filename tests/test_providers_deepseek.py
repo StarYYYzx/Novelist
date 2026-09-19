@@ -182,3 +182,68 @@ def test_readme_smoke_env_key_never_in_plain_attr(monkeypatch):
     # 遮蔽版本可用作日志，且两者不要相等
     assert mask_secret(p.api_key) != p.api_key
     assert len(p.api_key) > len(mask_secret(p.api_key))
+
+
+# ---------------------------------------------------------------------------
+# 网关支持（2026-09-19）：base 覆盖 / 密钥与端点配对 / 思考字段可关
+# ---------------------------------------------------------------------------
+
+GATEWAY = "https://myai.bupt.edu.cn/llm-gw/v1"
+
+
+def test_deepseek_default_endpoint_and_thinking_unchanged(monkeypatch):
+    """未设任何环境变量时：官方端点 + 思考可用（回归保护）。"""
+    for name in ("DEEPSEEK_API_BASE", "DEEPSEEK_GATEWAY_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    p = DeepSeekProvider(api_key="sk-test")
+    assert p.base_url == "https://api.deepseek.com"
+    assert p.supports_thinking is True
+    assert p.supports_reasoning_roundtrip is True
+
+
+def test_deepseek_gateway_base_disables_thinking(monkeypatch):
+    """走网关（base 非官方）→ 自动不下发 thinking/reasoning 参数。"""
+    monkeypatch.setenv("DEEPSEEK_API_BASE", GATEWAY)
+    p = DeepSeekProvider(api_key="sk-test")
+    assert p.base_url == GATEWAY
+    assert p.supports_thinking is False
+    assert p.supports_reasoning_roundtrip is False
+    # 显式参数优先于环境变量
+    p2 = DeepSeekProvider(api_key="sk-test", base_url="https://api.deepseek.com")
+    assert p2.supports_thinking is True
+
+
+def test_deepseek_gateway_key_paired_with_base(monkeypatch):
+    """密钥与端点配对：走网关时网关专用 key 优先于宿主 shell 的官方 key。"""
+    monkeypatch.setenv("DEEPSEEK_API_BASE", GATEWAY)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-official")
+    monkeypatch.setenv("DEEPSEEK_GATEWAY_API_KEY", "sk-gateway")
+    assert DeepSeekProvider().api_key == "sk-gateway"
+    # 官方端点下仍用官方 key
+    monkeypatch.delenv("DEEPSEEK_API_BASE")
+    assert DeepSeekProvider().api_key == "sk-official"
+
+
+def test_deepseek_thinking_flag_can_force_on(monkeypatch):
+    """NOVELIST_DEEPSEEK_THINKING=1 时可对支持该字段的网关强制开启。"""
+    monkeypatch.setenv("DEEPSEEK_API_BASE", GATEWAY)
+    monkeypatch.setenv("NOVELIST_DEEPSEEK_THINKING", "1")
+    assert DeepSeekProvider(api_key="sk-test").supports_thinking is True
+
+
+def test_payload_omits_thinking_when_unsupported():
+    """supports_thinking=False：thinking / reasoning_effort 全不下发，temperature 保留。"""
+    p = build_payload(_req(thinking=True, temperature=0.4, reasoning_effort="high"),
+                      "deepseek-v4-flash", supports_thinking=False)
+    assert "thinking" not in p and "reasoning_effort" not in p
+    assert p["temperature"] == 0.4
+
+
+def test_create_passes_api_base_to_deepseek(monkeypatch):
+    """--api-base（api_base 参数）能透传到 DeepSeek 适配器。"""
+    from novelist.providers import create
+
+    monkeypatch.delenv("DEEPSEEK_API_BASE", raising=False)
+    p = create("deepseek", api_key="sk-test", api_base=GATEWAY)
+    assert p.base_url == GATEWAY
+    assert p.supports_thinking is False
