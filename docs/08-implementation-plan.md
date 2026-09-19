@@ -1079,6 +1079,24 @@ min_event_words = 120
 > 2026-09-19 校准：早期文档只写"CLI 参数"，未记这一层；`docs/命令手册.md` §"chapter
 > 参数分组"与 `novelist chapter --help` 末尾 epilog 同文。
 
+### M3ac — 常驻对话 Agent：console 自然语通道（ADR-036 · 2026-09-19 拍板 / **设计中，未动码**）
+
+编码 agent 的常驻对话范式（说意图 → agent 自主调工具 → 观察 → 交付）落到 novelist。
+**核心判断：Agent 循环、工具注册表、三级门禁、审批队列全部现成，缺的是对话入口 +
+结构化查询工具面**——所以本里程碑**不改任何现有构件的行为**，只做"嫁接 + 补齐"。
+
+| 子项 | 内容 | 状态 |
+| --- | --- | --- |
+| M3ac-1 自然语通道 | `forge/console.py`：非 `/` 输入从"拒绝"改为喂 `AgentRunner`（带全工具 registry）；`/` 分发一字不动；新增 `/agent status`（本轮调用数/成本/当前书）；`/help` 补说明 | ⬜ |
+| M3ac-2 结构化查询工具 | 新增 4 个只读工具（safe 级，登记 `_SAFE_TOOL_ALLOWLIST`，G3 强校验）：`list_chapters` / `get_bible(section, id?)` / `get_outline(vol, ch)` / `list_conflicts`。消除"文件布局幻觉"，省 token | ⬜ |
+| M3ac-3 会话持久化 | `<proj>/workspace/agent/session.jsonl`；`/open` 切书写段标记、回放只取当前书段落；回放按字符预算取最近窗口 + 首条项目快照 | ⬜ |
+| M3ac-4 主编剧 prompt | 静态规则 system prompt（角色/边界/工具用法/输出风格），入库 + 离线 dump 审计（沿用 `build_system_prompt` 手法）；**项目状态只进首条 user 消息**（DeepSeek 前缀缓存纪律） | ⬜ |
+| M3ac-5 真机验收 | 并入批次 D：自然语让 agent 自主读 bible/细纲/冲突并回答 + 一次 sensitive 写草稿走审批。判据：`raw-calls/*.jsonl` 出现 `tools` 与 `tool_calls` 往返 | ⬜ |
+
+**边界（拍板 B）**：safe 自主 / sensitive 当场审批 / danger 默认拒——PermissionGate 现成复用，
+不引入 plan mode。**工具面（拍板 C）**：流水线命令（chapter/build/roll）暂不包成 Tool；
+**刻意不做** CLI 直通工具。**产出形态（拍板 D）**：docs 定稿 → 编码。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

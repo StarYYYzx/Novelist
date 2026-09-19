@@ -823,6 +823,56 @@
 全量 **1028 passed**；`test_calllog.py` 断言完整 prompt 全文、原始 raw_text、解析 result、异常路径、
 451 拦截、`ctx` 归属均入 `raw-calls/<date>.jsonl`。未启用时不产生任何 `raw-calls/`。
 
+### ADR-036 常驻对话 Agent（自然语通道）：console 嫁接 AgentRunner，三级门禁即自主边界（· 拍板定稿 2026-09-19，**设计中**）
+
+> 背景/问题：编码 agent（Claude Code / CodeBuddy）的常驻对话范式——用户说意图，agent 自主
+> 规划、调工具、观察、再调、交付——在 novelist 里完全缺位。现状三个构件各缺一截：
+> `novelist console` 是常驻 REPL 但纯键盘命令分发器（非 `/` 输入直接拒绝，LLM 零参与，
+> 当时是刻意设计，`shell.py` 原话"不授予 LLM 任何自主控制权"）；`forge shell` 的自由语只经
+> **单次** LLM 分派写槽，没有多轮工具循环；而完整的 Agent 循环 `AgentRunner`（FC 真接线、
+> 观测有界、成本记账、converge 兜底）只在 `chapter --loop` 被调用且从未真机跑过。
+> **缺的不是 Agent 循环，是"对话入口 + 工具面补齐"。**
+
+**决策**（2026-09-19 四项拍板 + 既有纪律沿用）：
+
+- **A · 入口：console 内加自然语通道，不新建 REPL**（方案对比见下）。`/` 开头的输入维持现有
+  键盘分发一字不动（确定性、可预测）；自然语输入喂给 `AgentRunner` 对话循环。console 已有
+  项目导航（`ConsoleState.project_id`）+ `FilterableIO`（可注入可测），是现成宿主。
+  备选 B（独立 `novelist agent` 命令）重复 console 约 80% 的 REPL 基建；备选 C（升级
+  `forge shell`）定位错位——shell 是设定槽位填充器，ADR-032 的确定性护栏不能毁掉。
+- **B · 自主边界 = 三级门禁现成复用**：safe（读）自主；sensitive（写草稿等）进
+  `ApprovalQueue` 在 REPL 当场问用户；danger（publish/delete）默认拒、按策略文件放行。
+  创作类命令（chapter 级）默认敏感级起步——**自主调 `chapter` 等于自主花钱**。
+  不引入 plan mode（每轮计划确认），那是第二层体验优化，不是第一版的边界机制。
+- **C · 第一版工具面 = 现有 10 个 + 结构化查询**：流水线命令（chapter/build/roll/review）
+  **暂不**包成 Tool——先跑起来看缺口。新增只读结构化查询工具（safe 级，须登记
+  `_SAFE_TOOL_ALLOWLIST`）：`list_chapters`（卷章+状态）、`get_bible(section, id?)`、
+  `get_outline(vol, ch)`（细纲）、`list_conflicts`（待裁决）。理由：现在 agent 只能靠
+  read_file/grep 猜 JSON 结构，脆且费 token；结构化查询消除"文件布局幻觉"。
+  **刻意不给 CLI 直通工具（受控 shell）**——那会让门禁形同虚设。
+- **D · 会话历史持久化到项目**：落 `<proj>/workspace/agent/session.jsonl`（ADR-016 文件即
+  持久事实源，不入 git）；重开 console 自动续接。**书切换对齐**：console 内 `/open <id>`
+  切项目时在 jsonl 写段标记（`{"type":"switch","from":..,"to":..,"at":..}`），
+  回放只取当前项目之后的段落，不把上本书的对话混进新上下文。
+  **上下文裁剪**：回放按消息字符预算取**最近窗口** + 保留首条项目快照；与 AgentRunner
+  的观测预算同哲学（超预算即截断而非无限累积）。
+- **E · 缓存纪律（DeepSeek 前缀缓存，价差 50 倍）**：system prompt **只放静态规则**
+  （角色、边界、工具用法、输出风格）；项目状态（当前书、已写章节、待裁决冲突）由
+  首条 user 消息的快照给一次 + agent 用工具按需读。system prompt 绝不放逐章变化内容。
+  新 prompt 文件入库后走既有离线 dump 审计流程（`build_system_prompt` 同款手法）。
+- **F · 成本可见**：REPL 每轮显示本轮 token/成本（AG-12 记账已有）；`Budget.max_rounds`
+  硬顶 + converge 兜底（AG-13）沿用。`--smoke` 等价物：agent 循环用 fake provider 即可
+  全离线测（`AgentRunner` 决策者可注入）。
+- **G · 命令形态**：`novelist console` 为唯一入口；`/help` 增补自然语说明与
+  `/agent status`（看本轮会话的调用数/成本/当前书）。**不做**独立的 `novelist agent` 命令。
+
+**实现规划**：见 docs/08 **M3ac**（自然语通道 → 结构化查询工具 → 会话持久化 → prompt 与审计 →
+真机验收并入批次 D）。
+
+**风险**：FC 从未真机验证（raw-calls 停在 09-16）——若 DeepSeek `deepseek-v4-flash` 的
+`tool_calling` 实际不可用，AG-20 能力门控会让自然语通道退化为"单轮问答 + 无工具"，
+届时需另拍降级方案（伪工具协议或换 provider）。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |
