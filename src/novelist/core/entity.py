@@ -12,7 +12,8 @@
 - **信息密度预算**：每章首次出现实体数统计，超预算记告警（松档：日常 3 /
   群像 5 / 大比 7；用户拍板"更松一些，以质量为主"）。
 - **应然/实然分离（ADR-011）**：人物卡/settings/items 是应然（bible 原文件
-  不动）；引入进度是实然，独立落盘 `bible/entity_progress.json`。
+  不动）；引入进度是实然，独立落盘 `memory/entity_progress.json`（2026-09-19 决策 D-6
+从 bible/ 迁出——它是正文扫描的实然缓存，不该住应然区）。
 
 ## 注入差异化（接 KnowledgeBase 事件级注入）
 
@@ -59,7 +60,7 @@ class EntityProgress:
 
 
 class EntityTracker:
-    """统一实体进度层（bible 应然 + 正文实然 → entity_progress.json）。"""
+    """统一实体进度层（bible 应然 + 正文实然 → memory/entity_progress.json）。"""
 
     def __init__(self) -> None:
         self.entities: dict[str, EntityProgress] = {}
@@ -72,7 +73,7 @@ class EntityTracker:
     # ---------------------------------------------------------------- 构建/落盘
     @classmethod
     def load(cls, ws, project_id: str) -> "EntityTracker":
-        """从 bible（应然）+ entity_progress.json（实然缓存）构建。"""
+        """从 bible（应然）+ memory/entity_progress.json（实然缓存）构建。"""
         t = cls()
 
         def _read(rel: str):
@@ -117,9 +118,13 @@ class EntityTracker:
             t._budget_conf.update({k: int(v) for k, v in wv["entity_budget"].items()})
 
         # 实然进度（缓存存在则合并：stage/mentions 以缓存为准）
-        p = ws._abs(f"{project_id}/bible/entity_progress.json")
+        # 2026-09-19 决策 D-6：实然缓存落 memory/（旧 bible/ 位置保留读取兼容一个版本）
+        p = ws.existing_path(project_id, "memory/entity_progress.json",
+                             "bible/entity_progress.json")
+        if p is None:
+            p = ws.memory_path(project_id, "entity_progress")  # 新项目：直接落新位置
+        t._path = str(p)
         if p.exists():
-            t._path = str(p)
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
                 # 新格式 {"entities": [...], "deferred": [...]}；旧格式为裸 list
@@ -143,8 +148,6 @@ class EntityTracker:
                                                   for k, v in cc.items()}
             except (ValueError, OSError):
                 pass
-        else:
-            t._path = str(p)
         return t
 
     def _register(self, key: str, typ: str, names: list[str]) -> None:
@@ -158,7 +161,9 @@ class EntityTracker:
     def save(self) -> None:
         if not self._path:
             return
-        Path(self._path).write_text(
+        p = Path(self._path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
             json.dumps({"entities": [e.to_dict() for e in self.entities.values()],
                         "deferred": self.deferred},
                        ensure_ascii=False, indent=2),

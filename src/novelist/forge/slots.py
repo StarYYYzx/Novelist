@@ -108,9 +108,6 @@ def default_slots() -> list[Slot]:
         Slot("worldview.power_system.ceiling", "力量天花板", "recommended", "free",
              "力量天花板？（这个世界最强能到什么程度，如：化神大圆满/仙人不可及）",
              "llm", [], "", 2, "power_system.ceiling，升级空间规划上界", 0.6),
-        Slot("worldview.map", "地理范围", "recommended", "free",
-             "世界地理范围？（本卷写到哪，如：起点青山镇→青云宗→中州）",
-             "llm", [], "", 2, "worldview.map，卷与地图映射参照", 0.6),
         # 轮 3：文风与叙事
         Slot("style.tone", "文风基调", "required", "choice",
              "这本书的基调偏哪种？", "enum", ["热血激昂", "严谨冷肃", "诙谐幽默", "杀伐果断", "温柔细腻"],

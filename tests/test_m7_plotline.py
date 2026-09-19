@@ -5,7 +5,7 @@
 - 人物首次出场提示：first_appear == 本章的人物卡片带提示
 - 伏笔关联 + 状态流转：编纂员关键词匹配 affected_threads + planted→active
 - 每事件审校+修订：block → 带建议重写该事件（events_revised）
-- 经验回灌：block 沉淀 review_lessons.json + 注入【历史教训】段
+- 经验回灌：block 沉淀 memory/review_lessons.json（D-6 起）+ 注入【历史教训】段
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def test_event_review_revises_block_and_sinks_lessons(tmp_path):
     assert "周旋" in final and "震退" not in final, "修订稿应替换问题稿"
 
     # 经验沉淀
-    lessons = json.loads(ws._abs(f"{pid}/bible/review_lessons.json").read_text(encoding="utf-8"))
+    lessons = json.loads(ws.memory_path(pid, "review_lessons").read_text(encoding="utf-8"))
     assert res.lessons_added >= 1
     assert any("战力越级" in x["category"] for x in lessons)
 

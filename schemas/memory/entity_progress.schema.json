@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/memory/entity_progress.schema.json",
+  "title": "entity_progress",
+  "description": "实体进度实然缓存（docs/06 §3，ADR-016 可再生投影）：正文扫描得出的实体出场进度（stage/first_ch/last_ch/mentions）。落 memory/（实然区，2026-09-19 从 bible/ 迁出）。",
+  "oneOf": [
+    {
+      "type": "object",
+      "description": "新格式",
+      "required": ["entities"],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "type", "stage"],
+            "properties": {
+              "key": { "type": "string" },
+              "type": { "type": "string" },
+              "name": { "type": "string" },
+              "aliases": { "type": "array", "items": { "type": "string" } },
+              "stage": { "type": "string" },
+              "first_ch": { "type": ["integer", "null"] },
+              "last_ch": { "type": ["integer", "null"] },
+              "mentions": { "type": "integer" },
+              "chapter_counts": { "type": "object" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "deferred": { "type": "array" }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "array",
+      "description": "旧格式（裸 list，兼容保留）"
+    }
+  ]
+}

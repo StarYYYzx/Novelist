@@ -582,8 +582,10 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
             all_chapters: bool, policy: str | None) -> None:
     """草稿转正为正式章节（docs/06 §4.2 reviewed_ok → published，B-06）。
 
-    promote_draft 是 sensitive 工具：默认走 ask 门禁。不带 --policy 时会交互询问，
-    也可用策略文件把 sensitive 设为 allow 批量放行。
+    转正走 **`publish` 工具**（danger 级，2026-09-19 决策 D-4 合并——此前另有
+    sensitive 级 `promote_draft`，构成绕过 publish 门禁的廉价通道，已删）。
+    用户在命令行显式执行 promote = 人已提出请求，故本档把 publish 映射为"当场确认"
+    （与 `delete_file` 的默认口径一致）；`--policy` 可覆盖。
     """
     from novelist.core.approval import ApprovalQueue
     from novelist.core.tools import PermissionGate
@@ -593,7 +595,16 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
     if not all_chapters and (vol is None or ch is None):
         raise click.ClickException("specify --vol/--ch, or use --all")
 
-    gate = PermissionGate.from_policy_file(policy) if policy else PermissionGate()
+    if policy:
+        gate = PermissionGate.from_policy_file(policy)
+    else:
+        # 用户主动 promote：danger 级 publish 在此档降为"当场确认"（人已显式要求）
+        from novelist.core.tools import APPROVAL_ASK, APPROVAL_DENY
+
+        gate = PermissionGate(profiles={"supervised": {
+            "sensitive": APPROVAL_ASK, "danger": APPROVAL_DENY,
+            "tools": {"delete_file": APPROVAL_ASK, "publish": APPROVAL_ASK},
+        }})
     approvals = ApprovalQueue(persist_dir=ws._abs(f"{project_id}/logs"))
     reg = build_registry(ws, gate=gate, approvals=approvals, decision_fn=_interactive_decision)
     sess = SessionInfo(project_id=project_id, agent="cli")
@@ -609,7 +620,7 @@ def promote(ctx: click.Context, directory: str | None, vol: int | None, ch: int 
 
     ok_n = 0
     for v, c in targets:
-        r = reg.invoke(sess, "promote_draft", {"vol": v, "ch": c})
+        r = reg.invoke(sess, "publish", {"vol": v, "ch": c})
         if r.status == "ok":
             ok_n += 1
             click.echo(f"promoted {v}-{c}")
@@ -1823,8 +1834,8 @@ def settings_pending(ctx: click.Context, directory: str | None, allow: str | Non
     import json as _json
 
     ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
-    pending_path = ws._abs(f"{project_id}/bible/settings_pending.json")
-    settings_path = ws._abs(f"{project_id}/bible/settings.json")
+    pending_path = ws.bible_path(project_id, "settings_pending")
+    settings_path = ws.bible_path(project_id, "settings")
     pending = _json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
     pending = pending if isinstance(pending, list) else []
 
@@ -1944,7 +1955,7 @@ def _read_chars(ws, project_id: str) -> list[dict]:
     """读 bible/characters.json（enrich 命令用，避免在 cli 顶层重复 import json）。"""
     import json as _json
 
-    p = ws._abs(f"{project_id}/bible/characters.json")
+    p = ws.bible_path(project_id, "characters")
     if not p.exists():
         return []
     try:

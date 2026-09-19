@@ -127,8 +127,11 @@ class KnowledgeBase:
                     text=f"{t.get('id')} {t.get('desc', '')}",
                     keywords=[str(t.get("id") or "")], payload={"desc": str(t.get("desc") or "")}))
 
-        # 历史教训（review_lessons.json，M3h）
-        for rec in read("bible/review_lessons.json"):
+        # 历史教训（memory/review_lessons.json，M3h；D-6 起从 bible/ 迁出）
+        _lp = ("memory/review_lessons.json"
+               if ws.existing_path(project_id, "memory/review_lessons.json") is not None
+               else "bible/review_lessons.json")  # D-6 兼容旧位置
+        for rec in read(_lp):
             if isinstance(rec, dict) and rec.get("rule"):
                 self._items.append(KnowledgeItem(
                     kind="lesson", id=str(rec.get("_key") or ""),

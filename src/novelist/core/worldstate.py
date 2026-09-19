@@ -76,7 +76,7 @@ UNAVAILABLE_STATES: tuple[str, ...] = (
 
 def unavailable_keywords(ws, project_id: str) -> tuple[str, ...]:
     """取不可出场词表：`bible/worldview.json` 的 `unavailable_states` 覆盖默认表。"""
-    data = _read(ws._abs(f"{project_id}/bible/worldview.json"))  # noqa: SLF001
+    data = _read(ws.bible_path(project_id, "worldview"))  # noqa: SLF001
     extra = data.get("unavailable_states") if isinstance(data, dict) else None
     if isinstance(extra, list) and extra:
         return tuple(str(x) for x in extra if x)
@@ -159,7 +159,7 @@ def init_from_bible(ws, project_id: str) -> dict:
     时间轴（ADR-019）：同时初始化 `time.now = 0`，`origin_text` 取 `project.title`
     或默认"开书之日"。
     """
-    chars = _read(ws._abs(f"{project_id}/bible/characters.json")) or []
+    chars = _read(ws.bible_path(project_id, "characters")) or []
     state = load(ws, project_id)
     if not state["time"].get("origin_text"):
         proj = _read(ws._abs(f"{project_id}/project.json")) or {}
@@ -192,7 +192,7 @@ def init_from_bible(ws, project_id: str) -> dict:
 def _realm_levels(ws, project_id: str) -> list[str]:
     """读 worldview 境界表（apply_delta 单调性判断用；失败返回空 = 无从核对）。"""
     try:
-        wv = json.loads(ws._abs(f"{project_id}/bible/worldview.json")
+        wv = json.loads(ws.bible_path(project_id, "worldview")
                         .read_text(encoding="utf-8"))
         return [str(x) for x in ((wv.get("power_system") or {}).get("levels") or [])]
     except (ValueError, OSError, AttributeError):
@@ -210,7 +210,7 @@ def _sync_card_realm(ws, project_id: str, char_id: str, realm_text: str) -> None
     try:
         import json as _json
 
-        p = ws._abs(f"{project_id}/bible/characters.json")
+        p = ws.bible_path(project_id, "characters")
         if not p.exists():
             return
         cards = _json.loads(p.read_text(encoding="utf-8"))

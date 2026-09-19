@@ -94,8 +94,8 @@ danger = "deny"
     )
     gate = PermissionGate.from_policy_file(str(p))
     assert gate.check(_sess("supervised"), _tool("write_draft", "sensitive")) == APPROVAL_ALLOW  # 工具级覆盖
-    assert gate.check(_sess("supervised"), _tool("promote_draft", "sensitive")) == APPROVAL_ASK
-    assert gate.check(_sess("auto"), _tool("promote_draft", "sensitive")) == APPROVAL_DENY
+    assert gate.check(_sess("supervised"), _tool("write_file", "sensitive")) == APPROVAL_ASK
+    assert gate.check(_sess("auto"), _tool("write_file", "sensitive")) == APPROVAL_DENY
 
 
 # ---------- ToolRegistry ask 处置 ----------
@@ -173,7 +173,7 @@ def test_cli_grant_list_and_approve(tmp_path):
     from novelist.core.approval import ApprovalQueue
 
     q = ApprovalQueue(persist_dir=ws._abs(f"{pid}/logs"))
-    req = q.submit("promote_draft", {"vol": 1, "ch": 2}, _sess(), "promote draft")
+    req = q.submit("write_file", {"vol": 1, "ch": 2}, _sess(), "promote draft")
 
     runner = CliRunner()
     r = runner.invoke(cli, ["grant", str(tmp_path)])

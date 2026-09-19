@@ -387,6 +387,7 @@ def _sentence_stats(text: str) -> dict:
 # ---- LLM 抽取（每片一次调用）----
 
 _EXTRACT_PROMPT = """从下面的正文片段抽取设定要素（只输出 JSON，键名严格一致）：
+{genre_hint}
 {{
   "characters": [{{"name": "姓名", "gender": "male|female|unknown", "realm": "境界",
                    "traits": ["性格词"], "aliases": ["别名/称谓"], "relation": "与主角关系（无则空串）"}}],
@@ -414,12 +415,18 @@ def _parse_extract(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _llm_extract(provider, text: str, max_chars: int) -> dict:
-    """一次 LLM 抽取调用；失败抛异常（调用方降级确定性）。"""
+def _llm_extract(provider, text: str, max_chars: int, genre_hint: str = "") -> dict:
+    """一次 LLM 抽取调用；失败抛异常（调用方降级确定性）。
+
+    2026-09-19 审计 F-P1-4：此前抽取完全不知道题材（genre pack）——同一个"金丹"在
+    修仙与武侠里含义不同，境界/势力的归并口径因此漂移。`genre_hint` 为空时行为不变。
+    """
+    hint = (f"【题材】{genre_hint}——境界/势力/物品的用语与归并请按该题材常规口径。"
+            if genre_hint else "")
     res = provider.complete(LLMRequest(
         messages=[LLMMessage(role="system", content=_EXTRACT_SYSTEM),
                   LLMMessage(role="user", content=_EXTRACT_PROMPT.format(
-                      max_chars=max_chars, text=text[-max_chars:]))],
+                      genre_hint=hint, max_chars=max_chars, text=text[-max_chars:]))],
         temperature=0.3, max_tokens_out=900, response_format="json_object",
         thinking=True))  # 判断类：已有稿→蓝图结构化抽取，开思考
     if res.blocked:
@@ -761,6 +768,12 @@ def _run_ingest_impl(
     # 2) 抽取（确定性优先；LLM 补语义，独立配额）
     pack, pack_id = _genres_pack(genre)
     lexicon = pack.get("extract_lexicon") or {}
+    # F-P1-4：题材提示（pack 名 + 境界词表前几项），供 LLM 按题材口径归并
+    _realms = [str(x) for x in (lexicon.get("realms") or [])][:8] \
+        if isinstance(lexicon, dict) else []
+    genre_hint = str(pack.get("name") or pack_id)
+    if _realms:
+        genre_hint += f"（常见境界用语：{'、'.join(_realms)}）"
     extracts: list[dict] = []
     downgraded: list[int] = []
     calls_used = 0
@@ -768,7 +781,8 @@ def _run_ingest_impl(
         det = extract_deterministic(c.text, lexicon)
         if provider is not None and calls_used < ingest_max_calls:
             try:
-                extracts.append(_llm_extract(provider, c.text, max_chars))
+                extracts.append(_llm_extract(provider, c.text, max_chars,
+                                            genre_hint=genre_hint))
                 calls_used += 1
             except Exception as e:  # noqa: BLE001 - 单章抽取失败降级确定性（docs/10 §12）
                 extracts.append({})

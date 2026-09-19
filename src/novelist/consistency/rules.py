@@ -90,7 +90,7 @@ def _iter_chapters(ws: Workspace, project_id: str) -> list[tuple[str, str]]:
 
 
 def _banned_words(ws: Workspace, project_id: str) -> list[str]:
-    st = _read_json(ws._abs(f"{project_id}/bible/style.json")) or {}
+    st = _read_json(ws.bible_path(project_id, "style")) or {}
     words = st.get("forbidden_words") if isinstance(st, dict) else None
     return [w for w in (words or []) if isinstance(w, str) and w]
 
@@ -101,7 +101,7 @@ def _modern_words(ws: Workspace, project_id: str) -> tuple[str, ...]:
     默认词表是修仙/古风导向（实测「厚眼镜」出戏）；worldview.json 可给
     `modern_words` 覆盖（都市文传空列表，只留真正出戏的词）。
     """
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    wv = _read_json(ws.bible_path(project_id, "worldview")) or {}
     if isinstance(wv, dict) and isinstance(wv.get("modern_words"), list):
         return tuple(str(x) for x in wv["modern_words"])
     return MODERN_WORDS
@@ -112,7 +112,7 @@ def _modern_words_exempt(ws: Workspace, project_id: str) -> tuple[str, ...]:
 
     命中豁免词的现代词不再告警；worldview.json 的 `modern_words_exempt` 声明。
     """
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    wv = _read_json(ws.bible_path(project_id, "worldview")) or {}
     if isinstance(wv, dict) and isinstance(wv.get("modern_words_exempt"), list):
         return tuple(str(x) for x in wv["modern_words_exempt"])
     return ()
@@ -124,7 +124,7 @@ def _modern_similes(ws: Workspace, project_id: str) -> tuple[str, ...]:
     与 `modern_words`（指称型，穿越文可显式设空）不同——喻体表是修辞防线，
     worldview.modern_words 为空不关闭本表（v7 实测 ch4「指甲刮过黑板」）。
     """
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    wv = _read_json(ws.bible_path(project_id, "worldview")) or {}
     if isinstance(wv, dict) and isinstance(wv.get("modern_similes"), list):
         return tuple(str(x) for x in wv["modern_similes"])
     return MODERN_SIMILES
@@ -169,7 +169,7 @@ def _lexicon_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
 def _power_system_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     """R-PWR：同一境界的细分表述必须统一（不得「炼气三层」与「炼气一重」混用）。"""
     alerts: list[RuleAlert] = []
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    wv = _read_json(ws.bible_path(project_id, "worldview")) or {}
     levels = ((wv.get("power_system") or {}).get("levels")) if isinstance(wv, dict) else None
     if not levels:
         return alerts
@@ -221,7 +221,7 @@ def _item_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     if not reg.all_entries():
         return alerts
     full = "\n".join(text for _n, text in _iter_chapters(ws, project_id))
-    st = _read_json(ws._abs(f"{project_id}/bible/worldstate.json")) or {}
+    st = _read_json(ws.bible_path(project_id, "worldstate")) or {}
     chars = st.get("characters") if isinstance(st, dict) else {}
     held: set[str] = set()
     for cur in (chars or {}).values():
@@ -486,7 +486,7 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     from ..core.worldstate import parse_realm
 
     alerts: list[RuleAlert] = []
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json")) or {}
+    wv = _read_json(ws.bible_path(project_id, "worldview")) or {}
     levels = ((wv.get("power_system") or {}).get("levels")) if isinstance(wv, dict) else None
     # 绑定流角色豁免（v5 实测 P0-1 完整版）：realm 随绑定对象波动是**机制本身**，
     # 编纂不是每次都带「借用/同步」标记——worldview.realm_fluctuates 列出的角色
@@ -494,7 +494,7 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     fluctuate: set[str] = set()
     if isinstance(wv, dict) and isinstance(wv.get("realm_fluctuates"), list):
         fluctuate = {str(x) for x in wv["realm_fluctuates"]}
-    st = _read_json(ws._abs(f"{project_id}/bible/worldstate.json")) or {}
+    st = _read_json(ws.bible_path(project_id, "worldstate")) or {}
     chars = st.get("characters") if isinstance(st, dict) else None
     if not isinstance(chars, dict):
         return alerts
@@ -505,7 +505,7 @@ def _worldstate_check(ws: Workspace, project_id: str) -> list[RuleAlert]:
     # ADR-013 完全体（2026-09-06）之后角色卡 power.level 会被事件级实然同步，
     # 不再适合做单调性起点——旧项目无 baselines 时 fallback 人物卡（向后兼容）。
     card_realms: dict[str, str] = {}
-    card_data = _read_json(ws._abs(f"{project_id}/bible/characters.json")) or []
+    card_data = _read_json(ws.bible_path(project_id, "characters")) or []
     for c in card_data if isinstance(card_data, list) else []:
         if isinstance(c, dict) and c.get("id") and (c.get("power") or {}).get("level"):
             card_realms[c["id"]] = str(c["power"]["level"])

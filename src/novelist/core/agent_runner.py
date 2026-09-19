@@ -106,6 +106,11 @@ class AgentRunner:
         self._evidence: list[dict] = []
         self._messages: list[LLMMessage] = []
         self._obs_chars = 0
+        # 2026-09-19 决策 D-13：长对话压缩阈值（0 = 关闭）。真机实测单轮 tokens_in 达 147k
+        # ——消息史每轮整段重发，成本与延迟随轮数线性上涨。
+        self.compact_chars: int = 0
+        self.compact_keep_turns: int = 2
+        self.compacted_turns: int = 0
         # 对话态工具调用播报（2026-09-19，真机 UX）：console 置 True 时每次调用
         # 经 emit 打一行「→ 调用 xxx(...)」——此前整轮静默，用户看不见 agent 在做什么。
         self.trace_tools = False
@@ -229,6 +234,7 @@ class AgentRunner:
         结束判据：模型给出无工具调用的文本（final）或达轮次上限（抛 AgentLoopError，
         调用方可 converge() 抢救——与批式同语义）。
         """
+        self._maybe_compact()  # D-13：超阈值先把中段折成摘要，再追加本轮
         self._messages.append(LLMMessage(role="user", content=user_text))
         self._rf = "text"
         # 观测预算是**单轮**语义（真机 bug 修复 2026-09-19）：chat 复用同一 runner 跨轮，
@@ -275,6 +281,41 @@ class AgentRunner:
     def run_loop(self, goal: str, max_rounds: int | None = None) -> str:
         """执行 Agent 循环直到 LLM 给出 final 或达到上限。返回最终结果文本。"""
         return self.run_evidence(goal, max_rounds=max_rounds).final
+
+    # ------------------------------------------------------------ 历史压缩（D-13）
+    def _maybe_compact(self) -> None:
+        """消息史超阈值时，把**中段**折成确定性摘要（零 LLM 成本）。
+
+        保留：system（若有）+ 首条 user（项目快照）+ 最近 `compact_keep_turns` 轮原文。
+        折叠：其余整轮（按 user 起点切，**不会切断 assistant tool_calls 与 tool 结果的
+        配对**——配对断裂会让部分后端直接拒收）。摘要为确定性文本（每条取首行截断），
+        可离线测试、无额外 token 成本。
+        """
+        if self.compact_chars <= 0:
+            return
+        total = sum(len(m.content or "") for m in self._messages)
+        if total <= self.compact_chars:
+            return
+        # 首条 user = 项目快照，必须原样保留（压缩它等于丢项目上下文）
+        user_idx = [i for i, m in enumerate(self._messages) if m.role == "user"]
+        if len(user_idx) <= self.compact_keep_turns:
+            return
+        head_end = user_idx[1] if len(user_idx) > 1 else 0   # 保留 system + 快照
+        cut = user_idx[-self.compact_keep_turns]
+        mid = self._messages[head_end:cut]
+        if not mid:
+            return
+        digest = _digest_turns(mid)
+        self.compacted_turns += len(user_idx) - self.compact_keep_turns - 1
+        self._messages = [
+            *self._messages[:head_end],
+            LLMMessage(role="user", content=digest),
+            *self._messages[cut:],
+        ]
+        self._evidence.append({
+            "kind": "compact",
+            "detail": f"压缩 {len(mid)} 条中段消息 → 摘要 {len(digest)} 字符",
+        })
 
     def converge(self, note: str = "") -> str:
         """轮次耗尽后的**强制收敛**调用（docs/04 §5.1，AG-13 / 拍板 A）。
@@ -359,6 +400,20 @@ class AgentRunner:
     def _run_tool(self, d: AgentDecision) -> None:
         if self.registry is None:
             raise AgentLoopError("no tool registry bound")
+        # 2026-09-19（决策 D-5）：观测预算耗尽 → **拒绝执行**工具。此前只截观测、
+        # 工具照跑：写工具盲写照发，模型也未被通知，空烧剩余轮次直到 AgentLoopError。
+        if self._obs_chars >= self.obs_total_budget_chars:
+            self._messages.append(LLMMessage(
+                role="tool" if self.native_tools else "user",
+                content=(f"tool {d.tool_name} -> denied: 观测预算已用尽"
+                         f"（{self.obs_total_budget_chars} 字符）。"
+                         "**不要再调用任何工具**，请立即基于已获得的信息给出最终结论"
+                         "（缺的部分明说）。"),
+                tool_call_id=(d.tool_calls[0].id if d.tool_calls else None),
+            ))
+            self._evidence.append({"kind": "tool", "tool": d.tool_name,
+                                   "ok": "obs_budget_exhausted", "data": None})
+            return
         res = self.registry.invoke(self.session, d.tool_name or "", d.tool_args or {},
                                    budget=self.budget)  # AG-12：预算透传给工具
         self._evidence.append({"kind": "tool", "tool": d.tool_name, "ok": res.code, "data": res.data})
@@ -377,12 +432,31 @@ class AgentRunner:
             body = repr(data)
         if self._obs_chars >= self.obs_total_budget_chars:
             return (f"tool {tool_name} -> {code}: [观测预算已用尽（"
-                    f"{self.obs_total_budget_chars} 字符），不再回传工具输出]")
+                    f"{self.obs_total_budget_chars} 字符）；后续工具调用将被拒绝，请立即收敛作答]")
         limit = min(self.obs_limit_chars, self.obs_total_budget_chars - self._obs_chars)
         if len(body) > limit:
             body = body[:limit] + f"…[已截断，原 {len(body)} 字符]"
         self._obs_chars += len(body)
         return f"tool {tool_name} -> {code}: {body}"
+
+
+def _digest_turns(messages: list[LLMMessage], *, per_line: int = 120,
+                  max_chars: int = 2400) -> str:
+    """把若干轮消息折成确定性摘要（每条取首行、截断；零 LLM，D-13）。"""
+    lines: list[str] = ["【历史摘要】此前对话要点（已压缩，原文超出上下文预算）："]
+    for m in messages:
+        text = (m.content or "").strip().splitlines()
+        head = text[0].strip() if text else ""
+        if not head:
+            continue
+        if len(head) > per_line:
+            head = head[:per_line] + "…"
+        label = {"user": "用户", "assistant": "助手", "tool": "工具结果"}.get(m.role, m.role)
+        lines.append(f"- {label}：{head}")
+    out = "\n".join(lines)
+    if len(out) > max_chars:
+        out = out[:max_chars] + "\n…（摘要本身已截断）"
+    return out
 
 
 def _parse_decision(r: LLMResult) -> AgentDecision:

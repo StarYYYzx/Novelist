@@ -159,6 +159,91 @@ def _delta_note(before: dict[str, int], after: dict[str, int]) -> str:
     return "｜" + " ".join(parts) if parts else ""
 
 
+def _run_node_loop(
+    *, ctx, kind: str, label: str, depth: int, max_depth: int,
+    calls_box: list, max_calls: int, bp, log, t0: float,
+    warnings: list, streak, counters: dict, budget_check,
+    on_success=None,
+):
+    """节点执行的**共用骨架**（build 与 roll 共用；2026-09-19 决策 D-9）。
+
+    此前 build/roll 各有一份约 70 行的 `_call`，逐字重复且已分叉（roll 副本丢了
+    transcript 记账）。此处收敛为一份，差异用参数表达：
+
+    - `calls_box`：单元素列表，装本阶段已用调用数（替代 `nonlocal`）；
+    - `counters`：`{"ok": n, "failed": n}` 计数盒（build 叫 nodes_done，roll 叫 nodes_ok）；
+    - `budget_check`：预算判定（保留调用方「置 budget_exhausted」的副作用）；
+    - `on_success(res, retried)`：成功后的额外留痕（build 的 transcript 在此）。
+
+    语义与原先逐条一致：retry=1（解析失败带诊断重试）、每步按真实调用数入账、
+    连续失败经 `_maybe_abort` 中止。返回 `NodeResult | None`。
+    """
+    if depth > max_depth:
+        warnings.append(f"{label}: 超过 max_depth={max_depth}，按 done 处理")
+        return None
+    if not budget_check():
+        warnings.append(f"{label}: 预算耗尽（{calls_box[0]}/{max_calls}），未生成")
+        return None
+    started = calls_box[0] + 1
+    # UX-2（2026-09-19）：调用**开始前**先报"生成中"，长调用挂心跳——
+    # 此前只有完成行，book 节点实测 17–21s 零输出，用户无从判断在跑还是卡死。
+    log(f"[{started}/{max_calls} 调用] {label} … 生成中")
+    counts_before = _bp_counts(bp)
+    try:
+        with heartbeat(label):
+            res = run_node(ctx, kind)
+        calls_box[0] = started
+        counters["ok"] += 1
+        streak.reset()
+        ctx.retry_hint = ""
+        log(f"[{calls_box[0]}/{max_calls} 调用] {label} … ok ({time.time() - t0:.1f}s)"
+            + _delta_note(counts_before, _bp_counts(bp)))
+        for w in res.warnings:
+            warnings.append(f"{label}: {w}")
+        if on_success is not None:
+            on_success(res, False)
+        return res
+    except ValueError as e:  # 解析/校验失败 → retry 1（docs/10 §12）
+        ctx.retry_hint = _retry_hint(label, e)  # 重试前把诊断交给模型
+        if not budget_check():
+            counters["failed"] += 1
+            warnings.append(f"{label}: 重试时预算耗尽，未生成（沿用上一次可用产物）")
+            _maybe_abort(streak, label)
+            return None
+        ctx.extra_warnings.append(f"{label}: 首次失败（{_one_line(e)}），重试中")
+        try:
+            res2 = run_node(ctx, kind)
+            calls_box[0] = started + 1
+            counters["ok"] += 1
+            streak.reset()
+            ctx.retry_hint = ""
+            log(f"[{calls_box[0]}/{max_calls} 调用] {label} … ok (retry, "
+                f"{time.time() - t0:.1f}s)")
+            for w in res2.warnings:
+                warnings.append(f"{label}: {w}")
+            if on_success is not None:
+                on_success(res2, True)
+            return res2
+        except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
+            calls_box[0] = started + 1
+            counters["failed"] += 1
+            warnings.append(_fail_note(label, e2))
+            _maybe_abort(streak, label)
+            return None
+    except ModerationBlockedError as e:
+        calls_box[0] = started
+        counters["failed"] += 1
+        warnings.append(f"{label}: 审核拦截（{_one_line(e)}），该节点标记 blocked、人工补")
+        _maybe_abort(streak, label)
+        return None
+    except Exception as e:  # noqa: BLE001 - 节点级失败不拖垮整棵树
+        calls_box[0] = started
+        counters["failed"] += 1
+        warnings.append(_fail_note(label, e))
+        _maybe_abort(streak, label)
+        return None
+
+
 def _log_round_summary(log, *, kind: str, calls_used: int, max_calls: int,
                        nodes_done: int, nodes_failed: int, elapsed_s: float,
                        gate_halted: bool, budget_exhausted: bool,
@@ -381,76 +466,26 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
 
     def _call(ctx: NodeContext, kind: str, depth: int, vol: int = 0, ch: int = 0,
               child: dict | None = None):
-        """执行一个节点（含 retry=1 与降级兜底）。返回 NodeResult | None（预算耗尽/失败跳过）。"""
+        """执行一个节点（共用骨架 `_run_node_loop`；docs/10 §12）。返回 NodeResult | None。"""
         nonlocal calls_used, nodes_done, nodes_failed
         label = _node_label(kind, vol, ch, child)
-        if depth > max_depth:
-            warnings.append(f"{label}: 超过 max_depth={max_depth}，按 done 处理")
-            return None
-        if not _budget_check():
-            warnings.append(f"{label}: 预算耗尽（{calls_used}/{max_calls}），未生成")
-            return None
-        started = calls_used + 1
-        # UX-2（2026-09-19）：调用**开始前**先报"生成中"，长调用挂心跳——
-        # 此前只有完成行，book 节点实测 17–21s 零输出，用户无从判断在跑还是卡死。
-        log(f"[{started}/{max_calls} 调用] {label} … 生成中")
-        counts_before = _bp_counts(bp)
-        try:
-            with heartbeat(label):
-                res = run_node(ctx, kind)
-            calls_used = started
-            nodes_done += 1
-            streak.reset()
-            ctx.retry_hint = ""
-            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)"
-                + _delta_note(counts_before, _bp_counts(bp)))
-            for w in res.warnings:
-                warnings.append(f"{label}: {w}")
+        calls_box = [calls_used]
+        counters = {"ok": nodes_done, "failed": nodes_failed}
+
+        def _transcript(res, retried: bool) -> None:
             append_transcript(ws, project_id, "build_node", kind=kind, node=label,
                               decide=res.decide, reason=(res.reason or "")[:120],
-                              tokens_in=res.tokens_in, tokens_out=res.tokens_out)
-            return res
-        except ValueError as e:  # 解析/校验失败 → retry 1（docs/10 §12）
-            ctx.retry_hint = _retry_hint(label, e)  # 重试前把诊断交给模型
-            if not _budget_check():
-                nodes_failed += 1
-                warnings.append(f"{label}: 重试时预算耗尽，未生成（沿用上一次可用产物）")
-                _maybe_abort(streak, label)
-                return None
-            ctx.extra_warnings.append(f"{label}: 首次失败（{_one_line(e)}），重试中")
-            try:
-                res2 = run_node(ctx, kind)
-                calls_used = started + 1
-                nodes_done += 1
-                streak.reset()
-                ctx.retry_hint = ""
-                log(f"[{calls_used}/{max_calls} 调用] {label} … ok (retry, "
-                    f"{time.time() - start:.1f}s)")
-                for w in res2.warnings:
-                    warnings.append(f"{label}: {w}")
-                append_transcript(ws, project_id, "build_node", kind=kind, node=label,
-                                  decide=res2.decide, reason=(res2.reason or "")[:120],
-                                  tokens_in=res2.tokens_in, tokens_out=res2.tokens_out,
-                                  retried=True)
-                return res2
-            except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
-                calls_used = started + 1
-                nodes_failed += 1
-                warnings.append(_fail_note(label, e2))
-                _maybe_abort(streak, label)
-                return None
-        except ModerationBlockedError as e:
-            calls_used = started
-            nodes_failed += 1
-            warnings.append(f"{label}: 审核拦截（{_one_line(e)}），该节点标记 blocked、人工补")
-            _maybe_abort(streak, label)
-            return None
-        except Exception as e:  # noqa: BLE001 - 节点级失败不拖垮整棵树
-            calls_used = started
-            nodes_failed += 1
-            warnings.append(_fail_note(label, e))
-            _maybe_abort(streak, label)
-            return None
+                              tokens_in=res.tokens_in, tokens_out=res.tokens_out,
+                              **({"retried": True} if retried else {}))
+
+        res = _run_node_loop(
+            ctx=ctx, kind=kind, label=label, depth=depth, max_depth=max_depth,
+            calls_box=calls_box, max_calls=max_calls, bp=bp, log=log, t0=start,
+            warnings=warnings, streak=streak, counters=counters,
+            budget_check=_budget_check, on_success=_transcript,
+        )
+        calls_used, nodes_done, nodes_failed = calls_box[0], counters["ok"], counters["failed"]
+        return res
 
     try:
         # ---- L0 book ----
@@ -870,7 +905,7 @@ def _roll_context(ws: Workspace, project_id: str, bp: Blueprint, vol: int, K: in
         blocks.append("【前卷末 3 章实际发生】（无记忆事件——前卷正文可能未经编纂员回写）")
     # 3. worldstate 现状（time.now / 人物状态 / 未回收 pending）
     try:
-        wdata = json.loads(ws._abs(f"{project_id}/bible/worldstate.json").read_text(encoding="utf-8"))  # noqa: SLF001
+        wdata = json.loads(ws.bible_path(project_id, "worldstate").read_text(encoding="utf-8"))  # noqa: SLF001
     except (OSError, ValueError):
         wdata = {}
     now = int((wdata.get("time") or {}).get("now") or 0)
@@ -965,64 +1000,19 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
 
     def _call(ctx: NodeContext, kind: str, depth: int, vol_n: int = 0, ch: int = 0,
               child: dict | None = None):
-        nonlocal calls_used, budget_exhausted, nodes_ok, nodes_failed
+        """执行一个节点（共用骨架 `_run_node_loop`，与 build 同语义）；返回 NodeResult | None。"""
+        nonlocal calls_used, nodes_ok, nodes_failed
         label = _node_label(kind, vol_n, ch, child)
-        if depth > max_depth:
-            warnings.append(f"{label}: 超过 max_depth={max_depth}，按 done 处理")
-            return None
-        if not _budget_check():
-            warnings.append(f"{label}: 预算耗尽（{calls_used}/{max_calls}），未生成")
-            return None
-        started = calls_used + 1
-        log(f"[{started}/{max_calls} 调用] {label} … 生成中")  # UX-2：调用前可见
-        counts_before = _bp_counts(bp)
-        try:
-            with heartbeat(label):
-                res = run_node(ctx, kind)
-            calls_used = started
-            nodes_ok += 1
-            streak.reset()
-            ctx.retry_hint = ""
-            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)"
-                + _delta_note(counts_before, _bp_counts(bp)))
-            warnings.extend(f"{label}: {w}" for w in res.warnings)
-            return res
-        except ValueError as e:
-            ctx.retry_hint = _retry_hint(label, e)   # 同 build：重试带上真实诊断
-            if not _budget_check():
-                nodes_failed += 1
-                warnings.append(f"{label}: 重试时预算耗尽，未生成（沿用上一次可用产物）")
-                _maybe_abort(streak, label)
-                return None
-            ctx.extra_warnings.append(f"{label}: 首次失败（{_one_line(e)}），重试中")
-            try:
-                res2 = run_node(ctx, kind)
-                calls_used = started + 1
-                nodes_ok += 1
-                streak.reset()
-                ctx.retry_hint = ""
-                log(f"[{calls_used}/{max_calls} 调用] {label} … ok (retry)")
-                warnings.extend(f"{label}: {w}" for w in res2.warnings)
-                return res2
-            except (ValueError, ModerationBlockedError) as e2:  # noqa: BLE001
-                calls_used = started + 1
-                nodes_failed += 1
-                warnings.append(_fail_note(label, e2))
-                _maybe_abort(streak, label)
-                return None
-        except ModerationBlockedError as e:
-            # G1：roll 原先缺该分支——审核拦截被当普通异常吞掉，无痕迹
-            calls_used = started
-            nodes_failed += 1
-            warnings.append(f"{label}: 审核拦截（{_one_line(e)}），该节点标记 blocked、人工补")
-            _maybe_abort(streak, label)
-            return None
-        except Exception as e:  # noqa: BLE001
-            calls_used = started
-            nodes_failed += 1
-            warnings.append(_fail_note(label, e))
-            _maybe_abort(streak, label)
-            return None
+        calls_box = [calls_used]
+        counters = {"ok": nodes_ok, "failed": nodes_failed}
+        res = _run_node_loop(
+            ctx=ctx, kind=kind, label=label, depth=depth, max_depth=max_depth,
+            calls_box=calls_box, max_calls=max_calls, bp=bp, log=log, t0=start,
+            warnings=warnings, streak=streak, counters=counters,
+            budget_check=_budget_check,
+        )
+        calls_used, nodes_ok, nodes_failed = calls_box[0], counters["ok"], counters["failed"]
+        return res
 
     try:
         # ---- volume（注入 §7.7 四块）----
@@ -1600,7 +1590,7 @@ def diff_affected(ws: Workspace, project_id: str) -> DiffPlan:
 
 
 def _load_volumes(ws: Workspace, project_id: str) -> list[dict]:
-    p = ws._abs(f"{project_id}/outline/volumes.json")  # noqa: SLF001
+    p = ws.outline_path(project_id, "volumes.json")  # noqa: SLF001
     if not p.exists():
         return []
     try:

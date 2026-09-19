@@ -94,7 +94,39 @@ def worldview_base_lines(wv: dict) -> list[str]:
                      + "、".join(str(x) for x in levels))
     for r in (wv.get("rules") or [])[:6]:
         lines.append(f"- 铁律：{r}")
+    # 2026-09-19 审计 C-P1-4：正文层有的四块，细纲层/导演层/forge 层也必须有
+    # （同一函数三处共用；此前只到铁律，导演据此可发"越级表演"指令）
+    civs = [str(x) for x in (wv.get("civilizations") or []) if str(x).strip()][:4]
+    if civs:
+        lines.append("- 文明/阵营格局：" + "；".join(civs))
+    facs = wv.get("factions")
+    if isinstance(facs, list) and facs:
+        names = []
+        for f in facs[:6]:
+            names.append(str(f.get("name")) if isinstance(f, dict) and f.get("name")
+                         else str(f))
+        lines.append("- 势力：" + "、".join(names))
+    sysd = wv.get("systems")
+    if isinstance(sysd, list) and sysd:
+        lines.append("- 世界运行体系：" + "；".join(str(x)[:80] for x in sysd[:4]))
+    fluc = [str(x) for x in (wv.get("realm_fluctuates") or []) if str(x).strip()][:6]
+    if fluc:
+        lines.append("- 境界波动名单（这些角色境界可升可降，**不算越级**）：" + "、".join(fluc))
+    unav = [str(x) for x in (wv.get("unavailable_states") or []) if str(x).strip()][:6]
+    if unav:
+        lines.append("- 不可用状态（出现即为违规）：" + "、".join(unav))
+    modern = [str(x) for x in (wv.get("modern_words") or []) if str(x).strip()][:12]
+    if modern:
+        lines.append("- 现代词禁令（正文中不得出现）：" + "、".join(modern))
     return lines
+
+
+def _lessons_rel(ws, project_id: str) -> str:
+    """审校教训的相对路径：新位置优先，旧位置兼容（2026-09-19 决策 D-6）。"""
+    return ("memory/review_lessons.json"
+            if ws.existing_path(project_id, "memory/review_lessons.json") is not None
+            or ws.existing_path(project_id, "bible/review_lessons.json") is None
+            else "bible/review_lessons.json")
 
 
 def load_bible(ws, project_id: str) -> dict:
@@ -110,7 +142,10 @@ def load_bible(ws, project_id: str) -> dict:
         "skills": _read_json(ws, project_id, "bible/skills.json", []) or [],
         "settings": _read_json(ws, project_id, "bible/settings.json", []) or [],
         "volumes": _read_json(ws, project_id, "outline/volumes.json", []) or [],
-        "lessons": _read_json(ws, project_id, "bible/review_lessons.json", []) or [],
+        # D-6（2026-09-19）：审校教训是实然产出，落 memory/；bible/ 旧位置兼容读取
+        "lessons": _read_json(
+            ws, project_id,
+            _lessons_rel(ws, project_id), []) or [],
     }
 
 
@@ -181,7 +216,7 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
                         event_loop: bool = False) -> str:
     """装配 system prompt：世界观 + 文风 + 人物卡 + 输出纪律。
 
-    历史教训（review_lessons.json）不在此注入：第 8 轮已 RAG 化改由知识层检索
+    历史教训（memory/review_lessons.json）不在此注入：第 8 轮已 RAG 化改由知识层检索
     （knowledge.py），system prompt 级无条件注入会诱发"细纲未覆盖误报→提前补写
     后续事件"（prompt 作用审计 §2.1，lessons 死参数已删）。
     `event_loop`：事件循环模式——输出格式改为"不写标题"（H8，与事件 discipline 一致）。

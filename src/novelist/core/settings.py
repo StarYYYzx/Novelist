@@ -64,7 +64,7 @@ class SettingIndex:
     @classmethod
     def load(cls, ws, project_id: str) -> "SettingIndex":
         idx = cls()
-        p = ws._abs(f"{project_id}/bible/settings.json")
+        p = ws.bible_path(project_id, "settings")
         if not p or not p.exists():
             return idx
         idx._path = str(p)

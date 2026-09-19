@@ -338,6 +338,64 @@ def _lines_block_for_volume(ctx: NodeContext, vol: int) -> str:
     return "\n".join(parts)
 
 
+def _prev_volume_block(ctx: NodeContext, vol: int) -> str:
+    """上一卷的已落定事实（2026-09-19 审计 F-P1-3）。
+
+    build 链的卷纲此前只拿到 book 规划与本卷条目——第 2 卷起**看不到第 1 卷写了什么**，
+    卷间承上启下断档（roll 链有 `roll_context` 四块，build 链没有）。此处从蓝图与
+    worldstate 兜住最小必要信息：上一卷标题/概要/关键节拍 + 当前故事内时间与在途日程。
+    """
+    if vol <= 1:
+        return ""
+    prev = next((v for v in ctx.bp.section("volumes")
+                 if int(v.get("vol") or 0) == vol - 1), None)
+    if not isinstance(prev, dict):
+        return ""
+    lines = [f"- 第 {vol - 1} 卷《{prev.get('title') or '（无题）'}》："
+             f"{str(prev.get('summary') or '')[:300]}"]
+    beats = [str(x) for x in (prev.get("key_beats") or [])][:6]
+    if beats:
+        lines.append("- 上卷关键节拍：" + "；".join(b[:60] for b in beats))
+    arc = prev.get("arc") if isinstance(prev.get("arc"), dict) else {}
+    if arc.get("outcome"):
+        lines.append(f"- 上卷结局落点：{str(arc['outcome'])[:200]}")
+    try:
+        wstate = ctx.ws.read_json(ctx.project_id,
+                                  ctx.ws.bible_path(ctx.project_id, "worldstate"),
+                                  required=False)
+        if isinstance(wstate, dict):
+            t = (wstate.get("time") or {}).get("now")
+            if t is not None:
+                lines.append(f"- 当前故事内时间：第 {t} 天")
+            pend = [p for p in (wstate.get("pending") or [])
+                    if isinstance(p, dict) and p.get("status") == "scheduled"][:5]
+            if pend:
+                lines.append("- 在途日程（到期须在本卷兑现）："
+                             + "；".join(str(p.get("what") or "")[:60] for p in pend))
+    except Exception:  # noqa: BLE001 - 实然读不到不影响卷纲
+        pass
+    return "\n\n【上卷已落定（本卷必须承接，不得重复或矛盾）】\n" + "\n".join(lines)
+
+
+def _prev_arc_block(ctx: NodeContext, vol: int) -> str:
+    """本卷内已产出弧线的落点（2026-09-19 审计 F-P1-6）。
+
+    arc 节点此前只看到卷主线与本弧任务——同卷前几个弧写了什么完全不可见。
+    """
+    try:
+        prev = [a for a in _load_json_list(ctx.ws, ctx.project_id, "outline/arcs.json")
+                if int(a.get("vol") or 0) == vol]
+    except Exception:  # noqa: BLE001
+        return ""
+    if not prev:
+        return ""
+    lines = []
+    for a in prev[-3:]:
+        lines.append(f"- 弧《{a.get('title') or '（无题）'}》：{str(a.get('brief') or '')[:120]}"
+                     f"（重点：{str(a.get('focus') or '')[:80]}）")
+    return "\n\n【本卷已写弧线（本弧须承接其落点）】\n" + "\n".join(lines)
+
+
 def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     bp = ctx.bp
     meta = bp.get("meta") or {}
@@ -362,6 +420,7 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
     lines_section = f"\n\n【线索账本视图（ADR-025，卷级）】\n{lines_block}\n" \
                     "本卷 line_plan.open 只能从上列待开线索选 id，不得自造。" \
         if lines_block else ""
+    prev_vol_section = _prev_volume_block(ctx, vol)  # F-P1-3：卷间承上
     # 批2：卷末审计写回运行态伏笔的 due（到期未回收）→ 本卷卷纲强制处理
     threads_due_section = ""
     try:
@@ -383,7 +442,7 @@ def _volume_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【本卷规划（book 产物）】{plan_block}
 
-【流派卷弧提示】{arc}{anchor_section}{endgame_section}{pace_section}{lines_section}{threads_due_section}
+【流派卷弧提示】{arc}{anchor_section}{endgame_section}{pace_section}{lines_section}{threads_due_section}{prev_vol_section}{prev_vol_section}
 
 【输出 JSON】
 {{
@@ -875,7 +934,7 @@ def _arc_prompt(ctx: NodeContext) -> tuple[str, str]:
     user = f"""你是章段弧线师。把第 {vol} 卷内的一个章段任务细化为 3–5 章的小弧。
 
 【卷主线】{json.dumps({k: plan.get(k) for k in ("title", "summary", "key_beats") if plan.get(k)}, ensure_ascii=False)}
-【本弧任务】{json.dumps(child, ensure_ascii=False)}
+【本弧任务】{json.dumps(child, ensure_ascii=False)}{_prev_arc_block(ctx, vol)}
 
 【要求】artifact = {{"title": "弧名", "brief": "弧线一句话", "focus": "冲突/势力/场景重点",
 "chapters_hint": "建议覆盖的章数与节奏，如'第 3–5 章：铺垫→交锋→反转'"}}。
@@ -1970,6 +2029,64 @@ def _run_extra_node(ctx: NodeContext, kind: str, spec: dict) -> NodeResult:
         tokens_out=int(getattr(usage, "tokens_out", 0) or 0))
 
 
+def _build_constraints_block(ctx: NodeContext) -> str:
+    """构建期约束块（2026-09-19 审计 F-P1-2 / F-P1-5）。
+
+    此前 forge 节点 prompt **看不到**审校教训（review_lessons）与待裁决结构冲突
+    （forge/conflicts）——构建期会重复犯审校已经指出过的错，也可能再生成一条
+    已经躺在裁决队列里的"第二条主线"。两处都只读、有界、失败即空串（绝不阻断构建）。
+    """
+    parts: list[str] = []
+    try:
+        lp = ctx.ws.existing_path(ctx.project_id, "memory/review_lessons.json",
+                                  "bible/review_lessons.json")
+        if lp is not None:
+            import json as _json
+
+            data = _json.loads(lp.read_text(encoding="utf-8"))
+            rules = [str(x.get("rule") or "") for x in (data or [])
+                     if isinstance(x, dict) and x.get("rule")][-8:]
+            if rules:
+                parts.append("【历史审校教训】（正文期已经犯过的错，构建期不要再埋同类雷）：")
+                parts += [f"- {r[:140]}" for r in rules]
+    except Exception:  # noqa: BLE001 - 教训读不到不阻断构建
+        pass
+    try:
+        # F-P1-1（2026-09-19 审计）：蓝图评审结论此前**只被正文侧消费**（orchestrator 的
+        # load_blueprint_bans），forge 节点看不到——评审白跑半边、同类问题反复产出。
+        from .coherence import load_blueprint_bans
+
+        bans = load_blueprint_bans(ctx.ws, ctx.project_id)
+        if bans:
+            parts.append("【蓝图评审禁令】（上一轮评审已指出的问题，本层不得再犯）：")
+            parts += [f"- {b[:140]}" for b in bans[:8]]
+    except Exception:  # noqa: BLE001 - 评审结论读不到不阻断构建
+        pass
+    try:
+        # F-P1-1（2026-09-19 审计）：蓝图评审结论此前**只被正文侧消费**（orchestrator 的
+        # load_blueprint_bans），forge 节点看不到——评审白跑半边、同类问题反复产出。
+        from .coherence import load_blueprint_bans
+
+        bans = load_blueprint_bans(ctx.ws, ctx.project_id)
+        if bans:
+            parts.append("【蓝图评审禁令】（上一轮评审已指出的问题，本层不得再犯）：")
+            parts += [f"- {b[:140]}" for b in bans[:8]]
+    except Exception:  # noqa: BLE001 - 评审结论读不到不阻断构建
+        pass
+    try:
+        from .conflicts import open_conflicts
+
+        opens = open_conflicts(ctx.ws, ctx.project_id)
+        if opens:
+            parts.append("【待人工裁决的结构冲突】（在你这一层不要再产出同类结构）：")
+            for c in opens[:5]:
+                parts.append(f"- {c.get('kind')}: {str(c.get('summary') or '')[:120]}"
+                             f"（建议：{str(c.get('suggested') or '')[:60]}）")
+    except Exception:  # noqa: BLE001
+        pass
+    return ("\n\n" + "\n".join(parts)) if parts else ""
+
+
 def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
     """执行一个节点：prompt → LLM → 解析（协议）→ apply。抛 ValueError = 解析失败（引擎重试）。"""
     if kind not in _PROMPTS:
@@ -1981,6 +2098,7 @@ def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
         return _run_extra_node(ctx, kind, spec)
     node_id = _node_id_of(kind, ctx)
     system, user = _ensure_json_hint(*_PROMPTS[kind](ctx))
+    user += _build_constraints_block(ctx)  # F-P1-2 / F-P1-5
     if ctx.extra_instruction:
         user += f"\n\n【用户修改建议（本轮重生成须落实）】\n{ctx.extra_instruction}"
     if ctx.retry_hint:
@@ -2252,7 +2370,7 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                 pass
         threads.append({k: v for k, v in row.items()
                         if k in ("id", "desc", "scope", "target_vol", "planted",
-                                 "status", "report_deadline", "returned", "revision",
+                                 "status", "returned", "revision",
                                  "plant_desc", "payoff_desc")})
     threads = _merge_bible_rows(ws, project_id, "bible/plot_threads.json", threads,
                                 *_RUNTIME_FIELDS["bible/plot_threads.json"])
@@ -2269,7 +2387,7 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
                   "closing_candidate"):
             row.setdefault(k, None if k != "progress" else [])
         lines_rows.append(row)
-    if lines_rows or ws._abs(f"{project_id}/bible/lines.json").exists():  # noqa: SLF001
+    if lines_rows or ws.bible_path(project_id, "lines").exists():  # noqa: SLF001
         lines_rows = _merge_bible_rows(ws, project_id, "bible/lines.json", lines_rows,
                                        *_RUNTIME_FIELDS["bible/lines.json"])
         write("bible/lines.json", lines_rows)
@@ -2298,7 +2416,7 @@ def sync_bible(ws: Workspace, project_id: str, bp: Blueprint) -> list[str]:
             write(rel, rows)
     # D2：seed 模式 build 无 settings 节点 → V3（settings ≥5）必挡、检索空转。
     # 零 LLM 从蓝图实体合成种子卡；仅蓝图与磁盘双空时兜底（enrich 增量不被覆盖）。
-    if not bp.section("settings") and not ws._abs(f"{project_id}/bible/settings.json").exists():
+    if not bp.section("settings") and not ws.bible_path(project_id, "settings").exists():
         write("bible/settings.json", synthesize_seed_settings(bp))
     return written
 

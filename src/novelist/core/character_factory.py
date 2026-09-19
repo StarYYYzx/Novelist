@@ -235,7 +235,6 @@ def _normalize_card(card: dict, *, ws, project_id: str, need: CharacterNeed,
         "name": str(card["name"]).strip(),
         "aliases": [str(a) for a in (card.get("aliases") or []) if a][:4],
         "gender": card.get("gender"),
-        "species": str(card.get("species") or "人族"),
         "age": card.get("age"),
         "core_traits": [str(x) for x in (card.get("core_traits") or [])][:5],
         "power": {"level": str(card["power"]["level"]).strip(),
@@ -262,7 +261,7 @@ _PROMPT = (
     "宗门/势力名册（power.faction 必须出自此表）：{factions}\n\n"
     "输出单个 JSON 对象，字段：\n"
     '{{"name": "姓名（不与任何现有角色重名）", "aliases": [], "gender": "male|female",\n'
-    '"age": 数字, "species": "人族/妖族…", "core_traits": ["性格1","性格2","性格3"],\n'
+    '"age": 数字, "core_traits": ["性格1","性格2","性格3"],\n'
     '"power": {{"level": "境界", "faction": "宗门"}}, "role": "{role}",\n'
     '"behavior_rules": ["可执行行为规格1", "行为规格2", "行为规格3"],\n'
     '"relationships": [{{"target": "现有角色名", "type": "关系一句话"}}],\n'
@@ -323,7 +322,7 @@ def produce(ws, project_id: str, need: CharacterNeed, provider, *,
         report.rejections = reasons       # 闸门拒绝**不入队**——坏卡重试无意义，人工看原因
         return report
     new_card = _normalize_card(card, ws=ws, project_id=project_id, need=need, vol=vol, ch=ch)
-    p = ws._abs(f"{project_id}/bible/characters.json")
+    p = ws.bible_path(project_id, "characters")
     chars = _read_bible(ws, project_id, "characters.json") or []
     chars.append(new_card)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -475,7 +474,7 @@ def try_reuse(ws, project_id: str, need: CharacterNeed, provider, *,
             c.setdefault("serves_needs", []).append(
                 {"role": need.role, "description": need.description,
                  "vol": vol, "ch": ch, "source": need.source})
-            ws.write_json(ws._abs(f"{project_id}/bible/characters.json"), chars)  # noqa: SLF001
+            ws.write_json(ws.bible_path(project_id, "characters"), chars)  # noqa: SLF001
             report.ok = True
             report.reused = name
             report.rejections.append(f"检索复用：{name}（{reason or '满足需求'}）")

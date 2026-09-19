@@ -110,7 +110,7 @@ def build_alias_map(pool: list[dict]) -> dict[str, str]:
 
 
 def _read_worldstate(ws, project_id: str) -> dict | None:
-    p = ws._abs(f"{project_id}/bible/worldstate.json")
+    p = ws.bible_path(project_id, "worldstate")
     if not p.exists():
         return None
     try:

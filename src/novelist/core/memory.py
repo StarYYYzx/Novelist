@@ -231,7 +231,7 @@ def query_recent_actual_events(ws, project_id: str, *, limit: int = 8) -> list[d
     if not isinstance(events, list):
         return []
     chars: dict[str, str] = {}
-    cp = ws._abs(f"{project_id}/bible/characters.json")  # noqa: SLF001
+    cp = ws.bible_path(project_id, "characters")  # noqa: SLF001
     data = _read_json(cp)
     if isinstance(data, list):
         for c in data:

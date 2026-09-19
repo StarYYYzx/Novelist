@@ -76,6 +76,10 @@ v1（2026-09-19，M3ac-4）"""
 REPLAY_BUDGET_CHARS = 6000
 # 对话态成本硬顶（S-5）：防自主循环烧钱；NOVELIST_AGENT_MAX_COST 覆盖
 DEFAULT_MAX_COST = 0.5
+# 长对话压缩阈值（D-13）：消息史超此字符数即把中段折成摘要
+DEFAULT_COMPACT_CHARS = 24_000
+# 长对话压缩阈值（D-13）：消息史超此字符数即把中段折成摘要
+DEFAULT_COMPACT_CHARS = 24_000
 
 SESSION_REL = "workspace/agent/session.jsonl"
 
@@ -217,6 +221,12 @@ class ChatAgent:
             obs_total_budget_chars=48_000,  # 对话态放宽整轮观测预算（读设定是常态）
         )
         self.runner.trace_tools = True  # 对话态可见性：每次工具调用打一行
+        # D-13：长对话压缩（默认 24000 字符；NOVELIST_CHAT_COMPACT_CHARS 覆盖，0 = 关闭）
+        try:
+            self.runner.compact_chars = int(
+                os.environ.get("NOVELIST_CHAT_COMPACT_CHARS") or DEFAULT_COMPACT_CHARS)
+        except (TypeError, ValueError):
+            self.runner.compact_chars = DEFAULT_COMPACT_CHARS
         self.runner.system(SYSTEM_PROMPT)
         # 首条 user 消息 = 本次打开时的项目快照（缓存纪律：快照不进 system）
         history = [{"role": "user", "content": project_snapshot(ws, project_id)}]

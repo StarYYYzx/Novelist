@@ -491,7 +491,7 @@ def _load_char_names(ws, project_id: str) -> dict[str, str]:
     """读 bible/characters.json 建 id → 姓名 表（兑现兜底用）。"""
     import json
 
-    p = ws._abs(f"{project_id}/bible/characters.json")  # noqa: SLF001
+    p = ws.bible_path(project_id, "characters")  # noqa: SLF001
     if not p.exists():
         return {}
     try:

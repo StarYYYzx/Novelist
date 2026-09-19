@@ -129,6 +129,6 @@ def _evidence_pointer(ws, project_id: str, vol: int = 0, ch: int = 0) -> str:
     return (
         "\n\n【可取证文件（相对项目根）】"
         f"\nbible/characters.json · bible/worldview.json · bible/style.json"
-        f" · memory/plot_events.json · bible/review_lessons.json{chapter_hint}"
+        f" · memory/plot_events.json · memory/review_lessons.json{chapter_hint}"
         f"\n（工作区根：{rel}；read_file 的 path 需以项目目录开头）"
     )

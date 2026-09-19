@@ -250,7 +250,7 @@ def _patch_first_appearances(ws, project_id: str, vol: int, ch: int, text: str,
         try:
             import json as _json
 
-            p = ws._abs(f"{project_id}/bible/characters.json")  # noqa: SLF001
+            p = ws.bible_path(project_id, "characters")  # noqa: SLF001
             if p.exists():
                 for c in _json.loads(p.read_text(encoding="utf-8")):
                     if isinstance(c, dict) and c.get("name"):
@@ -711,7 +711,7 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider,
         data = _json.loads(res.content.strip())
         if not isinstance(data, list):
             return 0
-        pending_path = ws._abs(f"{project_id}/bible/settings_pending.json")
+        pending_path = ws.bible_path(project_id, "settings_pending")
         pending = _json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
         pending = pending if isinstance(pending, list) else []
         pending_terms = {p.get("term") for p in pending if isinstance(p, dict)}
@@ -753,11 +753,38 @@ def _strip_expanded_tag(ev_text: str) -> str:
     return _EXPANDED_TAG.sub("", ev_text or "").strip()
 
 
+def _beat_person_layer(*, cast_lines, hist_lines, direction_lines, live_state,
+                       line_cards, banned_names, first_beat: bool) -> list[str]:
+    """拍级人物层（2026-09-19 审计 C-P1-1）。
+
+    此前 beats/microbeats 只带 goal+前情+设定+related ——**整个人物层缺席**：
+    没有人物卡、没有实然状态、没有导演调度、没有禁令、没有线索卡。而重场戏恰好是
+    最需要钉人设与当前状态的地方（口径与人设漂移就发生在这里）。
+    实然状态/人物卡/禁令每拍都注入（硬约束）；调度单只在首拍（它是事件级计划）。
+    """
+    out: list[str] = []
+    if live_state:
+        out += ["", "【当前实然状态】（修为/位置/持物以此为准，不得矛盾）：", live_state]
+    if cast_lines:
+        out += ["", "【本场人物卡】（性格与关系须一致，不得 OOC）：", *cast_lines[:6]]
+    if hist_lines:
+        out += ["", "【人物近况】：", *hist_lines[:6]]
+    if first_beat and direction_lines:
+        out += ["", "【出场调度】（本场人物如何进场/退场）：", *direction_lines[:6]]
+    if line_cards:
+        out += ["", "【本场线索卡】（该推进/照应的线，自然交织不硬提）：", *line_cards[:3]]
+    if banned_names:
+        out += ["", "【禁令】不得让下列人物出场或被提及："
+                    + "、".join(str(n) for n in banned_names[:6])]
+    return out
+
+
 def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                     memories: list[str], setting_lines: list[str], related: dict,
                     readback_text: str, generation_tokens: int,
                     max_continuations: int, direct_words_floor: int,
-                    content_tokens: int | None = None) -> tuple[str, int] | None:
+                    content_tokens: int | None = None,
+                    person_layer: dict | None = None) -> tuple[str, int] | None:
     """重场戏拍展开（递归分层 C）：事件 → ≤3 拍逐拍生成。
 
     拍级生成带上一拍全文 + 前情摘要（非截断接缝——同一场景的连续动作）。
@@ -803,6 +830,8 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
                 for k, lines in related.items():
                     if lines:
                         parts += ["", f"【相关{k}】", *lines[:4]]
+            if person_layer:  # C-P1-1：人物层每拍都在场（此前整层缺席）
+                parts += _beat_person_layer(first_beat=(bi == 1), **person_layer)
             parts += ["", "篇幅约 150–300 字。"
                           + ("这是最后一个拍，须把该事件完整收束。" if bi == len(beats)
                              else "写到本拍结束即停，不要提前写下一拍内容。")]
@@ -824,7 +853,8 @@ def _generate_microbeats(provider, system_prompt: str, goal: str, ev_text: str,
                          memories: list[str], setting_lines: list[str], related: dict,
                          readback_text: str, generation_tokens: int,
                          max_continuations: int, direct_words_floor: int,
-                         content_tokens: int | None = None) -> tuple[str, int] | None:
+                         content_tokens: int | None = None,
+                         person_layer: dict | None = None) -> tuple[str, int] | None:
     """事件微拍规划（dp-microbeat，开关 `orchestrator.microbeat`，默认关）。
 
     在"重场戏专属拆拍"（`_generate_beats`）之上，提供**面向每个事件**的 2–4 拍规划，
@@ -884,6 +914,8 @@ def _generate_microbeats(provider, system_prompt: str, goal: str, ev_text: str,
                 for k, lines in related.items():
                     if lines:
                         parts += ["", f"【相关{k}】", *lines[:4]]
+            if person_layer:  # C-P1-1：人物层每拍都在场
+                parts += _beat_person_layer(first_beat=(bi == 1), **person_layer)
             if bi == total:
                 tail = ("收束该事件，并自然带出向下一事件/章的钩子或余韵（如其真自然则做，不硬加）。"
                         if stage in ("钩", "合") else
@@ -1148,7 +1180,7 @@ def _style_tone(ws, project_id: str) -> str | None:
     try:
         import json
 
-        p = ws._abs(f"{project_id}/bible/style.json")
+        p = ws.bible_path(project_id, "style")
         if not p.exists():
             return None
         st = json.loads(p.read_text(encoding="utf-8"))
@@ -1191,8 +1223,8 @@ def _jit_characters(ws, project_id: str, vol: int, ch: int, gist_text: str, prov
     try:
         import json as _json
 
-        chars = _json.loads(ws._abs(f"{project_id}/bible/characters.json").read_text(
-            encoding="utf-8")) if ws._abs(f"{project_id}/bible/characters.json").exists() else []
+        chars = _json.loads(ws.bible_path(project_id, "characters").read_text(
+            encoding="utf-8")) if ws.bible_path(project_id, "characters").exists() else []
         existing = set()
         for c in chars if isinstance(chars, list) else []:
             if isinstance(c, dict) and c.get("name"):
@@ -1224,10 +1256,11 @@ _LESSONS_MAX = 30  # review_lessons.json 上限，防无限膨胀
 
 
 def _lesson_lines(ws, project_id: str) -> list[str]:
-    """读历史教训（bible/review_lessons.json）→ 注入行。"""
+    """读历史教训（memory/review_lessons.json；D-6 起从 bible/ 迁出，旧位置兼容）→ 注入行。"""
     try:
-        p = ws._abs(f"{project_id}/bible/review_lessons.json")
-        if not p.exists():
+        p = ws.existing_path(project_id, "memory/review_lessons.json",
+                             "bible/review_lessons.json")
+        if p is None:
             return []
         import json as _json
 
@@ -1257,7 +1290,10 @@ def _append_lessons(ws, project_id: str, issues, vol: int, ch: int) -> int:
         return 0
     import json as _json
 
-    p = ws._abs(f"{project_id}/bible/review_lessons.json")
+    p = ws.memory_path(project_id, "review_lessons")  # D-6：写新位置
+    legacy = ws.bible_path(project_id, "review_lessons")
+    if not p.exists() and legacy.exists():
+        p = legacy  # 旧项目：写回原位置，避免双份分裂
     try:
         data = _json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
     except (ValueError, OSError):
@@ -1556,7 +1592,9 @@ def produce_chapter(ws: "Workspace", project_id: str, vol: int, ch: int,
     """
     from .calllog import call_context
 
-    with call_context(f"chapter v{vol}-ch{ch}"):
+    # 2026-09-19 决策 D-7：章节级互斥——(项目, 卷, 章) 并发生成会互踩快照与前置清理
+    # （本方 restore 抹掉另一方刚写的数据）。CLI 与 HTTP 入口共用同一把锁。
+    with ws.chapter_lock(project_id, vol, ch), call_context(f"chapter v{vol}-ch{ch}"):
         return _produce_chapter_impl(ws, project_id, vol, ch, provider, **kw)
 
 
@@ -2122,12 +2160,18 @@ def _produce_chapter_impl(
                     # 任一拍失败返回 None → 回退到下方重场戏拆拍 / 事件级路径（开关默认关
                     # → 完全保持现有产出）。
                     piece = None
+                    _person_layer = {
+                        "cast_lines": cast_lines, "hist_lines": hist_lines,
+                        "direction_lines": direction_lines, "line_cards": _line_cards,
+                        "banned_names": [n for n in banned_names if n not in cast_names],
+                        "live_state": _live_state_block(ws, project_id, cast_names, bible_chars),
+                    }
                     if microbeat:
                         mb_res = _generate_microbeats(
                             provider, system_prompt or "", goal, ev_text,
                             memories_ev, setting_lines, related, readback_text,
                             generation_tokens, max_continuations, direct_words_floor,
-                            content_tokens=content_tokens)
+                            content_tokens=content_tokens, person_layer=_person_layer)
                         if mb_res is not None:
                             piece, _ = mb_res
 
@@ -2139,7 +2183,7 @@ def _produce_chapter_impl(
                             _strip_expanded_tag(ev_text),
                             memories_ev, setting_lines, related, readback_text,
                             generation_tokens, max_continuations, direct_words_floor,
-                            content_tokens=content_tokens)
+                            content_tokens=content_tokens, person_layer=_person_layer)
                         if beat_res is not None:
                             piece, _ = beat_res
 

@@ -87,8 +87,9 @@ def test_editable_schema_has_all_bible_files(tmp_path):
 
 def test_validate_ok_and_rejects_readonly(tmp_path):
     ws, pid = _ws(tmp_path)
+    # 2026-09-19 D-2：字段改 schema 对齐名（personality → core_traits，数组）
     validate_op(EditOp(file="characters.json", op="edit", target="苏晚",
-                       field="personality", value="温"))
+                       field="core_traits", value=["温润"]))
     validate_op(EditOp(file="characters.json", op="edit", target="c1",
                        field="power.level", value="筑基"))  # 嵌套可改
     # 世界铁律可改（sensitive），不抛错
@@ -109,7 +110,7 @@ def test_value_type_guard(tmp_path):
     ws, pid = _ws(tmp_path)
     with pytest.raises(FeedbackError):
         validate_op(EditOp(file="characters.json", op="edit", target="c1",
-                           field="personality", value={"a": {"b": 1}}))  # 嵌套脏对象
+                           field="core_traits", value={"a": {"b": 1}}))  # 嵌套脏对象
 
 
 def test_list_location_and_apply(tmp_path):
@@ -142,7 +143,8 @@ def test_add_mints_id_and_delete(tmp_path):
     data = _read(ws, pid, "bible/characters.json")
     assert len(data["characters"]) == 2
     new = data["characters"][1]
-    assert new["name"] == "王五" and new["id"].startswith("char_pf")
+    # D-2：id 走分区前缀（`char:`），必须匹配 characters schema 的 ^char: pattern
+    assert new["name"] == "王五" and new["id"].startswith("char:")
     assert new.get("provenance") == "feedback"  # 软 tracking
 
     dele = EditOp(file="characters.json", op="delete", target="王五")
@@ -168,11 +170,11 @@ def test_apply_idempotent(tmp_path):
 def test_sensitive_flags(tmp_path):
     assert flag_sensitive(EditOp(file="worldview.json", op="edit", target="rules", value=[]))
     assert flag_sensitive(EditOp(file="characters.json", op="delete", target="c1"))
-    assert flag_sensitive(EditOp(file="worldstate.json", op="edit", target="timeline", value={}))
+    assert flag_sensitive(EditOp(file="worldstate.json", op="edit", target="time", value={}))
     assert flag_sensitive(EditOp(file="plot_threads.json", op="edit",
                                  target="t1", field="status", value="resolved"))
     assert not flag_sensitive(EditOp(file="characters.json", op="edit",
-                                     target="c1", field="personality", value="x"))
+                                     target="c1", field="core_traits", value=["冷"]))
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +287,7 @@ def test_cli_feedback_parse_list_apply_deny(tmp_path, monkeypatch):
 
     ops_json = json.dumps({
         "ops": [{"file": "characters.json", "op": "edit", "target": "苏晚",
-                 "field": "personality", "value": "温润", "reason": "改性格"}]},
+                 "field": "core_traits", "value": ["温润"], "reason": "改性格"}]},
         ensure_ascii=False)
     # CLI 内部经 _make_cli_provider 取 provider；打桩成 ScriptedProvider 返回意见拆分 JSON
     monkeypatch.setattr(cli_module, "_make_cli_provider",
@@ -306,7 +308,7 @@ def test_cli_feedback_parse_list_apply_deny(tmp_path, monkeypatch):
     r3 = runner.invoke(cli_module.cli, ["feedback", d, "--apply", op_id])
     assert r3.exit_code == 0, r3.output
     assert "applied" in r3.output
-    assert _read(ws, pid, "bible/characters.json")["characters"][0]["personality"] == "温润"
+    assert _read(ws, pid, "bible/characters.json")["characters"][0]["core_traits"] == ["温润"]
 
     # deny another op：换一条意见，解析出改名 op 后拒绝，正文不变
     monkeypatch.setattr(cli_module, "_make_cli_provider",

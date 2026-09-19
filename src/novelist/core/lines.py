@@ -591,7 +591,7 @@ def checkpoint(ws, project_id: str, lines: list[dict], vol: int, ch: int, k: int
 
 def _load_threads(ws, project_id: str) -> list[dict]:
     """运行态伏笔（bible/plot_threads.json）；缺失/损坏返回 []。"""
-    p = ws._abs(f"{project_id}/bible/plot_threads.json")  # noqa: SLF001
+    p = ws.bible_path(project_id, "plot_threads")  # noqa: SLF001
     if not p.exists():
         return []
     try:
@@ -603,7 +603,7 @@ def _load_threads(ws, project_id: str) -> list[dict]:
 
 
 def _save_threads(ws, project_id: str, threads: list[dict]) -> None:
-    ws.write_json(ws._abs(f"{project_id}/bible/plot_threads.json"),  # noqa: SLF001
+    ws.write_json(ws.bible_path(project_id, "plot_threads"),  # noqa: SLF001
                   list(threads))
 
 

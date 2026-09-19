@@ -62,6 +62,9 @@ REVIEW_PROMPT = """你是审校师。对照设定圣经与前情，审读下面�
 【前情提要】（已发生的事实，本章不得与之矛盾）
 {memory}
 
+【实然状态】（盘上事实：修为/位置/伤势/在否 + 当前故事内时间——判「战力越级」「事实矛盾」「时间线」三项时以它为准）
+{live_state}
+
 【本章细纲】（要点应当被落实）
 {gist}
 
@@ -173,9 +176,52 @@ def review_context(ws: Workspace, project_id: str, *, gist_text: str = "",
     return REVIEW_PROMPT.format(
         bible=_bible_brief(ws, project_id, cast_ids),
         memory="\n".join(memories or []) or "（无前情）",
+        live_state=_live_state_brief(ws, project_id, cast_ids),
         gist=(gist_text or "")[:GIST_MAX_CHARS] or "（无细纲）",
         scope=scope or "【范围说明】本次审读的是完整一章。",
     )
+
+
+def _live_state_brief(ws: Workspace, project_id: str, cast_ids: list[str] | None = None) -> str:
+    """审校用的**实然状态**摘要（2026-09-19 审计 C-P1-2）。
+
+    此前审校只看圣经（应然）与前情，看不到 worldstate（实然：当前修为/位置/伤势/生死）
+    与时间轴 → 「战力越级 / 事实前后矛盾 / 时间线」三个维度**没有判定依据**，
+    只能靠正文自洽。读取失败一律返回占位串，绝不阻断审校。
+    """
+    try:
+        ws_path = ws.bible_path(project_id, "worldstate")
+        data = ws.read_json(project_id, ws_path, required=False)
+    except Exception:  # noqa: BLE001 - 状态读不到不影响审校
+        data = None
+    if not isinstance(data, dict):
+        return "（无实然状态记录）"
+    lines: list[str] = []
+    t = data.get("time") or {}
+    if isinstance(t, dict) and t.get("now") is not None:
+        origin = str(t.get("origin_text") or "开书之日")
+        lines.append(f"当前故事内时间：第 {t.get('now')} 天（原点：{origin}）")
+    chars = data.get("characters") or {}
+    if isinstance(chars, dict):
+        want = {str(x) for x in (cast_ids or [])}
+        for cid, st in chars.items():
+            if want and str(cid) not in want:
+                continue
+            if not isinstance(st, dict):
+                continue
+            bits = [str(st.get("name") or cid)]
+            if st.get("realm"):
+                bits.append(f"修为 {st['realm']}")
+            if st.get("location"):
+                bits.append(f"位于 {st['location']}")
+            if st.get("injuries"):
+                bits.append(f"伤势 {'、'.join(str(x) for x in (st['injuries'] or [])[:3])}")
+            if st.get("dead"):
+                bits.append("**已死亡**")
+            if st.get("unavailable_until") is not None:
+                bits.append(f"不可用至第 {st['unavailable_until']} 天")
+            lines.append("- " + "；".join(bits))
+    return "\n".join(lines) if lines else "（无实然状态记录）"
 
 
 class Reviewer:

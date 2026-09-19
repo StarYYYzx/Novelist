@@ -43,29 +43,9 @@
             },
             "additionalProperties": false,
             "description": "新格式（ADR-019 相对天数轴）"
-          },
-          {
-            "type": "object",
-            "required": [
-              "era",
-              "year",
-              "season"
-            ],
-            "properties": {
-              "era": {
-                "type": "string"
-              },
-              "year": {
-                "type": "integer"
-              },
-              "season": {
-                "type": "string"
-              }
-            },
-            "additionalProperties": true,
-            "description": "旧格式（历法式，ADR-019 已废弃），历史数据兼容；R-TL 回退按 in_chapters 章序判"
           }
-        ]
+        ],
+        "description": "时间点：新格式 t/vol/ch（相对天数轴，ADR-019）；旧历法格式已于 2026-09-19 移除"
       },
       "event": {
         "type": "string",

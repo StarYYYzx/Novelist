@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/memory/review_lessons.schema.json",
+  "title": "review_lessons",
+  "description": "审校历史教训（block 级问题沉淀，orchestrator 写、构建/生成链注入）。落 memory/（实然区，2026-09-19 从 bible/ 迁出）。上限 _LESSONS_MAX=30 条，尾部保留。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["category", "rule"],
+    "properties": {
+      "_key": { "type": "string", "description": "去重键 category|detail 前 40 字" },
+      "category": { "type": "string" },
+      "issue": { "type": "string" },
+      "rule": { "type": "string", "description": "注入生成 prompt 的教训行" },
+      "source": { "type": "string", "description": "来源章位 `vol:ch`" }
+    },
+    "additionalProperties": true
+  }
+}

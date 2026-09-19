@@ -214,7 +214,7 @@ def _unwritten_key_events(ws, project_id: str) -> list[tuple[int, int, str]]:
     """
     import re as _re
 
-    outline_dir = ws._abs(f"{project_id}/outline/chapters")
+    outline_dir = ws.outline_path(project_id, "chapters")
     if not outline_dir.is_dir():
         return []
     out: list[tuple[int, int, str]] = []

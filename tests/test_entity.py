@@ -192,13 +192,13 @@ def test_budget_unknown_chapter_type_falls_back(tmp_path):
 # ---------------------------------------------------------------- 实然持久化（ADR-011 分离）
 
 def test_save_load_merges_progress(tmp_path):
-    """entity_progress.json 是实然缓存：stage/mentions 以缓存为准，bible 原文件不动。"""
+    """entity_progress.json 是实然缓存（D-6 起落 memory/）：stage/mentions 以缓存为准，bible 不动。"""
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     t = _load(ws, pid)
     t.update_from_chapter("断玉现身，祖传玉佩发光。", 1, 2)
     t.save()
-    p = ws._abs(f"{pid}/bible/entity_progress.json")
+    p = ws.memory_path(pid, "entity_progress")  # D-6：实然缓存迁 memory/
     assert p.exists()
     # bible 原文件未被改动
     chars = ws._abs(f"{pid}/bible/characters.json")

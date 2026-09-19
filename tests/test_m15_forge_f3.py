@@ -328,7 +328,7 @@ def test_ingest_full_pipeline(ws_factory, tmp_path):
     assert bp.get_provenance("style.pov")["src"] == "ingested"
 
     # 实体 warm-up + worldstate 初始态（pending 结构化）
-    assert ws.bible_path(pid, "entity_progress").exists()
+    assert ws.memory_path(pid, "entity_progress").exists()  # D-6：迁 memory/
     ws_data = ws.read_json(pid, ws.bible_path(pid, "worldstate"))
     pend = (ws_data or {}).get("pending") or []
     assert any(p["what"] == "三日后闭关" and p["status"] == "scheduled"

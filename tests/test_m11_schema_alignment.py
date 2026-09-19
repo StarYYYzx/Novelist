@@ -79,12 +79,8 @@ def _validate(schema_name: str, data) -> None:
         {"id": "tl:13", "event": "叶蓝服丹闭关", "at": {"t": 1143, "vol": 1, "ch": 12},
          "in_chapters": [{"vol": 1, "ch": 12}]},
     ]),
-    # timeline 旧格式（历法式，oneOf 兼容分支）
-    ("bible/timeline", [
-        {"id": "tl:1", "event": "苏晚被逐出内门",
-         "at": {"era": "青冥历", "year": 1137, "season": "春"},
-         "in_chapters": [{"vol": 1, "ch": 1}]},
-    ]),
+    # 2026-09-19 决策 D-1：旧历法格式（era/year/season）兼容分支已从 schema 移除
+    # （src 零读取方，属悬空分支）；拒绝行为见 test_timeline_legacy_format_rejected
     # worldstate（M3m：time/pending）
     ("bible/worldstate", {
         "time": {"now": 1143, "origin_text": "叶蓝穿越之日"},
@@ -152,6 +148,33 @@ def test_sample_data_passes_contract(schema_name, data):
 def test_worldview_requires_id():
     with pytest.raises(SchemaError):
         _validate("bible/worldview", {"name": "落霞界"})
+
+
+def test_timeline_legacy_format_rejected():
+    """2026-09-19 D-1：旧历法格式（era/year/season）分支已删——新数据必须给 t（相对天数轴）。"""
+    with pytest.raises(SchemaError):
+        _validate("bible/timeline", [
+            {"id": "tl:1", "event": "苏晚被逐出内门",
+             "at": {"era": "青冥历", "year": 1137, "season": "春"}},
+        ])
+
+
+def test_dead_fields_removed_from_schema():
+    """2026-09-19 D-1：死字段已从契约移除（species / banned_words / report_deadline / 世界观 map）。"""
+    import json as _json
+    from pathlib import Path as _P
+
+    chars = _json.loads((_P("schemas") / "bible/characters.schema.json").read_text(encoding="utf-8"))
+    assert "species" not in chars["items"]["properties"]
+    style = _json.loads((_P("schemas") / "bible/style.schema.json").read_text(encoding="utf-8"))
+    assert "banned_words" not in style["properties"]
+    assert "def" not in style["properties"]["glossary"]["items"]["properties"]
+    threads = _json.loads((_P("schemas") / "bible/plot_threads.schema.json").read_text(encoding="utf-8"))
+    assert "report_deadline" not in threads["items"]["properties"]
+    bp = _json.loads((_P("schemas") / "forge/blueprint.schema.json").read_text(encoding="utf-8"))
+    assert "map" not in bp["properties"]["worldview"]["properties"]
+    skills = _json.loads((_P("schemas") / "bible/skills.schema.json").read_text(encoding="utf-8"))
+    assert skills["type"] == "array"  # D-10：根类型对齐实然
 
 
 def test_characters_requires_id_name():

@@ -31,13 +31,6 @@
       },
       "description": "禁用词（R-LEX 正文扫描 + 生成期预检），与 banned_words 同义"
     },
-    "banned_words": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "禁用词旧别名，兼容保留"
-    },
     "protagonist": {
       "type": "object",
       "description": "主角标注（生成上下文注入视角人物）",
@@ -69,11 +62,7 @@
           },
           "note": {
             "type": "string",
-            "description": "写法/含义说明（拼入生成 prompt；留空则不渲染括号）。历史名 `def` 已废弃，读取侧兼容"
-          },
-          "def": {
-            "type": "string",
-            "description": "旧字段名（兼容保留，勿新用）"
+            "description": "写法/含义说明（拼入生成 prompt；留空则不渲染括号）。（历史名 `def` 已于 2026-09-19 从契约移除）"
           }
         },
         "additionalProperties": true
@@ -82,6 +71,30 @@
     "revision": {
       "type": "integer",
       "minimum": 0
+    },
+    "tense": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "时态（叙事口径，2026-09-19 补声明）"
+    },
+    "narration": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "叙述人称/口吻说明（2026-09-19 补声明）"
+    },
+    "craft_cards": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "description": "启用的题材工艺卡 id（语境/呈现规范，2026-09-19 补声明）",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "additionalProperties": true

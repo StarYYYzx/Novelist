@@ -123,7 +123,7 @@ def load_characters(ws, project_id: str) -> list[dict]:
     方案7 运行期兜底：读出时做 name 防污染归一（存量污染卡不再向广播池/
     匹配/实体别名泄漏长句名）。视图级处理，不回写文件（落盘修复走 sync_bible）。
     """
-    p = ws._abs(f"{project_id}/bible/characters.json")
+    p = ws.bible_path(project_id, "characters")
     if not p.exists():
         return []
     try:
@@ -308,7 +308,7 @@ def worldview_block(ws, project_id: str) -> str:
     （bible/worldview.json，渲染走 `context.worldview_base_lines`）。
     读取失败或空世界观返回空串（纯增量，绝不阻断调度）。
     """
-    wv = _read_json(ws._abs(f"{project_id}/bible/worldview.json"))
+    wv = _read_json(ws.bible_path(project_id, "worldview"))
     from .context import worldview_base_lines
 
     lines = worldview_base_lines(wv if isinstance(wv, dict) else {})

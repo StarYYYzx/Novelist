@@ -55,7 +55,7 @@ class VolumeContext:
     @classmethod
     def load(cls, ws, project_id: str, vol: int) -> "VolumeContext":
         entries = []
-        p = ws._abs(f"{project_id}/outline/volumes.json")
+        p = ws.outline_path(project_id, "volumes.json")
         if p.exists():
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
@@ -115,7 +115,7 @@ class PhasePolicy:
     @classmethod
     def load(cls, ws, project_id: str) -> "PhasePolicy":
         pol = cls()
-        p = ws._abs(f"{project_id}/bible/worldview.json")
+        p = ws.bible_path(project_id, "worldview")
         if p.exists():
             try:
                 wv = json.loads(p.read_text(encoding="utf-8"))
@@ -182,7 +182,7 @@ def payoff_checklist(ws, project_id: str, vol: int, ch: int,
     返回 {"threads": [...], "dormant": [...]}。
     """
     threads_out: list[dict] = []
-    p = ws._abs(f"{project_id}/bible/plot_threads.json")
+    p = ws.bible_path(project_id, "plot_threads")
     if p.exists():
         try:
             threads = json.loads(p.read_text(encoding="utf-8"))

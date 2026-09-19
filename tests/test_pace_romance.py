@@ -77,9 +77,11 @@ def test_slots_new_interview_dimensions():
     opening = by_key["meta.opening"]
     assert opening.level == "recommended" and set(opening.enum) == set(_OPENING_RULE)
     # 世界观深化 + 人物缺陷 + 感情线对象排在模式之后
-    for key in ("worldview.power_system.ceiling", "worldview.map",
+    # （2026-09-19 决策 D-1：worldview.map 死字段已删，连槽位一并移除）
+    for key in ("worldview.power_system.ceiling",
                 "characters[role:protagonist].flaw"):
         assert key in by_key and by_key[key].level == "recommended"
+    assert "worldview.map" not in by_key
     li = by_key["characters[role:love_interest].name"]
     assert "无CP" in li.ask      # 提示可跳过
 

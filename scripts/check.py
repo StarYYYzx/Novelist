@@ -285,6 +285,84 @@ def _gate_forge_apply_saves() -> list[str]:
     return bad
 
 
+def _gate_feedback_editable() -> list[str]:
+    """bible_feedback 的可改字段必须 ⊆ 对应 schema 的 properties（D-2，2026-09-19）。
+
+    背景：`BIBLE_EDITABLE` 声明的字段与 schema 大面积漂移时，反馈通道**写回即违规**
+    （items/settings 等 `additionalProperties: false`）或写进无人读的野字段。
+    这里用 AST 取声明表，逐字段核对 schema；dotted 路径只核首段。
+    """
+    import ast
+    import json
+
+    src_p = ROOT / "src/novelist/core/bible_feedback.py"
+    tree = ast.parse(src_p.read_text(encoding="utf-8"))
+    table: dict[str, dict] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "BIBLE_EDITABLE":
+            table = ast.literal_eval(node.value)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "BIBLE_EDITABLE":
+                    table = ast.literal_eval(node.value)
+    if not table:
+        return ["未能解析 BIBLE_EDITABLE（检查是否改名/改结构）"]
+
+    problems: list[str] = []
+    schemas_dir = ROOT / "schemas" / "bible"
+    for file, spec in table.items():
+        sp = schemas_dir / f"{file[:-5]}.schema.json"
+        if not sp.exists():
+            problems.append(f"{file}: 无对应 schema（schemas/bible/{file[:-5]}.schema.json 缺失）")
+            continue
+        sch = json.loads(sp.read_text(encoding="utf-8"))
+        props = set((sch.get("items") or sch).get("properties") or {})
+        if not props:
+            problems.append(f"{file}: schema 无 properties，无法核对")
+            continue
+        for fld in list(spec.get("edit") or []) + list(spec.get("readonly") or []):
+            head = str(fld).split(".")[0]
+            if head not in props:
+                problems.append(f"{file}: 字段 {fld!r} 不在 schema properties（{sorted(props)[:6]}…）")
+        # id pattern 与铸造前缀一致性
+        idpat = ((sch.get("items") or sch).get("properties") or {}).get("id", {}).get("pattern")
+        if idpat and file in ("characters.json", "plot_threads.json", "locations.json",
+                              "items.json", "skills.json", "settings.json"):
+            prefix = {"characters.json": "char:", "plot_threads.json": "pt:",
+                      "locations.json": "loc:", "items.json": "item:",
+                      "skills.json": "skill:", "settings.json": "set:"}[file]
+            probe = f"{prefix}n1a2b3c4d5e"
+            if not re.match(idpat, probe):
+                problems.append(f"{file}: 铸造前缀 {prefix!r} 不匹配 id pattern {idpat!r}")
+    return problems
+
+
+def _gate_path_joins() -> list[str]:
+    """手拼 `<project>/bible|outline|workspace/` 路径不得反弹（D-8 分批迁移棘轮）。
+
+    2026-09-19 起路径访问器族（`bible_path` / `outline_path` / `workspace_sub` /
+    `memory_path` / `existing_path`）是唯一正道；手拼串每次结构调整都是散弹枪式修改，
+    而「沙箱根 vs 项目根 / 换名 / 加子目录」三类事故都源自它。此检查是**棘轮**：
+    只要求不超过基线，迁移了多少就降多少（不强制一次迁完）。
+    """
+    import re as _re
+
+    pat = _re.compile(r'_abs\(f"\{project_id\}/(?:bible|outline|workspace)/')
+    hits: list[str] = []
+    for root, _d, files in os.walk(ROOT / "src"):
+        for f in files:
+            if f.endswith(".py"):
+                p = Path(root) / f
+                for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                    if pat.search(line):
+                        hits.append(f"{p.relative_to(ROOT).as_posix()}:{i}")
+    limit = 37  # 2026-09-19 基线（迁移前 80）
+    if len(hits) > limit:
+        return [f"手拼路径 {len(hits)} 处 > 基线 {limit}（新增请改用 ws.bible_path/outline_path/workspace_sub）"]
+    return []
+
+
 def gate_hygiene() -> bool:
     _head("G3 · 仓库卫生检查")
     ok = True
@@ -348,6 +426,24 @@ def gate_hygiene() -> bool:
     if ok:
         _say(_OK, "无临时文件入库；.gitignore 关键条目齐备；test_noval 未被跟踪；"
                   "safe 工具已登记；forge _apply_* 无越权落盘")
+
+    # (f) 手拼项目路径棘轮（D-8 分批迁移后不得反弹）
+    path_joins = _gate_path_joins()
+    if path_joins:
+        _say(_FAIL, "手拼项目路径超过基线：")
+        for x in path_joins:
+            print("        " + x)
+        ok = False
+
+    # (e) bible_feedback 可改字段 ⊆ schema properties（D-2，2026-09-19）
+    fb_bad = _gate_feedback_editable()
+    if fb_bad:
+        _say(_FAIL, f"{len(fb_bad)} 处 feedback 可改字段与 schema 漂移（写回即违规）：")
+        for x in fb_bad:
+            print("        " + x)
+        print("        修法：对齐 src/novelist/core/bible_feedback.py 的 BIBLE_EDITABLE")
+        ok = False
+
     return ok
 
 

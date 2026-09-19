@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://novelist.dev/schemas/memory/relationship_ledger.schema.json",
+  "title": "relationship_ledger",
+  "description": "关系账本（ADR-023/016）：relationship_ledger.json 是**派生投影**（可由 relationships.json 重建），登记双向关系的当前态与证据。2026-09-19 纳入契约（此前无 schema）。",
+  "type": "object",
+  "required": ["pairs"],
+  "properties": {
+    "schema": { "type": "string", "description": "投影版本标记（如 rel-ledger-v1）" },
+    "note": { "type": "string", "description": "口径说明（可读，不参与逻辑）" },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "a": { "type": "string" },
+          "b": { "type": "string" },
+          "state": { "type": "object" },
+          "entries": { "type": "array" },
+          "evidence": { "type": "array" },
+          "updated_at": { "type": ["string", "object", "integer", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "meta": { "type": "object", "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

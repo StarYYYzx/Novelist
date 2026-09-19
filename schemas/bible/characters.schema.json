@@ -25,9 +25,6 @@
           "type": "string"
         }
       },
-      "species": {
-        "type": "string"
-      },
       "gender": {
         "type": "string",
         "enum": [
@@ -45,8 +42,10 @@
       "age": {
         "type": [
           "integer",
-          "string"
-        ]
+          "null"
+        ],
+        "minimum": 0,
+        "description": "年龄（整数；2026-09-19 D-11 由 int|string 收紧——消费侧 character_enrich 做 int(age))"
       },
       "core_traits": {
         "type": "array",
@@ -129,6 +128,6 @@
       }
     },
     "additionalProperties": true,
-    "$comment": "revision 用于版本策略（docs/06 §8）；status 缺省视为 active（加载归一，见 core/bible.py normalize_characters）"
+    "$comment": "revision 用于版本策略（docs/06 §8）；status 缺省视为 active（加载归一，见 core/bible.py 加载归一）"
   }
 }

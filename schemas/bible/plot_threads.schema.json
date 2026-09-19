@@ -71,24 +71,6 @@
           "returned"
         ]
       },
-      "report_deadline": {
-        "type": "object",
-        "required": [
-          "vol",
-          "ch"
-        ],
-        "properties": {
-          "vol": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "ch": {
-            "type": "integer",
-            "minimum": 0
-          }
-        },
-        "additionalProperties": false
-      },
       "returned": {
         "type": [
           "object",

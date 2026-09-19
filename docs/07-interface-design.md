@@ -187,9 +187,10 @@ level==danger && profile != allow → wait(HumanDecision); deny if != allow
 含 `..` 一律硬拒——否则 `drafts/../chapters/x.md` 可穿过 `startswith("drafts/")` 的
 定级/白名单检查。
 
-**注册工具清单（2026-09-19 实测 18 个，`tools/__init__.py` 装配）**：
+**注册工具清单（2026-09-19 实测 17 个，`tools/__init__.py` 装配）**：
 `read_file` / `write_file`（level_fn 路径感知）/ `grep_text`（filesys）；
-`write_draft` / `promote_draft`（writing）；
+`write_draft`（writing；`promote_draft` 已于 2026-09-19 决策 D-4 删除——
+转正统一走 danger 级 `publish`，CLI `promote` 命令转发到它）；
 `query_memory` / `get_character_history` / `get_plot_events` / `reindex_memory`（memory_tools）；
 `publish` / `delete_file` / `checkpoint` / `update_blueprint`（governance）；
 `list_chapters` / `get_bible`（含 blueprint 段）/ `get_outline` / `list_conflicts` /

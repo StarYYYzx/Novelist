@@ -1,23 +1,50 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://novelist.dev/schemas/bible/skills.schema.json",
-  "title": "SkillRegistryEntry",
-  "description": "功法/技能注册表条目。功法 = 可学习实体（功法/术法/身法/秘术），与物品分离（讨论决策）。",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["id", "name", "type"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^skill:" },
-    "name": { "type": "string", "description": "规范名" },
-    "type": {
-      "type": "string",
-      "enum": ["cultivation", "combat", "secret", "physique", "technique", "other"]
-    },
-    "aliases": { "type": "array", "items": { "type": "string" } },
-    "state": {
-      "type": "string",
-      "description": "熟练度/完整度状态（如 圆满/残篇/入门/大成）；同一功法不同状态是同一 id"
-    },
-    "note": { "type": "string" }
+  "title": "SkillRegistry",
+  "description": "功法/技能注册表条目。功法 = 可学习实体（功法/术法/身法/秘术），与物品分离（讨论决策）。 F0'（2026-09-19）：根节点修正为数组——磁盘与代码实然均为对象数组（context.py 默认 []、nodes.py 写入数组）。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "name",
+      "type"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^skill:"
+      },
+      "name": {
+        "type": "string",
+        "description": "规范名"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "cultivation",
+          "combat",
+          "secret",
+          "physique",
+          "technique",
+          "other"
+        ]
+      },
+      "aliases": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "state": {
+        "type": "string",
+        "description": "熟练度/完整度状态（如 圆满/残篇/入门/大成）；同一功法不同状态是同一 id"
+      },
+      "note": {
+        "type": "string"
+      }
+    }
   }
 }

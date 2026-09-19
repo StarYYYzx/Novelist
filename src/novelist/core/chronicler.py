@@ -29,6 +29,18 @@ from .llm import LLMMessage, LLMRequest
 from .memory import MemoryConflictError, MemoryWriter, tokenize
 from ..storage.workspace import WorkspaceError
 
+def _head_tail(text: str, budget: int) -> str:
+    """头尾并取的字符窗口（2026-09-19 审计 C-P1-3）。
+
+    只有尾窗口会系统性丢掉章头信息（人物首次登场、场景与动机交代），
+    而抽取"确实发生了什么"恰恰最依赖头部的起始状态。
+    """
+    if len(text) <= budget:
+        return text
+    half = max(1, budget // 2)
+    return text[:half] + "\n……（中段略）……\n" + text[-half:]
+
+
 EVENT_KINDS = ("conflict", "discovery", "reveal", "turning_point", "dialogue", "departure")
 
 EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取其中**确实发生了**的剧情事件，
@@ -702,7 +714,9 @@ class Chronicler:
                     messages=[LLMMessage(role="user",
                                          content=PERSPECTIVE_PROMPT.format(
                                              names="、".join(names))
-                                         + text[-2500:])],
+                                         # 2026-09-19 审计 C-P1-3：尾窗口会漏章头
+                                         # （人物首次登场/场景交代），改头尾并取
+                                         + _head_tail(text, 2500))],
                     max_tokens_out=max_tokens,
                     temperature=0.4,
                     thinking=True,  # 判断类：视角记忆结构化归纳，开思考

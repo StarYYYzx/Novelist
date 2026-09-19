@@ -1,7 +1,7 @@
 # 13 — AI 协作接手指南（开发要点 · 2026-09-06 定稿）
 
 > 本文档面向**后续接手的人类开发者及其 AI 助手**。目标：30 分钟内可跑通、可改码、知道接下来做什么。
-> 基线：2026-09-19，全量回归 **1198 passed · 1 skipped · 1 deselected**（1200 收集，slow 默认跳过）。
+> 基线：2026-09-19，全量回归 **1217 passed · 1 skipped · 1 deselected**（1219 收集，slow 默认跳过）。
 > 进度权威源是 `docs/08` + git log——本文件 §6 快照可能滞后，以门禁实测为准。
 > 项目节奏极快，本文档会滞后——**进度永远以代码 + `git log` + `docs/08-implementation-plan.md` 为准**。
 
@@ -131,7 +131,7 @@ tests/                        87 个测试文件；测试名 m19/m21-26/m3z/m3aa
 - **fame5 真机验收**（`proj-fame5-20260906-124016`，测试书《出名就变强》）：DeepSeek 10 章完成、
   7 项清单过；6 项人工审查问题全部归因完（`_harness/前两章问题归因报告.md` + 总账 F1-F8）。
   遗留正文修复（见下节 P0）。
-- 测试基线：**1198 passed · 1 skipped · 1 deselected**（2026-09-19 实测，1200 收集；slow 真实 API 用例默认 deselect）。
+- 测试基线：**1217 passed · 1 skipped · 1 deselected**（2026-09-19 实测，1219 收集；slow 真实 API 用例默认 deselect）。
 - 09-19 四批落地（详见 git log）：UX-1/2/3 审批放行+心跳+多选宽容、forge doctor 体检、
   类型包扩展节点、M3ac 常驻对话 Agent（console 自然语通道 + 5 个查询工具 + update_blueprint）、
   综合审计修复（路径穿越/system prompt 抹除/roll 闸门落盘/resume 预算口径等 14 项）。

@@ -4,15 +4,30 @@
   "title": "worldview",
   "description": "世界观（体系/文明/设定规则）。见 docs/06 §2。F0'：补代码实然字段——power_system（knowledge/phase 注入）、phase_policy（phase.py:122 卷进度决策）、unavailable_states（worldstate.py:79 不可出场词表覆盖）、factions（knowledge.py:131 势力知识单元）。",
   "type": "object",
-  "required": ["id", "name"],
+  "required": [
+    "id",
+    "name"
+  ],
   "properties": {
-    "id": { "type": "string", "pattern": "^world:[A-Za-z0-9_-]+$", "description": "世界观稳定 ID（全书记引用；Forge 构建时生成）" },
-    "name": { "type": "string", "minLength": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^world:[A-Za-z0-9_-]+$",
+      "description": "世界观稳定 ID（全书记引用；Forge 构建时生成）"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
     "power_system": {
       "type": "object",
       "description": "力量体系（境界/功法体系），生成上下文注入",
       "properties": {
-        "levels": { "type": "array", "items": { "type": "string" } }
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
       "additionalProperties": true
     },
@@ -20,14 +35,22 @@
       "type": "object",
       "description": "开篇/收尾配额（phase.py 卷进度决策输入）",
       "properties": {
-        "opening_chapters": { "type": "integer", "minimum": 0 },
-        "tail_chapters": { "type": "integer", "minimum": 0 }
+        "opening_chapters": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tail_chapters": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": true
     },
     "unavailable_states": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "不可出场状态词表（闭关/失踪/昏迷/被囚/渡劫…），覆盖 worldstate.py 默认词表"
     },
     "factions": {
@@ -36,17 +59,51 @@
       "items": {
         "type": "object",
         "properties": {
-          "faction": { "type": "string" },
-          "note": { "type": "string" }
+          "faction": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }
     },
-    "systems": { "type": "array", "items": { "type": "string" } },
-    "civilizations": { "type": "array", "items": { "type": "string" } },
-    "rules": { "type": "array", "items": { "type": "string" } },
-    "summary": { "type": "string" },
-    "revision": { "type": "integer", "minimum": 0 }
+    "systems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "civilizations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "realm_fluctuates": {
+      "type": "array",
+      "description": "境界波动/压制规则（正文与审校读；2026-09-19 从幽灵字段补声明为契约字段）",
+      "items": {
+        "type": [
+          "string",
+          "object"
+        ]
+      }
+    }
   },
   "additionalProperties": true
 }

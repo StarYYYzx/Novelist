@@ -43,52 +43,59 @@ class FeedbackError(NovelistError):
 # 列表文件：container -> 可改字段 / 只读字段 / 解析可能用到的 id 字段
 # 对象文件：可直接改的顶层点路径（world rules / protagonist 约束默认只读）
 BIBLE_EDITABLE: dict[str, dict[str, Any]] = {
+    # 2026-09-19（决策 D-2）：逐字段对齐 schemas/bible/*.schema.json。
+    # 此前声明的 appearance/personality/motivation/goals/tags/notes/relationship_hooks
+    # （characters）、name/description/payoff_vol/payoff_ch/tags（plot_threads）、
+    # key/value/description（settings）、kind/description/owner/powers（items）等
+    # **在 schema 里都不存在**，写回即违规或写进无人读的野字段。
+    # 机械护栏见 scripts/check.py `_gate_feedback_editable()`（edit ⊆ schema properties）。
     "characters.json": {
         "kind": "list",
         "container": "characters",
         "edit": [
-            "name", "aliases", "age", "gender", "appearance", "personality",
-            "background", "motivation", "goals", "arc", "tags", "notes",
-            "relationship_hooks", "power.level", "power.hidden_level",
+            "name", "aliases", "age", "gender", "core_traits", "background", "arc",
+            "relationships", "power.level", "power.hidden_level", "power.faction",
         ],
-        "readonly": ["id", "status", "first_appear", "is_protagonist", "committed"],
+        "readonly": ["id", "status", "first_appear", "is_protagonist", "revision"],
     },
     "plot_threads.json": {
         "kind": "list",
         "container": "plot_threads",
-        "edit": ["name", "description", "status", "payoff_vol", "payoff_ch", "tags"],
-        "readonly": ["id", "committed", "arc"],
+        "edit": ["desc", "plant_desc", "payoff_desc", "scope", "target_vol", "status",
+                 "planted", "returned", "carrier"],
+        "readonly": ["id", "revision", "due"],
     },
     "locations.json": {
         "kind": "list",
         "container": "locations",
-        "edit": ["name", "kind", "description", "relations", "geography", "tags"],
-        "readonly": ["id"],
+        "edit": ["name", "parent", "desc", "status", "aliases"],
+        "readonly": ["id", "revision"],
     },
     "items.json": {
         "kind": "list",
         "container": "items",
-        "edit": ["name", "kind", "description", "owner", "powers", "tags"],
+        "edit": ["name", "type", "aliases", "state", "desc", "note"],
         "readonly": ["id"],
     },
     "skills.json": {
         "kind": "list",
         "container": "skills",
-        "edit": ["name", "kind", "description", "cost", "tags"],
+        "edit": ["name", "type", "aliases", "state", "note"],
         "readonly": ["id"],
     },
     "settings.json": {
         "kind": "list",
         "container": "settings",
-        "edit": ["key", "value", "description", "tags"],
-        "readonly": ["id"],
+        "edit": ["keywords", "text", "revealed"],
+        "readonly": ["id", "first_ch"],
     },
     "worldview.json": {
         "kind": "object",
         # world rules / power_system 允许改但命中 covenant → 标 sensitive 强制人工
         "edit": ["name", "summary", "rules", "power_system", "civilizations",
-                 "systems", "realm_fluctuates", "note"],
-        "readonly": [],
+                 "systems", "factions", "phase_policy", "unavailable_states",
+                 "realm_fluctuates"],
+        "readonly": ["id", "revision"],
     },
     "style.json": {
         "kind": "object",
@@ -96,20 +103,45 @@ BIBLE_EDITABLE: dict[str, dict[str, Any]] = {
             "tone", "glossary", "forbidden_words", "pov", "tense", "narration",
             "craft_cards", "target_words_per_chapter",
         ],
-        "readonly": ["protagonist"],
+        "readonly": ["protagonist", "revision"],
     },
     "worldstate.json": {
         "kind": "object",
-        # characters 硬状态可改；time 轴是运行时实然，只读
+        # characters 硬状态可改；time/pending 是运行时实然，只读
+        # （2026-09-19 修正：此前 readonly 写 "timeline"，该顶层键不存在，实为 "time"）
         "edit": ["characters"],
-        "readonly": ["timeline"],
+        "readonly": ["time", "pending"],
     },
 }
 
-# add 时给新条目铸造 id 用的前缀
-_ID_PREFIX = {"characters.json": "char_pf", "plot_threads.json": "thread_pf",
-              "locations.json": "loc_pf", "items.json": "item_pf",
-              "skills.json": "skill_pf", "settings.json": "setting_pf"}
+# add 时给新条目铸造 id 用的前缀（必须匹配各 schema 的 id pattern，2026-09-19 D-2）
+# 此前用 `char_pf_ab12cd34` 形态，**全部不匹配** `^char:` / `^set:` 等 pattern。
+_ID_PREFIX = {"characters.json": "char:", "plot_threads.json": "pt:",
+              "locations.json": "loc:", "items.json": "item:",
+              "skills.json": "skill:", "settings.json": "set:"}
+
+
+def _slug(name: Any) -> str:
+    """名字 → id 片段：ASCII 名归一；中文名走稳定 hash（pattern 只允许 [A-Za-z0-9_-]）。"""
+    import hashlib
+    import re as _re
+
+    s = _re.sub(r"[^A-Za-z0-9_-]", "", str(name or "").lower())[:24]
+    if s:
+        return s
+    return "n" + hashlib.sha1(str(name or "").encode("utf-8")).hexdigest()[:10]
+
+
+def mint_id(file: str, item: dict, existing: list[dict] | None = None) -> str:
+    """按分区前缀铸 id（`char:` / `pt:` / `loc:` / `item:` / `skill:` / `set:`），并去重。"""
+    prefix = _ID_PREFIX.get(file, "fb:")
+    base = f"{prefix}{_slug(item.get('name') or item.get('desc') or 'item')}"
+    taken = {str(x.get("id")) for x in (existing or []) if isinstance(x, dict)}
+    cand, n = base, 2
+    while cand in taken:
+        cand, n = f"{base}-{n}", n + 1
+    return cand
+
 
 
 def _bible_base(file: str) -> str:
@@ -249,7 +281,8 @@ def flag_sensitive(op: EditOp) -> bool:
     spec = BIBLE_EDITABLE.get(op.file) or {}
     if op.file == "worldview.json" and op.target.split(".")[0] == "rules":
         return True
-    if op.file == "worldstate.json" and op.target.split(".")[0] == "timeline":
+    # 2026-09-19：键名对齐实然（顶层键是 time，此前写 timeline——该键不存在）
+    if op.file == "worldstate.json" and op.target.split(".")[0] == "time":
         return True
     if op.file == "plot_threads.json" and (op.field in ("status", "committed") or op.field == "arc"):
         return True
@@ -270,13 +303,13 @@ _PARSE_PROMPT = """针对以下人工意见，输出修改指令。
 
 规则：
 - 对象文件是「编辑字段」，路径如 `style.tone`；列表文件用「编辑条目字段」：target 填该角色/条目
-  的名字（系统会按 name 或 id 定位），field 填要改的字段名（如 `personality`、`power.level`）。
+  的名字（系统会按 name 或 id 定位），field 填要改的字段名（如 `core_traits`、`power.level`）。
 - op 取值：`edit`（改已有字段/条目）、`add`（新增条目，value 为整条对象）、`delete`（删条目）。
 - 命中下列情况标 sensitive=true：改世界铁律(rules)、删条目、改已提交剧情的线索状态、改时间轴。
 - 拿不准「改哪个文件/字段」就跳过该条，不要瞎猜；改不了的诉求不要硬拆。
 
 输出 JSON：{"ops": [{"file": "characters.json", "op": "edit", "target": "苏晚",
-  "field": "personality", "value": "…", "reason": "一句话理由", "sensitive": false}]}
+  "field": "core_traits", "value": ["温润"], "reason": "一句话理由", "sensitive": false}]}
 
 意见：
 {opinion}
@@ -365,7 +398,7 @@ class FeedbackParser:
 # 5. 审批队列接入 + 持久化
 # ---------------------------------------------------------------------------
 def feedback_persist_dir(ws, project_id: str) -> str:
-    return str(ws._abs(f"{project_id}/workspace/feedback"))  # noqa: SLF001
+    return str(ws.workspace_sub(project_id, "feedback"))  # noqa: SLF001
 
 
 def load_store(ws, project_id: str) -> "FeedbackStore":
@@ -453,8 +486,7 @@ def apply_op(ws, project_id: str, op: EditOp) -> None:
         if op.op == "add":
             new_item = dict(op.value) if isinstance(op.value, dict) else {}
             if not new_item.get("id"):
-                prefix = _ID_PREFIX.get(op.file, "fb_item")
-                new_item["id"] = f"{prefix}_{uuid.uuid4().hex[:8]}"
+                new_item["id"] = mint_id(op.file, new_item, items)
             new_item["provenance"] = "feedback"  # 软 tracking，不侵入关键字段
             items.append(new_item)
         elif op.op in ("edit", "delete"):

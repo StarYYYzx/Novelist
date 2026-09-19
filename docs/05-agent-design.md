@@ -154,7 +154,7 @@ SubagentResult {
 | **记忆·写入** | `append_experience`, `append_plot_event`, `record_relationship_change` | sensitive | 编纂员专用，写 `memory/`，记录版本 |
 | **试演** | `write_take(char_id, chapter_id, content)` | safe | 演员写自己的试演片段到临时 take 目录 |
 | **围读会** | `join_scene(scene_id)`, `say_line(scene_id, speech)`, `leave_scene(scene_id)` | safe | 演员参与受控群聊（ADR-014）；主持人经编排层调度轮次与收场 |
-| 创作 | `write_draft`, `promote_draft`(转正) | safe/sensitive | 写草稿 safe；转正 sensitive |
+| 创作 | `write_draft`（转正不在工具面：2026-09-19 D-4 起统一走 `publish` danger） | safe | 写草稿 safe |
 | 设定 | `update_entity`, `add_plot_thread`, `set_timeline` | sensitive | 改设定圣经，记录版本 |
 | 大纲 | `write_outline`, `patch_outline` | sensitive | 写/改大纲 |
 | 一致性 | `run_rule_check`, `run_semantic_check`, `get_alerts` | safe | 触发审查 |

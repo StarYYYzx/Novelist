@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +50,10 @@ PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 class WorkspaceError(Exception):
     pass
+
+
+class ChapterBusyError(WorkspaceError):
+    """同一 (项目, 卷, 章) 正在生成中（章节互斥锁被占用，决策 D-7）。"""
 
 
 @dataclass
@@ -106,7 +112,7 @@ class Workspace:
         return self._abs(f"{project_id}/bible/{name}.json")
 
     def outline_volumes_path(self, project_id: str) -> Path:
-        return self._abs(f"{project_id}/outline/volumes.json")
+        return self.outline_path(project_id, "volumes.json")
 
     def outline_chapter_path(self, project_id: str, vol: int, ch: int) -> Path:
         return self._abs(f"{project_id}/outline/chapters/{vol}-{ch}.md")
@@ -119,6 +125,78 @@ class Workspace:
 
     def memory_dir(self, project_id: str) -> Path:
         return self._abs(f"{project_id}/memory")
+
+    def memory_path(self, project_id: str, name: str) -> Path:
+        """`memory/<name>.json`（实然区，ADR-011；2026-09-19 决策 D-6 起用）。"""
+        return self._abs(f"{project_id}/memory/{name}.json")
+
+    def outline_path(self, project_id: str, rel: str) -> Path:
+        """`outline/<rel>`（如 `chapters/1-1.md`、`arcs.json`）。"""
+        return self._abs(f"{project_id}/outline/{rel}")
+
+    def workspace_sub(self, project_id: str, rel: str) -> Path:
+        """`workspace/<rel>`（forge 产物、agent 会话、快照等）。"""
+        return self._abs(f"{project_id}/workspace/{rel}")
+
+    def existing_path(self, project_id: str, *rels: str) -> Path | None:
+        """按顺序返回第一个存在的路径（`<project>/<rel>`）。
+
+        用于「文件搬家后兼容旧位置」的读取（2026-09-19 决策 D-6）：新位置优先，
+        旧位置作为兼容回退保留一个版本。全部不存在返回 None。
+        """
+        for rel in rels:
+            p = self._abs(f"{project_id}/{rel}")
+            if p.exists():
+                return p
+        return None
+
+    # ---------------------------------------------------------------- 章节互斥锁
+    _LOCK_STALE_S = 1800.0  # 30 分钟：超过视为陈旧锁（持有进程已死），可抢占
+
+    @contextlib.contextmanager
+    def chapter_lock(self, project_id: str, vol: int, ch: int, *, wait_s: float = 0.0):
+        """`(项目, 卷, 章)` 级互斥锁（2026-09-19 决策 D-7）。
+
+        为何需要：`produce_chapter` 自称"严格串行，同时至多一章"，但**全链路无锁**——
+        HTTP 端点与 CLI 可并发触发同一 (vol, ch)，两边各自 `prepare_rewrite` 后，
+        先失败的一方 `restore` 会把另一方刚写的数据抹掉（快照互踩）。
+        用 `O_CREAT|O_EXCL` 建锁文件（原子）；陈旧锁（>30 分钟）自动抢占，避免死锁。
+        """
+        lock_dir = self._abs(f"{project_id}/.locks")
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        path = lock_dir / f"ch-{int(vol)}-{int(ch)}.lock"
+        deadline = time.time() + max(0.0, wait_s)
+        while True:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                try:
+                    os.write(fd, str(os.getpid()).encode("ascii"))
+                finally:
+                    os.close(fd)
+                break
+            except FileExistsError:
+                try:
+                    age = time.time() - path.stat().st_mtime
+                except OSError:  # 竞态：对方刚释放
+                    continue
+                if age > self._LOCK_STALE_S:
+                    with contextlib.suppress(OSError):
+                        path.unlink()
+                    continue
+                if time.time() >= deadline:
+                    owner = ""
+                    with contextlib.suppress(OSError):
+                        owner = path.read_text(encoding="ascii").strip()
+                    raise ChapterBusyError(
+                        f"第 {vol} 卷第 {ch} 章正在生成中（锁持有者 pid={owner or '未知'}）"
+                        f"——同一章不得并发生成")
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                path.unlink()
+
 
     def char_history_path(self, project_id: str, char_id: str) -> Path:
         # 仅允许合法字符组成文件名；防路径注入

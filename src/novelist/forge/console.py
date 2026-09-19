@@ -39,7 +39,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from click.testing import CliRunner
+import click
+import contextlib
 
 from ..cli import cli as cli_group
 from ..core.output import use_output
@@ -74,6 +75,48 @@ class ConsoleState:
 
 
 # —— REPL 输入原语：薄封装，便于测试注入 ——
+
+class _CliStream:
+    """把 click 的 stdout 调用**逐行即时**转发到 REPL io，并累积全文备用（D-14）。"""
+
+    def __init__(self, io_) -> None:
+        self._io = io_
+        self._buf: list[str] = []
+        self._pending = ""
+
+    def write(self, text) -> int:
+        if not text:
+            return 0
+        if isinstance(text, (bytes, bytearray)):  # 有调用方向 stdout 写 bytes（如 bytes 路径回显）
+            text = bytes(text).decode("utf-8", "replace")
+        self._buf.append(text)
+        self._pending += text
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            if line.strip():
+                self._io.output(line)
+        return len(text)
+
+    def flush_line(self) -> None:
+        if self._pending.strip():
+            self._io.output(self._pending)
+        self._pending = ""
+
+    def flush(self) -> None:  # 兼容 TextIO 协议
+        return None
+
+    def text(self) -> str:
+        return "".join(self._buf)
+
+
+class _CliRun:
+    """`run_cli` 的返回壳（保持 `.output` / `.exit_code` / `.exception` 兼容）。"""
+
+    def __init__(self, output: str, exit_code: int, exception: object | None) -> None:
+        self.output = output
+        self.exit_code = exit_code
+        self.exception = exception
+
 
 class FilterableIO:
     """可注入的 REPL 通道（脚本化输入 / 捕获输出），并承担 `q` 之外的中断。
@@ -219,14 +262,28 @@ class Console:
         # 并抛栈**，用户丢会话。改为 True：异常进 `r.exception`，转成一行提示，会话继续。
         # U6：同时把生成期进度接到 io（`emit` 走 sink）——原先这些输出被 CliRunner 捕获，
         # 要等命令结束才一次性刷出，长任务期间全程静默。
-        with use_output(self.io.output):
-            r = CliRunner().invoke(cli_group, full, catch_exceptions=True)
-        if r.output:
-            lines = [ln for ln in r.output.splitlines() if ln.strip()]
-            self.io.output("\n".join(lines))
-        if r.exception:
-            self.io.output(f"[error] {getattr(r.exception, 'message', r.exception)}")
-        return r
+        # 2026-09-19 决策 D-14：改用流式转发——CliRunner 把 click.echo 全量捕获到
+        # 命令结束才一次性刷出（`emit` 的进度行却是实时的，两路输出分裂；长任务期间
+        # 用户看到的是"进度在跳、结果卡住"）。这里把 stdout 接到 io，**逐行即时输出**，
+        # 同时累积一份文本供调用方解析（如 `new` 从 "created project <id>" 取 id）。
+        stream = _CliStream(self.io)
+        with use_output(self.io.output), contextlib.redirect_stdout(stream):
+            code, exc = 0, None
+            try:
+                cli_group.main(args=full, prog_name="novelist", standalone_mode=False)
+            except SystemExit as e:  # 命令内部 sys.exit
+                code = int(getattr(e, "code", 0) or 0)
+            except click.ClickException as e:  # click 用法/业务错误
+                self.io.output(f"[error] {e.format_message()}")
+                code, exc = 1, e
+            except click.Abort:
+                self.io.output("[aborted] 已中断")
+                code = 1
+            except Exception as e:  # noqa: BLE001 - 任一命令失败不得终止 REPL
+                self.io.output(f"[error] {getattr(e, 'message', e)}")
+                code, exc = 1, e
+        stream.flush_line()
+        return _CliRun(stream.text(), code, exc)
 
     def _proj_run(self, forge_sub: str, positionals: list[str] = ()) -> bool:
         """以位置参数 [DIRECTORY] 定位项目，调 `forge <sub> [args] [DIRECTORY]`。"""

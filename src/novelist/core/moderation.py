@@ -89,7 +89,7 @@ class ModerationPrechecker:
         words: list[str] = []
         src = banned_words_file
         if not src:
-            p = ws._abs(f"{project_id}/bible/moderation.json")
+            p = ws.bible_path(project_id, "moderation")
             if p.exists():
                 words = load_banned_words(p)
                 src = str(p)

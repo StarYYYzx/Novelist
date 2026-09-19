@@ -33,6 +33,13 @@ BIBLE_CONTRACT: list[tuple[str, str]] = [
     ("memory/plot_events.json", "memory/plot_event"),
     ("memory/fragment_index.json", "memory/fragment_index"),
     ("memory/character_histories/*.json", "memory/character_history"),
+    # 2026-09-19（决策 D-3）：补齐在盘但不受校验的事实源/缓存
+    ("bible/skills.json", "bible/skills"),
+    ("bible/lines.json", "bible/lines"),
+    ("memory/relationships.json", "memory/relationship"),
+    ("memory/relationship_ledger.json", "memory/relationship_ledger"),
+    ("memory/entity_progress.json", "memory/entity_progress"),
+    ("memory/review_lessons.json", "memory/review_lessons"),
 ]
 
 
@@ -142,7 +149,7 @@ def normalize_gist_frontmatter(text: str) -> str:
 
 def normalize_all_gists(ws, project_id: str) -> int:
     """全量规范化细纲 frontmatter，返回被改写的文件数（确定性，零 LLM）。"""
-    root = ws._abs(f"{project_id}/outline/chapters")  # noqa: SLF001
+    root = ws.outline_path(project_id, "chapters")  # noqa: SLF001
     if not root.exists():
         return 0
     fixed = 0

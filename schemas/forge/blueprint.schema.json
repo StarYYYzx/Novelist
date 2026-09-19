@@ -4,55 +4,140 @@
   "title": "Forge Blueprint",
   "description": "构建层 Forge 的唯一中间态（docs/10 §4.2）。字段 = 下游产出字段的超集 + provenance。可手工编辑后 forge build 重跑。F0：新增，V1 校验自身中间态。",
   "type": "object",
-  "required": ["rev", "provenance", "meta"],
+  "required": [
+    "rev",
+    "provenance",
+    "meta"
+  ],
   "additionalProperties": false,
   "properties": {
-    "rev": { "type": "integer", "minimum": 1, "description": "蓝图修订号（每次问答/构建递增）" },
+    "rev": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "蓝图修订号（每次问答/构建递增）"
+    },
     "provenance": {
       "type": "object",
       "description": "每个字段的来源（drives 问什么/细化什么/披露什么）",
-      "propertyNames": { "pattern": "^[A-Za-z0-9_\\[\\].:()-]+$" },
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_\\[\\].:()-]+$"
+      },
       "additionalProperties": {
         "type": "object",
-        "required": ["src", "confidence"],
+        "required": [
+          "src",
+          "confidence"
+        ],
         "properties": {
-          "src": { "enum": ["user", "llm", "template", "ingested"] },
-          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "evidence": { "type": "string", "description": "来源证据（如 ingested 的源文件）" }
+          "src": {
+            "enum": [
+              "user",
+              "llm",
+              "template",
+              "ingested"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "evidence": {
+            "type": "string",
+            "description": "来源证据（如 ingested 的源文件）"
+          }
         }
       }
     },
     "meta": {
       "type": "object",
-      "required": ["title", "genre", "logline", "scale"],
+      "required": [
+        "title",
+        "genre",
+        "logline",
+        "scale"
+      ],
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "genre": { "type": "string", "description": "类型名（对应 Genre Pack id；库外类型则通用包+描述注入）" },
-        "template": { "type": "string", "description": "匹配到的 Genre Pack id" },
-        "logline": { "type": "string", "description": "一句话卖点" },
-        "themes": { "type": "array", "items": { "type": "string" } },
-        "scale": {
-          "type": "object",
-          "required": ["volumes", "chapters_per_volume", "target_words_per_chapter"],
-          "properties": {
-            "volumes": { "type": "integer", "minimum": 1 },
-            "chapters_per_volume": { "type": "integer", "minimum": 1 },
-            "target_words_per_chapter": { "type": "integer", "minimum": 100 }
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "genre": {
+          "type": "string",
+          "description": "类型名（对应 Genre Pack id；库外类型则通用包+描述注入）"
+        },
+        "template": {
+          "type": "string",
+          "description": "匹配到的 Genre Pack id"
+        },
+        "logline": {
+          "type": "string",
+          "description": "一句话卖点"
+        },
+        "themes": {
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         },
-        "time_origin": { "type": "string", "description": "故事时间原点描述（ADR-019：worldstate.time.origin_text 来源）" },
-        "brief": { "type": "string", "description": "用户原始输入（seed/ingest 的 brief）" },
-        "endgame": { "type": "string", "description": "结局走向（引擎翻译到 volumes 末卷 summary）" },
+        "scale": {
+          "type": "object",
+          "required": [
+            "volumes",
+            "chapters_per_volume",
+            "target_words_per_chapter"
+          ],
+          "properties": {
+            "volumes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "chapters_per_volume": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "target_words_per_chapter": {
+              "type": "integer",
+              "minimum": 100
+            }
+          }
+        },
+        "time_origin": {
+          "type": "string",
+          "description": "故事时间原点描述（ADR-019：worldstate.time.origin_text 来源）"
+        },
+        "brief": {
+          "type": "string",
+          "description": "用户原始输入（seed/ingest 的 brief）"
+        },
+        "endgame": {
+          "type": "string",
+          "description": "结局走向（引擎翻译到 volumes 末卷 summary）"
+        },
         "pace": {
-          "enum": ["平推爽文", "苟住发育", "先抑后扬", "稳健推进"],
+          "enum": [
+            "平推爽文",
+            "苟住发育",
+            "先抑后扬",
+            "稳健推进"
+          ],
           "description": "节奏模式（用户拍板）：驱动卷弧 outcome 语义与升级/打脸密度注入"
         },
         "romance": {
-          "enum": ["无CP", "单女主", "多女主后宫", "副线淡化"],
+          "enum": [
+            "无CP",
+            "单女主",
+            "多女主后宫",
+            "副线淡化"
+          ],
           "description": "感情线模式（用户拍板）：驱动 cast 生成约束与感情线线索账本登记建议"
         },
         "opening": {
-          "enum": ["开局即冲突", "金手指速觉醒", "慢热铺垫"],
+          "enum": [
+            "开局即冲突",
+            "金手指速觉醒",
+            "慢热铺垫"
+          ],
           "description": "开篇节奏（用户拍板）：前三章细纲的开篇指令"
         }
       }
@@ -60,59 +145,162 @@
     "worldview": {
       "type": "object",
       "properties": {
-        "name": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
         "power_system": {
           "type": "object",
           "properties": {
-            "levels": { "type": "array", "items": { "type": "string" } },
-            "mechanic": { "type": "string" },
-            "ceiling": { "type": "string", "description": "力量天花板（世界最强能到什么程度，升级空间规划的上界）" }
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "mechanic": {
+              "type": "string"
+            },
+            "ceiling": {
+              "type": "string",
+              "description": "力量天花板（世界最强能到什么程度，升级空间规划的上界）"
+            }
           }
         },
-        "map": { "type": "string", "description": "地理范围（世界地图尺度，卷与地图映射的参照）" },
-        "rules": { "type": "array", "items": { "type": "string" }, "description": "世界铁律" },
-        "civilizations": { "type": "array", "items": { "type": "string" } },
-        "factions": { "type": "array", "items": { "type": "string" } }
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "世界铁律"
+        },
+        "civilizations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "factions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^world:[A-Za-z0-9_-]+$",
+          "description": "世界 id；缺省由 sync_bible 兜底 world:main（2026-09-19 D-11 补约束）"
+        }
       }
     },
     "characters": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-          "name": { "type": "string", "minLength": 1 },
-          "aliases": { "type": "array", "items": { "type": "string" } },
-          "gender": { "enum": ["male", "female", "unknown"] },
-          "age": { "type": ["integer", "null"], "minimum": 0 },
-          "role": { "enum": ["protagonist", "mentor", "rival", "love_interest", "minor"], "description": "蓝图内部字段，落盘剥离（docs/10 §4.2 B3）" },
-          "core_traits": { "type": "array", "items": { "type": "string" } },
-          "flaw": { "type": "string", "description": "性格缺陷/成长起点（人物弧线的起点）" },
+          "id": {
+            "type": "string",
+            "pattern": "^char:[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "gender": {
+            "enum": [
+              "male",
+              "female",
+              "unknown"
+            ]
+          },
+          "age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "role": {
+            "enum": [
+              "protagonist",
+              "mentor",
+              "rival",
+              "love_interest",
+              "minor"
+            ],
+            "description": "蓝图内部字段，落盘剥离（docs/10 §4.2 B3）"
+          },
+          "core_traits": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "flaw": {
+            "type": "string",
+            "description": "性格缺陷/成长起点（人物弧线的起点）"
+          },
           "power": {
             "type": "object",
             "properties": {
-              "level": { "type": "string" },
-              "faction": { "type": "string" }
+              "level": {
+                "type": "string"
+              },
+              "faction": {
+                "type": "string"
+              }
             }
           },
-          "arc": { "type": "string" },
+          "arc": {
+            "type": "string"
+          },
           "first_appear": {
             "type": "object",
             "properties": {
-              "vol": { "type": "integer", "minimum": 1 },
-              "ch": { "type": "integer", "minimum": 1 }
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ch": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "章号；0 = 未知（构建期按卷粒度登记，2026-09-19 D-11 对齐实现）"
+              }
             }
           },
-          "status": { "enum": ["active", "dead", "away", "unknown"] },
+          "status": {
+            "enum": [
+              "active",
+              "dead",
+              "away",
+              "unknown"
+            ]
+          },
           "relationships": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["target", "type"],
+              "required": [
+                "target",
+                "type"
+              ],
               "properties": {
-                "target": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-                "type": { "type": "string" }
+                "target": {
+                  "type": "string",
+                  "pattern": "^char:[A-Za-z0-9_-]+$"
+                },
+                "type": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -124,13 +312,31 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^loc:[A-Za-z0-9_-]+$" },
-          "name": { "type": "string", "minLength": 1 },
-          "category": { "type": "string" },
-          "desc": { "type": "string" },
-          "aliases": { "type": "array", "items": { "type": "string" } }
+          "id": {
+            "type": "string",
+            "pattern": "^loc:[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "type": "string"
+          },
+          "desc": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
         "additionalProperties": true
       }
@@ -139,13 +345,28 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^item:[A-Za-z0-9_-]+$" },
-          "name": { "type": "string", "minLength": 1 },
-          "category": { "type": "string" },
-          "desc": { "type": "string" },
-          "note": { "type": "string" }
+          "id": {
+            "type": "string",
+            "pattern": "^item:[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "type": "string"
+          },
+          "desc": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }
@@ -154,11 +375,22 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^skill:[A-Za-z0-9_-]+$" },
-          "name": { "type": "string", "minLength": 1 },
-          "desc": { "type": "string" }
+          "id": {
+            "type": "string",
+            "pattern": "^skill:[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "desc": {
+            "type": "string"
+          }
         },
         "additionalProperties": true
       }
@@ -167,13 +399,32 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "keywords", "text"],
+        "required": [
+          "id",
+          "keywords",
+          "text"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^set:[A-Za-z0-9_-]+$" },
-          "keywords": { "type": "array", "items": { "type": "string" } },
-          "text": { "type": "string" },
-          "revealed": { "type": "boolean" },
-          "first_ch": { "type": "integer", "minimum": 1 }
+          "id": {
+            "type": "string",
+            "pattern": "^set:[A-Za-z0-9_-]+$"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "revealed": {
+            "type": "boolean"
+          },
+          "first_ch": {
+            "type": "integer",
+            "minimum": 1
+          }
         },
         "additionalProperties": true
       }
@@ -182,22 +433,63 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "desc"],
+        "required": [
+          "id",
+          "desc"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" },
-          "desc": { "type": "string", "minLength": 1 },
-          "scope": { "enum": ["volume", "book"] },
-          "target_vol": { "type": "integer", "minimum": 1 },
+          "id": {
+            "type": "string",
+            "pattern": "^(pt|thread):[A-Za-z0-9_-]+$",
+            "description": "线程 id（^pt: 新规范；^thread: 存量兼容，2026-09-19 D-11）"
+          },
+          "desc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "enum": [
+              "volume",
+              "book"
+            ]
+          },
+          "target_vol": {
+            "type": "integer",
+            "minimum": 1
+          },
           "planted": {
             "type": "object",
             "properties": {
-              "vol": { "type": "integer", "minimum": 1 },
-              "ch": { "type": "integer", "minimum": 1 }
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ch": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "章号；0 = 未知（构建期按卷粒度登记，2026-09-19 D-11 对齐实现）"
+              }
             }
           },
-          "status": { "enum": ["unplanned", "planted", "pending_return", "returned"] },
-          "carrier": { "enum": ["object", "goal", "character", "emotion", "faction", "theme"],
-                       "description": "伏笔载体（ADR-025 批2）：回收后载体预期持续出场时登记，卷末审计据此提名升级为线。" }
+          "status": {
+            "enum": [
+              "unplanned",
+              "planted",
+              "pending_return",
+              "returned"
+            ]
+          },
+          "carrier": {
+            "enum": [
+              "object",
+              "goal",
+              "character",
+              "emotion",
+              "faction",
+              "theme"
+            ],
+            "description": "伏笔载体（ADR-025 批2）：回收后载体预期持续出场时登记，卷末审计据此提名升级为线。"
+          }
         },
         "additionalProperties": true
       }
@@ -207,22 +499,71 @@
       "description": "线索账本骨架（ADR-025，应然中间态；sync_bible 导出 bible/lines.json 并合并运行态）。",
       "items": {
         "type": "object",
-        "required": ["id", "desc", "kind"],
+        "required": [
+          "id",
+          "desc",
+          "kind"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^ln:[A-Za-z0-9_-]+$" },
-          "desc": { "type": "string", "minLength": 1 },
-          "kind": { "enum": ["main", "subplot", "hidden"] },
-          "carrier": { "enum": ["object", "goal", "character", "emotion", "faction", "theme", ""] },
-          "scope": { "enum": ["volume", "book"] },
-          "members": { "type": "array", "items": { "type": "string" } },
+          "id": {
+            "type": "string",
+            "pattern": "^ln:[A-Za-z0-9_-]+$"
+          },
+          "desc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "main",
+              "subplot",
+              "hidden"
+            ]
+          },
+          "carrier": {
+            "enum": [
+              "object",
+              "goal",
+              "character",
+              "emotion",
+              "faction",
+              "theme",
+              ""
+            ]
+          },
+          "scope": {
+            "enum": [
+              "volume",
+              "book"
+            ]
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "target": {
             "type": "object",
             "properties": {
-              "vol": { "type": "integer", "minimum": 1 },
-              "note": { "type": "string" }
+              "vol": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "note": {
+                "type": "string"
+              }
             }
           },
-          "status": { "enum": ["dormant", "pending", "active", "suspended", "closed"] }
+          "status": {
+            "enum": [
+              "dormant",
+              "pending",
+              "active",
+              "suspended",
+              "closed"
+            ]
+          }
         },
         "additionalProperties": true
       }
@@ -230,34 +571,74 @@
     "style": {
       "type": "object",
       "properties": {
-        "pov": { "type": "string" },
-        "tense": { "type": "string" },
-        "narration": { "type": "string" },
-        "tone": { "type": "array", "items": { "type": "string" } },
-        "target_words_per_chapter": { "type": "integer", "minimum": 100 },
-        "forbidden_words": { "type": "array", "items": { "type": "string" } },
+        "pov": {
+          "type": "string"
+        },
+        "tense": {
+          "type": "string"
+        },
+        "narration": {
+          "type": "string"
+        },
+        "tone": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "target_words_per_chapter": {
+          "type": "integer",
+          "minimum": 100
+        },
+        "forbidden_words": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "craft_cards": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "description": "设定阶段勾选的题材工艺卡 id（src/novelist/craft/cards/*.md），provenance=user"
         },
         "glossary": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["term"],
+            "required": [
+              "term"
+            ],
             "properties": {
-              "term": { "type": "string", "minLength": 1 },
-              "note": { "type": "string" }
+              "term": {
+                "type": "string",
+                "minLength": 1
+              },
+              "note": {
+                "type": "string"
+              }
             }
           }
         },
         "protagonist": {
           "type": "object",
           "properties": {
-            "id": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" },
-            "name": { "type": "string" },
-            "gender": { "enum": ["male", "female", "unknown"] }
+            "id": {
+              "type": "string",
+              "pattern": "^char:[A-Za-z0-9_-]+$"
+            },
+            "name": {
+              "type": "string"
+            },
+            "gender": {
+              "enum": [
+                "male",
+                "female",
+                "unknown"
+              ]
+            }
           }
         }
       }
@@ -266,22 +647,56 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["vol", "title", "chapter_range"],
+        "required": [
+          "vol",
+          "title",
+          "chapter_range"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "title": { "type": "string", "minLength": 1 },
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
           "chapter_range": {
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
-            "items": { "type": "integer", "minimum": 1 },
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
             "description": "[起,止] 章号"
           },
-          "summary": { "type": "string" },
-          "themes": { "type": "array", "items": { "type": "string" } },
-          "key_beats": { "type": "array", "items": { "type": "string" } },
-          "threads_to_payoff": { "type": "array", "items": { "type": "string", "pattern": "^pt:[A-Za-z0-9_-]+$" } },
-          "target_words": { "type": "integer", "minimum": 100 }
+          "summary": {
+            "type": "string"
+          },
+          "themes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "key_beats": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "threads_to_payoff": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^pt:[A-Za-z0-9_-]+$"
+            }
+          },
+          "target_words": {
+            "type": "integer",
+            "minimum": 100
+          }
         },
         "additionalProperties": true
       }
@@ -290,18 +705,62 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["vol", "ch", "title", "key_events"],
+        "required": [
+          "vol",
+          "ch",
+          "title",
+          "key_events"
+        ],
         "properties": {
-          "vol": { "type": "integer", "minimum": 1 },
-          "ch": { "type": "integer", "minimum": 1 },
-          "title": { "type": "string" },
-          "pov": { "type": "string" },
-          "key_events": { "type": "array", "items": { "type": "string" } },
-          "turns": { "type": "array", "items": { "type": "string" } },
-          "characters": { "type": "array", "items": { "type": "string", "pattern": "^char:[A-Za-z0-9_-]+$" } },
-          "threads_involved": { "type": "array", "items": { "type": "string", "pattern": "^(pt|thread):[A-Za-z0-9_-]+$" } },
-          "after_days": { "type": "integer", "minimum": 0, "description": "ADR-019：相对上一事件的天数，构建期据此登记 worldstate.pending" },
-          "done": { "type": "boolean", "description": "true = 已有正文（模式二 ingest），不再生成细纲" }
+          "vol": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string"
+          },
+          "pov": {
+            "type": "string"
+          },
+          "key_events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "characters": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^char:[A-Za-z0-9_-]+$"
+            }
+          },
+          "threads_involved": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(pt|thread):[A-Za-z0-9_-]+$"
+            }
+          },
+          "after_days": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "ADR-019：相对上一事件的天数，构建期据此登记 worldstate.pending"
+          },
+          "done": {
+            "type": "boolean",
+            "description": "true = 已有正文（模式二 ingest），不再生成细纲"
+          }
         },
         "additionalProperties": true
       }
@@ -309,9 +768,19 @@
     "ingested": {
       "type": "object",
       "properties": {
-        "source_files": { "type": "array", "items": { "type": "string" } },
-        "chapter_count": { "type": "integer", "minimum": 0 },
-        "encoded_as": { "type": "string" }
+        "source_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chapter_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "encoded_as": {
+          "type": "string"
+        }
       }
     }
   }
