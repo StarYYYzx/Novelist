@@ -43,7 +43,7 @@ class OpenAICompatibleProvider:
         base_url: str | None = None,
         api_key: str | None = None,
         model: str = "gpt-4o-mini",
-        timeout_s: float = 60.0,
+        timeout_s: float | None = None,
         supports_reasoning_roundtrip: bool = False,
         supports_thinking: bool = True,
         max_retries: int = 2,
@@ -54,7 +54,18 @@ class OpenAICompatibleProvider:
         self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.model = model
-        self.timeout_s = timeout_s
+        # 读超时（2026-09-19）：非流式生成在慢网关上极慢——真机测算网关 ~17 t/s
+        # vs 官方 ~230 t/s，L0 book 3914 tokens 需 ~230s（旧默认 60s → 三连超时
+        # 构建中止；event_stream 上限 7000 tokens 需 ~410s）→ 默认 600s 兜底；
+        # NOVELIST_HTTP_TIMEOUT_S 可覆盖，显式参数优先于一切。
+        if timeout_s is not None:
+            self.timeout_s = float(timeout_s)
+        else:
+            _env_t = os.getenv("NOVELIST_HTTP_TIMEOUT_S", "")
+            try:
+                self.timeout_s = float(_env_t) if _env_t.strip() else 600.0
+            except ValueError:
+                self.timeout_s = 600.0
         # 思考型后端的工具多轮：需回传 assistant 的 reasoning_content。
         # 仅对真正支持的后端（如 DeepSeek v4）开启，OpenAI 等不主动发，避免未知字段。
         self.supports_reasoning_roundtrip = supports_reasoning_roundtrip

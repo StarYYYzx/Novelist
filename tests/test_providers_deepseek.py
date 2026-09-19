@@ -247,3 +247,24 @@ def test_create_passes_api_base_to_deepseek(monkeypatch):
     p = create("deepseek", api_key="sk-test", api_base=GATEWAY)
     assert p.base_url == GATEWAY
     assert p.supports_thinking is False
+
+
+# ---------------------------------------------------------------------------
+# HTTP 读超时可配置（2026-09-19 晚：网关 60s 三连超时 → 构建中止）
+# ---------------------------------------------------------------------------
+
+
+def test_default_timeout_is_600(monkeypatch):
+    """非流式生成大输出在慢网关 >60s 是常态（真机 184.7s 三连超时），默认 600s。"""
+    monkeypatch.delenv("NOVELIST_HTTP_TIMEOUT_S", raising=False)
+    p = DeepSeekProvider(api_key="sk-test")
+    assert p.timeout_s == 600.0
+
+
+def test_timeout_env_and_explicit(monkeypatch):
+    """NOVELIST_HTTP_TIMEOUT_S 覆盖默认；显式参数压过 env；非法 env 回退默认。"""
+    monkeypatch.setenv("NOVELIST_HTTP_TIMEOUT_S", "120")
+    assert DeepSeekProvider(api_key="sk-test").timeout_s == 120.0
+    assert DeepSeekProvider(api_key="sk-test", timeout_s=5).timeout_s == 5.0
+    monkeypatch.setenv("NOVELIST_HTTP_TIMEOUT_S", "abc")
+    assert DeepSeekProvider(api_key="sk-test").timeout_s == 600.0

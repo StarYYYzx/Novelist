@@ -38,7 +38,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         *,
         api_key: str | None = None,
         model: str | None = None,
-        timeout_s: float = 60.0,
+        timeout_s: float | None = None,
         base_url: str | None = None,
     ) -> None:
         import os as _os
