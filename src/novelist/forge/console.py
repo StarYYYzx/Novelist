@@ -3,7 +3,7 @@
 一行指令启动 → 进入常驻 REPL，集项目导航与完整新建/编辑/构建于一体。
 
 **命令面（全部接入 CLI 指令，2026-09-10）**
-- 项目导航：`projects` / `ls` / `new <标题>` / `open <id>`
+- 项目导航：`projects` / `ls` / `new <标题>` / `open <id|序号>` / `delete <id|序号>`
 - 构建链（forge）：`seed` `build` `resume` `shell` `roll` `roll-window`
   `ingest` `forge-validate` `show` `craft` `covenant` `lines-replay`
   `rollback` `snapshots` `fr-review` `fr-approve` `fr-approve-all` `fr-revise` `fr-switches`
@@ -69,6 +69,7 @@ class ConsoleState:
     project_id: str | None = None
     commands_run: int = 0
     logged: list[str] = field(default_factory=list)
+    last_projects: list[str] = field(default_factory=list)  # 最近一次 /projects|/ls 的顺序
 
     def log(self, line: str) -> None:
         self.logged.append(line)
@@ -344,6 +345,7 @@ class Console:
             self.io.output("（尚无项目——`/new <标题>` 新建。）")
             return
         rows = []
+        self.state.last_projects = list(ids)  # 供 /open、/delete 按序号引用
         for i, pid in enumerate(ids, 1):
             title, stage = self._meta(pid)
             rows.append(f"  {i:<3} {title or '（无题）':<32} {pid}")
@@ -371,10 +373,23 @@ class Console:
         else:
             self.io.output("[!] 未能解析新建项目 id——用 `/projects` 查看")
 
+    def _resolve_project_ref(self, token: str) -> str | None:
+        """把用户输入解析成项目 id：数字 → 最近一次 /projects 列表的序号；否则按 id。"""
+        if token.isdigit() and self.state.last_projects:
+            idx = int(token)
+            if 1 <= idx <= len(self.state.last_projects):
+                return self.state.last_projects[idx - 1]
+            self.io.output(f"[!] 序号 {idx} 超出范围（共 {len(self.state.last_projects)} 个）")
+            return None
+        return token
+
     def cmd_open(self, args: str) -> None:
-        pid = args.strip()
+        token = args.strip()
+        if not token:
+            self.io.output("[!] 用法：/open <id|序号>（序号为最近一次 /projects 的序号）")
+            return
+        pid = self._resolve_project_ref(token)
         if not pid:
-            self.io.output("[!] 用法：/open <id>")
             return
         if pid not in self._ws.list_projects():
             self.io.output(f"[!] 未找到项目 {pid!r}（`/projects` 查看）")
@@ -382,6 +397,43 @@ class Console:
         self.state.project_id = pid
         title, stage = self._meta(pid)
         self.io.output(f"=> {pid}（{title or ''}，stage {stage or '—'}）")
+
+    def cmd_delete(self, args: str) -> None:
+        """/delete <id|序号>：删除整个项目目录（需输入 yes 确认，不可恢复）。"""
+        token = args.strip()
+        if not token:
+            self.io.output("[!] 用法：/delete <id|序号>")
+            return
+        pid = self._resolve_project_ref(token)
+        if not pid:
+            return
+        if pid not in self._ws.list_projects():
+            self.io.output(f"[!] 未找到项目 {pid!r}（`/projects` 查看）")
+            return
+        proj_dir = self._ws.project_dir(pid)
+        title, stage = self._meta(pid)
+        n_chapters = len(list(proj_dir.glob("chapters/*.md"))) if proj_dir.exists() else 0
+        n_drafts = len(list(proj_dir.glob("drafts/chapters/*.md"))) if proj_dir.exists() else 0
+        self.io.output(f"[!] 将永久删除项目 {pid}（{title or '（无题）'}，stage {stage or '—'}）：")
+        self.io.output(f"    目录 {proj_dir}（已转正 {n_chapters} 章 / 草稿 {n_drafts} 章）")
+        self.io.output("    此操作不可恢复。输入 yes 确认删除，其它任意输入取消：")
+        answer = (self.io.input("") or "").strip()
+        if answer != "yes":
+            self.io.output("[i] 已取消删除。")
+            return
+        import shutil
+
+        try:
+            shutil.rmtree(proj_dir)
+        except OSError as e:
+            self.io.output(f"[error] 删除失败：{e}")
+            return
+        if self.state.project_id == pid:
+            self.state.project_id = None
+        self._chat_agents.pop(pid, None)  # 清掉对话 agent 缓存
+        if pid in self.state.last_projects:
+            self.state.last_projects.remove(pid)
+        self.io.output(f"[i] 已删除项目 {pid}。")
 
     def cmd_show(self, args: str) -> None:
         self._proj_run("show")
@@ -690,6 +742,7 @@ class Console:
             "ls": self.cmd_projects,
             "new": self.cmd_new,
             "open": self.cmd_open,
+            "delete": self.cmd_delete,
             "show": self.cmd_show,
             "seed": self.cmd_seed,
             "build": self.cmd_build,
@@ -807,7 +860,8 @@ HELP_TEXT = """Novelist 控制台 —— 全命令列表（一律以 / 开头）
 项目导航：
   /projects | /ls              列出全部项目（序号 标题 编号）
   /new <标题>                  新建项目并切入
-  /open <id>                   选定当前项目
+  /open <id|序号>              选定当前项目（序号为最近一次 /projects 的序号）
+  /delete <id|序号>            永久删除项目（需输入 yes 确认，不可恢复）
 
 构建链（forge）：
   /seed "<一句话创意>"          一句话 → 提炼 + 建蓝图 + 构建（--smoke 只提炼）

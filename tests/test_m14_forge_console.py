@@ -310,3 +310,95 @@ def test_tty_eof_exits_repl(tmp_path, monkeypatch):
     c = Console(io=io_, workspace_root=str(tmp_path), provider="fake")
     c.run()  # 修复前：无限循环
     assert any("控制台" in ln for ln in io_.out)
+
+
+def test_open_by_index_from_projects_listing(tmp_path):
+    """/open <序号>：按最近一次 /projects 列表的序号切入项目（2026-09-19 用户要求）。"""
+    c, io = _console(str(tmp_path), lines=[
+        "/new 甲书", "/new 乙书", "/projects", "/open 1", "/q",
+    ])
+    c.run()
+    # /projects 列表里序号 1 = 甲书的项目 id
+    pid = c.state.last_projects[0] if c.state.last_projects else None
+    assert pid and c.state.project_id == pid
+    assert any(pid in ln and "=>" in ln for ln in io.out)
+
+
+def test_open_by_index_out_of_range(tmp_path):
+    c, io = _console(str(tmp_path), lines=["/new 独书", "/projects", "/open 99", "/q"])
+    c.run()
+    assert any("超出范围" in ln for ln in io.out)
+
+
+def test_open_by_index_without_listing_falls_back_to_id(tmp_path):
+    """未列举过时，数字按字面 id 处理（找不到则提示）。"""
+    c, io = _console(str(tmp_path), lines=["/open 1", "/q"])
+    c.run()
+    assert any("未找到项目" in ln for ln in io.out)
+
+
+def test_delete_requires_exact_yes(tmp_path):
+    """/delete：输入非 yes（含大写 YES/y）一律取消，目录保留。"""
+    c, io = _console(str(tmp_path), lines=["/new 待删书", "/q"])
+    c.run()
+    pid = c.state.project_id
+    proj_dir = c._ws.project_dir(pid)
+    assert proj_dir.exists()
+    for wrong in ("y", "YES", "是", ""):
+        io2_lines = [f"/delete {pid}", wrong, "/q"]
+        c2, io2 = _console(str(tmp_path), lines=io2_lines)
+        c2.run()
+        assert proj_dir.exists(), f"输入 {wrong!r} 不应删除"
+        assert any("已取消" in ln for ln in io2.out)
+
+
+def test_delete_with_yes_removes_project(tmp_path):
+    """/delete + yes：目录被删、当前项目状态清空、列表缓存同步。"""
+    # 直接建项目（同一秒 /new 两次会因时间戳 id 撞车——本测试目标是删除流，不是 /new）
+    from novelist.storage.checkpoint import Checkpoint
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pa = ws.create_project("proj-a").name
+    pb = ws.create_project("proj-b").name
+    Checkpoint(ws).save(pa, {"id": pa, "title": "甲书"})
+    Checkpoint(ws).save(pb, {"id": pb, "title": "乙书"})
+    c, io = _console(str(tmp_path), lines=["/projects", "/q"])
+    c.run()
+    assert len(c.state.last_projects) == 2
+    victim, survivor = pa, pb
+    assert victim in c.state.last_projects and survivor in c.state.last_projects
+    victim_dir = c._ws.project_dir(victim)
+    assert victim_dir.exists()
+    # 先切入甲书再删它：删除后 project_id 应清空
+    io2_lines = [f"/open {victim}", f"/delete {victim}", "yes", "/q"]
+    c2, io2 = _console(str(tmp_path), lines=io2_lines)
+    c2.run()
+    assert not victim_dir.exists()
+    assert c2.state.project_id is None
+    assert victim not in c2.state.last_projects
+    assert any("已删除项目" in ln for ln in io2.out)
+    # 幸存项目仍在
+    assert c2._ws.project_dir(survivor).exists()
+
+
+def test_delete_by_index(tmp_path):
+    """/delete <序号> 同样生效。"""
+    from novelist.storage.checkpoint import Checkpoint
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    pa = ws.create_project("proj-a").name
+    pb = ws.create_project("proj-b").name
+    Checkpoint(ws).save(pa, {"id": pa, "title": "甲书"})
+    Checkpoint(ws).save(pb, {"id": pb, "title": "乙书"})
+    c, io = _console(str(tmp_path), lines=["/projects", "/q"])
+    c.run()
+    assert len(c.state.last_projects) == 2
+    victim = c.state.last_projects[1]  # 序号 2
+    assert victim == pb
+    victim_dir = c._ws.project_dir(victim)
+    c2, io2 = _console(str(tmp_path), lines=["/projects", "/delete 2", "yes", "/q"])
+    c2.run()
+    assert not victim_dir.exists()
+    assert any("已删除项目" in ln for ln in io2.out)
