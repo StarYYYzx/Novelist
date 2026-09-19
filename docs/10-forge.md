@@ -699,8 +699,25 @@ novelist forge snapshots <dir>        # 列出快照目录
 | `covenant` / `switches` | 承诺账本 / 明暗线开关 | ADR-026 |
 | `craft` / `lines-replay` | 手改产物 / 线索账本回放转正 | 人工修订后必修（docs/08） |
 | `shell` / `conflicts` | 常驻设定会话壳（§5.5） / **结构冲突人工裁决**（2026-09-16 拍板） | `conflicts` 见 §12 末行 |
+| `doctor` | **蓝图体检**（2026-09-19 拍板，档 1 agent 化）：确定性预检 + 只读证据环 LLM 审查，报告落 `workspace/forge/doctor.md`；build/seed/resume 默认构建末尾自动跑（`--no-doctor` 关） | 只读，不改蓝图/bible |
 
-> `conflicts` 与 `shell` 是 2026-09-16/09-10 才新增的，早期文档只数到 17 个子命令。
+> `conflicts` 与 `shell` 是 2026-09-16/09-10 才新增的，早期文档只数到 17 个子命令；
+> `doctor` 是第 20 个（2026-09-19）。
+
+### 7.9 类型包声明式扩展节点（2026-09-19 拍板，档 2 后半）
+
+节点树不再只有 12 种固定 kind：genre pack JSON 可声明 `extra_node_kinds`
+（`[{"kind", "label", "section", "hint"}]`），引擎在 deepen 阶段（四个固定旁支之后、
+volume 之前）把尚无产物的扩展节点作为 **book 旁支叶节点**跑掉。
+
+- **白名单纪律**：kind 必须匹配 `^[a-z][a-z0-9_]{1,30}$`；`section` 只允许
+  `settings/items/locations/skills`（list 段）；白名单外一律 `unknown node kind` 硬拒
+  （与固定 kind 同口径）。**树随题材长，但不越长名单外。**
+- 通用 prompt：世界观基座 + 硬性锚点 + pack 的 hint；恒叶节点（无 decide/children）。
+- 落库：artifact upsert 进声明段，id/必填字段按目标段 schema 口径补齐
+  （settings→`set:` + keywords/text，locations→`loc:` 仅 ASCII 等；中文名走稳定 hash slug），
+  provenance 记 `src=llm conf=0.7`。
+- **内置两个 pack 暂不声明任何扩展 kind**——存量构建行为逐字节不变；要用的题材包自行添加。
 
 模块（**实现状态**：✅=已建；M3l 全部落地）：
 

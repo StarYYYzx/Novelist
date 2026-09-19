@@ -329,6 +329,7 @@ def _run_seed_impl(
              max_width_list: int = 12,  # ADR-033 A
              craft: list[str] | None = None,
              smoke: bool = False, deepen: bool = True, gate: bool = True,
+             doctor: bool = True,
              ask_fn: Callable[[Blueprint, SeedSpec, str], str] | None = None) -> SeedResult:
     """一句话 → 蓝图 → 构建。mode=interactive 且 TTY 时先授权询问。
 
@@ -451,7 +452,7 @@ def _run_seed_impl(
     build_res = build(ws, project_id, provider=provider,
                       max_calls=max_calls, max_depth=max_depth, max_width=max_width,
                       max_width_list=max_width_list,
-                      deepen=deepen, gate=gate)
+                      deepen=deepen, gate=gate, doctor=doctor)
     if not build_res.ok and not warnings and not build_res.warnings:
         warnings.append("构建未完成，见 build.warnings")
 

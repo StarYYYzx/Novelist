@@ -126,6 +126,39 @@ class _GateHalt(Exception):
         self.modules = modules
 
 
+# 写入可见性（2026-09-19 拍板：对齐编码 agent——写完文件要播报写了什么）。
+# 节点完成后除耗时行外补一行产物增量：蓝图各段计数前后 diff（确定性，零 LLM）。
+_DELTA_LIST_SECTIONS = ("characters", "threads", "lines", "volumes", "chapters",
+                        "locations", "items", "skills", "settings")
+_DELTA_DICT_SECTIONS = ("worldview", "style", "meta")
+
+
+def _bp_counts(bp) -> dict[str, int]:
+    counts = {s: len(bp.section(s) or []) for s in _DELTA_LIST_SECTIONS}
+    import json as _json
+
+    for s in _DELTA_DICT_SECTIONS:
+        v = bp.get(s)
+        counts[s] = len(_json.dumps(v or {}, ensure_ascii=False, sort_keys=True))
+    return counts
+
+
+def _delta_note(before: dict[str, int], after: dict[str, int]) -> str:
+    """蓝图计数 diff → 一行产物摘要；无变化返回空串。"""
+    parts: list[str] = []
+    labels = {"characters": "人物", "threads": "伏笔", "lines": "线索", "volumes": "卷纲",
+              "chapters": "章细纲", "locations": "地点", "items": "物品", "skills": "技能",
+              "settings": "设定", "worldview": "世界观", "style": "文风", "meta": "meta"}
+    for s in _DELTA_LIST_SECTIONS:
+        d = after[s] - before[s]
+        if d > 0:
+            parts.append(f"+{d} {labels[s]}")
+    for s in _DELTA_DICT_SECTIONS:
+        if after[s] != before[s]:
+            parts.append(f"{labels[s]}已更新")
+    return "｜" + " ".join(parts) if parts else ""
+
+
 def _log_round_summary(log, *, kind: str, calls_used: int, max_calls: int,
                        nodes_done: int, nodes_failed: int, elapsed_s: float,
                        gate_halted: bool, budget_exhausted: bool,
@@ -251,6 +284,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
           resume: bool = False, deepen: bool = True,
           gate: bool = True,
           coherence_review: bool = False,
+          doctor: bool = True,
           log_fn: Callable[[str], None] | None = None) -> BuildResult:
     """全权构建：book → 旁支 DFS（deepen）→ volume(全卷) → arc?/chapter(仅 vol=1)/beat?，
     末尾 worldstate 确定性合成。
@@ -358,6 +392,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
         # UX-2（2026-09-19）：调用**开始前**先报"生成中"，长调用挂心跳——
         # 此前只有完成行，book 节点实测 17–21s 零输出，用户无从判断在跑还是卡死。
         log(f"[{started}/{max_calls} 调用] {label} … 生成中")
+        counts_before = _bp_counts(bp)
         try:
             with heartbeat(label):
                 res = run_node(ctx, kind)
@@ -365,7 +400,8 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             nodes_done += 1
             streak.reset()
             ctx.retry_hint = ""
-            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)")
+            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)"
+                + _delta_note(counts_before, _bp_counts(bp)))
             for w in res.warnings:
                 warnings.append(f"{label}: {w}")
             append_transcript(ws, project_id, "build_node", kind=kind, node=label,
@@ -470,6 +506,22 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
                 if budget_exhausted:
                     warnings.append(f"{kind}: 预算耗尽，旁支未深化")
                     break
+                _branch(kind, 1)
+                bp.save(ws, project_id)
+                sync_bible(ws, project_id, bp)
+
+            # 类型包声明式扩展节点（2026-09-19 拍板）：pack.extra_node_kinds 里声明、
+            # 蓝图中尚无产物的扩展节点，作为 book 旁支叶节点跑掉（白名单外 kind 在
+            # nodes 层硬拒；resume 时靠 nodes/ 产物判存在性跳过）。
+            for spec in (pack or {}).get("extra_node_kinds") or []:
+                kind = str((spec or {}).get("kind") or "")
+                if not kind:
+                    continue
+                if budget_exhausted:
+                    warnings.append(f"{kind}: 预算耗尽，扩展节点未生成")
+                    break
+                if bp.section(str(spec.get("section") or "")) and resume:
+                    continue  # 续跑且目标段已有内容 → 跳过（幂等）
                 _branch(kind, 1)
                 bp.save(ws, project_id)
                 sync_bible(ws, project_id, bp)
@@ -639,17 +691,16 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
                     "未裁决时蓝图只保留先出现的那条")
         except Exception as e:  # noqa: BLE001 - 计数失败不影响构建收尾
             warnings.append(f"待裁决冲突计数失败：{_one_line(e)}")
-        # 待裁决结构冲突计数（2026-09-16 拍板：主线/伏笔冲突交用户裁决，不静默改结构）
-        try:
-            from .conflicts import open_conflicts
+        # 蓝图体检（2026-09-19 拍板，档 1 agent 化）：构建末尾自动跑只读体检——
+        # 确定性预检 + 证据环 LLM 审查，报告落 workspace/forge/doctor.md。
+        # 软失败、不写蓝图/bible、中断时不跑。
+        if doctor and not interrupted:
+            try:
+                from .doctor import run_doctor
 
-            _n_cf = len(open_conflicts(ws, project_id))
-            if _n_cf:
-                log(f"[conflicts] {_n_cf} 条待裁决结构冲突（第二条主线 / 归一后同名伏笔）——"
-                    "`forge conflicts` 查看，`forge conflicts --resolve <id> <choice>` 裁决；"
-                    "未裁决时蓝图只保留先出现的那条")
-        except Exception as e:  # noqa: BLE001 - 计数失败不影响构建收尾
-            warnings.append(f"待裁决冲突计数失败：{_one_line(e)}")
+                run_doctor(ws, project_id, bp, provider, log=log)
+            except Exception as e:  # noqa: BLE001 - 体检绝不阻断构建收尾
+                warnings.append(f"doctor 体检失败：{_one_line(e)}")
         # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态
         from .snapshot import take_snapshot
 
@@ -920,6 +971,7 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             return None
         started = calls_used + 1
         log(f"[{started}/{max_calls} 调用] {label} … 生成中")  # UX-2：调用前可见
+        counts_before = _bp_counts(bp)
         try:
             with heartbeat(label):
                 res = run_node(ctx, kind)
@@ -927,7 +979,8 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
             nodes_ok += 1
             streak.reset()
             ctx.retry_hint = ""
-            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)")
+            log(f"[{calls_used}/{max_calls} 调用] {label} … ok ({time.time() - start:.1f}s)"
+                + _delta_note(counts_before, _bp_counts(bp)))
             warnings.extend(f"{label}: {w}" for w in res.warnings)
             return res
         except ValueError as e:

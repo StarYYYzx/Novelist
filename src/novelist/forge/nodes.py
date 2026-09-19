@@ -1866,10 +1866,119 @@ def run_node(ctx: NodeContext, kind: str) -> NodeResult:
         return _run_node_impl(ctx, kind)
 
 
+# ---- 类型包声明式扩展节点（2026-09-19 拍板，档 2 后半）----
+# 节点树不再只有 12 种固定 kind：genre pack JSON 可声明 `extra_node_kinds`
+# （[{kind, label, section, hint}]），模型只能写包内声明的 kind——树随题材长，
+# 但不越长名单外（白名单校验在 _extra_spec）。
+_EXTRA_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
+# 扩展节点允许写入的蓝图段白名单（都是 list-of-dict 段；worldview/style/meta 不开放）
+_EXTRA_SECTIONS = ("settings", "items", "locations", "skills")
+
+
+def _extra_spec(ctx: NodeContext, kind: str) -> dict | None:
+    """查 pack 的 extra_node_kinds 白名单；非法声明（kind 非法字符/段不在白名单）返回 None。"""
+    for s in (ctx.pack or {}).get("extra_node_kinds") or []:
+        if not isinstance(s, dict) or s.get("kind") != kind:
+            continue
+        if not _EXTRA_KIND_RE.match(str(kind)):
+            return None
+        if str(s.get("section") or "") not in _EXTRA_SECTIONS:
+            return None
+        return s
+    return None
+
+
+def _extra_prompt(ctx: NodeContext, kind: str, spec: dict) -> tuple[str, str]:
+    """扩展节点的通用 prompt：世界观基座 + 硬性锚点 + pack 给的 hint；叶节点协议。"""
+    label = str(spec.get("label") or kind)
+    hint = str(spec.get("hint") or f"为本书补齐「{label}」设定。")
+    wv = _worldview_block(ctx.bp, constraint=f"撰写「{label}」不得违背境界体系与铁律")
+    anchors = _anchors_block(ctx)
+    user = f"你是{label}撰写者。{wv}\n\n【任务】{hint}"
+    if anchors:
+        user += f"\n\n【硬性锚点（用户原话，不得与之矛盾）】\n{anchors}"
+    user += ("\n\n" + _protocol_block(
+        '  "artifact": {"id": "条目标识（英文/拼音）", "name": "中文名", …内容字段自由…},',
+        leaf=True))
+    return f"你是{label}撰写者。", user
+
+
+def _apply_extra(ctx: NodeContext, node: dict, spec: dict) -> list[str]:
+    """扩展节点落库：artifact upsert 进声明的段（事务内被调，不得自行 save）。
+
+    id/必填字段按目标段的 schema 口径补齐：各段前缀不同（settings→set:、
+    locations→loc: 且仅 ASCII…），中文名用稳定 hash 兜底 slug。
+    """
+    artifact = node.get("artifact")
+    if not isinstance(artifact, dict) or not artifact:
+        raise ValueError("扩展节点 artifact 为空")
+    row = dict(artifact)
+    section = str(spec["section"])
+    if not row.get("id"):
+        import hashlib
+
+        from .conflicts import norm_id
+
+        name = str(row.get("name") or row.get("title") or "item")
+        slug = norm_id(name)
+        if not slug or not slug.isascii():
+            slug = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]  # noqa: S324 - 稳定 slug，非安全用途
+        prefix = {"settings": "set", "items": "item", "locations": "loc",
+                  "skills": "skill"}[section]
+        row["id"] = f"{prefix}:{slug}"
+    # 必填字段兜底（schema 口径）：缺了会让蓝图保存时校验失败
+    name_default = str(row.get("name") or row.get("title") or row["id"])
+    if section == "settings":
+        row.setdefault("keywords", [name_default][:3])
+        row.setdefault("text", str(row.get("rule") or row.get("desc")
+                                   or row.get("text") or name_default))
+    elif section == "items":
+        row.setdefault("name", name_default)
+        row.setdefault("type", "misc")
+    elif section == "locations":
+        row.setdefault("name", name_default)
+    ctx.bp.upsert(section, row)
+    ctx.bp.set_provenance(f"{section}[{row['id']}]", "llm", 0.7)
+    return [f"{spec['kind']}: 扩展条目 {row['id']} 已写入 {section}"]
+
+
+def _run_extra_node(ctx: NodeContext, kind: str, spec: dict) -> NodeResult:
+    """扩展节点执行（与 _run_node_impl 同构：LLM → 协议解析 → 事务落库），恒叶节点。"""
+    system, user = _ensure_json_hint(*_extra_prompt(ctx, kind, spec))
+    res = ctx.provider.complete(LLMRequest(
+        messages=[LLMMessage(role="system", content=system),
+                  LLMMessage(role="user", content=user)],
+        temperature=0.5, max_tokens_out=2600, response_format="json_object",
+        thinking=False))  # 生成类：扩展节点生成，关思考
+    if res.blocked:
+        from ..core.llm import ModerationBlockedError
+
+        raise ModerationBlockedError(res.block_reason, res.provider_note)
+    if not (res.content or "").strip():
+        raise ValueError("empty node reply")
+    node = _parse_node_reply(res.content)
+    from .state import blueprint_txn
+
+    with blueprint_txn(ctx.bp):
+        warns = ctx.extra_warnings + _apply_extra(ctx, node, spec)
+    usage = getattr(res, "usage", None)
+    return NodeResult(
+        kind=kind, node_id=kind, ok=True, artifact=node.get("artifact"),
+        decide="done", reason=str(node.get("reason") or ""), children=[],
+        warnings=warns,
+        tokens_in=int(getattr(usage, "tokens_in", 0) or 0),
+        tokens_out=int(getattr(usage, "tokens_out", 0) or 0))
+
+
 def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
     """执行一个节点：prompt → LLM → 解析（协议）→ apply。抛 ValueError = 解析失败（引擎重试）。"""
     if kind not in _PROMPTS:
-        raise ValueError(f"unknown node kind: {kind}")
+        # 类型包声明式扩展节点（2026-09-19 拍板，档 2 后半）：不在 12 种固定 kind 里时，
+        # 查 genre pack 的 extra_node_kinds 白名单——树随题材长，但不越长名单外。
+        spec = _extra_spec(ctx, kind)
+        if spec is None:
+            raise ValueError(f"unknown node kind: {kind}")
+        return _run_extra_node(ctx, kind, spec)
     node_id = _node_id_of(kind, ctx)
     system, user = _ensure_json_hint(*_PROMPTS[kind](ctx))
     if ctx.extra_instruction:

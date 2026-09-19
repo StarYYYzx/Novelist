@@ -148,6 +148,22 @@ def test_set_all_switches_roundtrip(ws_factory):
     assert all(load_review(ws, pid)["switches"].values())
 
 
+# ---- 写入可见性（2026-09-19）：节点产物增量播报 ----
+
+def test_delta_note_reports_list_and_dict_changes(ws_factory):
+    from novelist.forge.engine import _bp_counts, _delta_note
+
+    ws, pid, _ = _seeded_project(ws_factory, "proj-delta")
+    from novelist.forge.state import Blueprint
+    bp = Blueprint.load(ws, pid)
+    before = _bp_counts(bp)
+    assert _delta_note(before, _bp_counts(bp)) == ""  # 无变化 → 空串
+    bp.upsert("characters", {"id": "char:x", "name": "甲"})
+    bp.set("worldview", {"name": "新世界"})
+    note = _delta_note(before, _bp_counts(bp))
+    assert "+1 人物" in note and "世界观已更新" in note
+
+
 def test_diff_section_reports_changes():
     old = {"style": {"tense": "过去", "narration": "白描"}, "glossary": []}
     new = {"style": {"tense": "现在", "narration": "白描"}, "glossary": [{"term": "x"}]}

@@ -1187,6 +1187,32 @@ def forge_approve(ctx: click.Context, module: str, remember: bool,
     click.echo(f"approve {module} ✓" + ("（后续不再审核该模块）" if remember else ""))
 
 
+@forge.command("doctor")
+@click.argument("directory", required=False, default=None)
+@click.option("--provider", default="fake",
+              help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm/custom")
+@_apply_provider_conn
+@click.pass_context
+def forge_doctor(ctx: click.Context, directory: str | None, provider: str,
+                 api_key: str | None, api_base: str | None, model: str | None) -> None:
+    """蓝图体检（2026-09-19，档 1）：确定性预检 + 只读证据环 LLM 审查。
+
+    手动触发版；build/seed/resume 默认在构建末尾自动跑（--no-doctor 关）。
+    报告落 workspace/forge/doctor.md；只读，不改蓝图/bible。
+    """
+    from novelist.forge import Blueprint
+    from novelist.forge.doctor import run_doctor
+
+    ws: Workspace = ctx.obj["workspace"]
+    ws, project_id = _resolve_forge_target(ws, directory)
+    bp = Blueprint.load(ws, project_id)
+    rep = run_doctor(ws, project_id, bp,
+                     _make_cli_provider(provider, api_key=api_key,
+                                        api_base=api_base, model=model))
+    if rep is None:
+        raise click.ClickException("doctor 体检失败（见上方日志）")
+
+
 @forge.command("approve-all")
 @click.argument("target")
 @click.option("--off", is_flag=True, default=False,
@@ -1308,6 +1334,8 @@ _FAKE_SEED_REPLY = json.dumps({
 @click.option("--max-width-list", type=int, default=12,
               help="列表型长尾（人物/体系/设定条目）宽度上限（ADR-033 A）")
 @click.option("--smoke", is_flag=True, default=False, help="冒烟：只提炼 + 建蓝图，不跑构建")
+@click.option("--doctor/--no-doctor", default=True,
+              help="构建后自动跑只读蓝图体检（doctor.md）；--no-doctor 关闭")
 @click.pass_context
 def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
                provider: str, api_key: str | None, api_base: str | None, model: str | None,
@@ -1315,7 +1343,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
                volumes: int | None, chapters_per_volume: int | None,
                target_words: int | None,
                max_calls: int | None, max_depth: int, max_width: int, max_width_list: int,
-               smoke: bool) -> None:
+               smoke: bool, doctor: bool) -> None:
     """模式一：一句话创意 → 种子提炼 + 授权询问 → 全权构建（F1）。
 
     产出：workspace/forge/blueprint.json + bible/* + outline/volumes.json +
@@ -1340,7 +1368,7 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
                    chapters_per_volume=chapters_per_volume, target_words=target_words,
                    max_calls=max_calls, max_depth=max_depth, max_width=max_width,
                    max_width_list=max_width_list,
-                   smoke=smoke)
+                   smoke=smoke, doctor=doctor)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     click.echo(f"seed done: mode={res.mode_used} calls={res.build.get('calls_used', 0)}")
@@ -1376,10 +1404,13 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
               help="退化为 F1 最小树（跳过旁支递归深化与 arc/beat 层）")
 @click.option("--diff", is_flag=True, default=False,
               help="影响分析：比对最近快照，只重建被改实体引用的章/节点（docs/10 §9.6）")
+@click.option("--doctor/--no-doctor", default=True,
+              help="构建后自动跑只读蓝图体检（doctor.md）；--no-doctor 关闭")
 @click.pass_context
 def forge_build(ctx: click.Context, directory: str | None, force: bool, provider: str,
                 api_key: str | None, api_base: str | None, model: str | None,
-                max_calls: int | None, max_width_list: int, no_deepen: bool, diff: bool) -> None:
+                max_calls: int | None, max_width_list: int, no_deepen: bool, diff: bool,
+                doctor: bool) -> None:
     """重跑构建引擎（蓝图已有时）：provenance 保护 + 幂等落盘。
 
     默认拒绝已有 chapters/ 的项目（先写正文或 ingest 的项目）；--force 放行。
@@ -1407,7 +1438,7 @@ def forge_build(ctx: click.Context, directory: str | None, force: bool, provider
             click.echo("  [info] 结构级变更（worldview/style/volumes/arcs）→ 全量重建")
     res = build(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
                 max_calls=max_calls, resume=False, deepen=not no_deepen,
-                max_width_list=max_width_list)
+                max_width_list=max_width_list, doctor=doctor)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     if res.gate_halted:
@@ -1515,10 +1546,12 @@ def forge_roll_window(ctx: click.Context, vol: int, directory: str | None, from_
               help="fake|scripted|deepseek|openai|qwen|kimi|glm|anthropic|ollama|vllm|custom")
 @_apply_provider_conn
 @click.option("--no-deepen", is_flag=True, default=False, help="续跑构建时跳过旁支深化与 arc/beat 层")
+@click.option("--doctor/--no-doctor", default=True,
+              help="构建后自动跑只读蓝图体检（doctor.md）；--no-doctor 关闭")
 @click.pass_context
 def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, provider: str,
                  api_key: str | None, api_base: str | None, model: str | None,
-                 no_deepen: bool) -> None:
+                 no_deepen: bool, doctor: bool) -> None:
     """断点续跑：商讨中断 → 续问答；构建中断 → 跳过已落盘节点续构建（幂等）。"""
     from novelist.forge import Blueprint, ForgeState, build, run_consult
 
@@ -1546,7 +1579,7 @@ def forge_resume(ctx: click.Context, directory: str | None, max_calls: int, prov
         click.echo(f"商讨完成。下一步：`forge build --dir {project_id}` 开始构建")
         return
     res = build(ws, project_id, provider=_make_cli_provider(provider, api_key=api_key, api_base=api_base, model=model),
-                max_calls=max_calls, resume=True, deepen=not no_deepen)
+                max_calls=max_calls, resume=True, deepen=not no_deepen, doctor=doctor)
     for w in res.warnings:
         click.echo(f"  [warn] {w}", err=True)
     if res.gate_halted:
