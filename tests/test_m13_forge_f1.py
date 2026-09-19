@@ -367,11 +367,10 @@ def test_engine_resume_is_idempotent(ws_factory, capsys):
     r1 = build(ws, pid, provider=ScriptedProvider(_build_script(volumes=2, chapters=2)), gate=False,
                max_calls=60, deepen=False)
     assert r1.ok and r1.chapters_written == 2
-    n1 = r1.calls_used
 
     # resume：全部节点已落盘 → 不再调用 LLM，calls_used 不增长
     r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True, deepen=False, gate=False)
-    assert r2.calls_used == n1  # 续跑零新调用
+    assert r2.calls_used == 0  # 续跑零新调用（2026-09-19 起 calls_used 为本轮计数）
     assert r2.chapters_written == 0
     # 落盘内容未被破坏
     assert parse_gist(ws, pid, 1, 2)["key_events"] == ["事件2-1", "事件2-2"]

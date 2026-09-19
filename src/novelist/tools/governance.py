@@ -44,7 +44,14 @@ def _strip_project_prefix(raw: str, project_id: str) -> str:
     while rel.startswith("./"):
         rel = rel[2:]
     prefix = f"{project_id}/"
-    return rel[len(prefix):] if rel.startswith(prefix) else rel
+    if rel.startswith(prefix):
+        rel = rel[len(prefix):]
+    # 2026-09-19 审计修复：归一化 `..`——`drafts/../../<别项目>/x` 此前能通过
+    # `startswith("drafts/")` 白名单检查（与 filesys._rel_in_project 同口径硬拒）
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise WorkspaceError(f"refuse path with '..': {raw!r}")
+    return "/".join(parts)
 
 
 def _merge_project_json(ws: Workspace, project_id: str, patch: dict) -> tuple[dict | None, str | None]:
@@ -98,7 +105,11 @@ def tools(ws: Workspace) -> list[Tool]:
             return fail(DENIED, {"error": "refuse to delete workspace/project root", "path": raw},
                         status="denied")
         # ② 白名单前缀：只允许删草稿区 / 围读产物
-        rel_in_proj = _strip_project_prefix(raw, root_name)
+        try:
+            rel_in_proj = _strip_project_prefix(raw, root_name)
+        except WorkspaceError:
+            return fail(DENIED, {"error": "refuse path with '..'", "path": raw},
+                        status="denied")
         if not rel_in_proj or not any(rel_in_proj.startswith(p)
                                       for p in _DELETE_ALLOWED_PREFIXES):
             return fail(DENIED, {

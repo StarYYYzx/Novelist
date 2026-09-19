@@ -199,12 +199,21 @@ class AgentRunner:
         只接受 `user`/`assistant`/`system` 三种 role——tool 消息脱离配对的
         assistant.tool_calls 在 OpenAI 协议里非法，跨会话回放只保留文本轮
         （工具的探索过程是当轮的临时物，不属于长期记忆）。
+
+        2026-09-19 审计修复：回放**不清空既有 system 消息**——ChatAgent 先
+        `system(SYSTEM_PROMPT)` 再回放历史，此前的整体重赋值会把主编剧 prompt
+        抹掉（模型在无角色/无边界的裸状态下运行）。
         """
-        self._messages = [
+        incoming = [
             LLMMessage(role=str(m["role"]), content=str(m.get("content") or ""))
             for m in messages
             if isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+            and str(m.get("content") or "").strip()  # 空 content 的 assistant 轮无信息量且部分后端拒收
         ]
+        existing_sys = [m for m in self._messages if m.role == "system"]
+        incoming_sys = [m for m in incoming if m.role == "system"]
+        rest = [m for m in incoming if m.role != "system"]
+        self._messages = (incoming_sys or existing_sys) + rest
 
     def export_messages(self) -> list[dict]:
         """导出当前消息流（浅拷贝 dict，调用方改不坏内部状态）。"""
@@ -273,19 +282,26 @@ class AgentRunner:
         复用已积累的消息流，明确要求"不得再调用工具，直接给出当前已完成内容与未完成项"。
         由调用方（orchestrator）在"未落盘且需要抢救内容"时使用；本方法不做落盘判断。
         """
-        self._messages.append(LLMMessage(
+        # 2026-09-19 审计修复：收敛指令不进长期消息流（此前永久残留，后续轮次的
+        # 模型仍看到「不要再调用任何工具」而抑制正常工具调用）；发送用快照，
+        # 收敛回答以普通 assistant 轮 append 回（保持 user/assistant 配对完整）。
+        note_msg = LLMMessage(
             role="user",
             content=("已达到本轮的工具调用/步数上限。**不要再调用任何工具**。"
                      "请直接输出：① 当前已完成的正文（若有，全文原样输出）"
                      "② 未完成项清单。不要解释过程。" + (f"\n补充要求：{note}" if note else "")),
-        ))
+        )
         result = self.provider.complete(
-            LLMRequest(messages=self._messages, max_tokens_out=self.budget.max_tokens_out,
+            LLMRequest(messages=[*self._messages, note_msg],
+                       max_tokens_out=self.budget.max_tokens_out,
                        response_format="text", tools=None, thinking=self.thinking)
         )
         self._account(result)
-        self._evidence.append({"kind": "converge", "detail": (result.content or "")[:200]})
-        return result.content or ""
+        answer = result.content or ""
+        self._evidence.append({"kind": "converge", "detail": answer[:200]})
+        if answer.strip():
+            self._messages.append(LLMMessage(role="assistant", content=answer))
+        return answer
 
     def run_evidence(
         self,
@@ -305,6 +321,7 @@ class AgentRunner:
         直到无工具调用（final）或达轮次上限；上限抛 `AgentLoopError`（由调用方决定
         是走 `converge()` 强制收敛，还是按失败收尾——AG-13 拍板 A 的划分点）。
         """
+        self._obs_chars = 0  # 观测预算是单轮语义（同 run_chat），runner 复用防跨轮泄漏
         if system_prompt is not None:
             self.system(system_prompt)
         self._rf = response_format

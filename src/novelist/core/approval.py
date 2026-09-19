@@ -87,8 +87,13 @@ class ApprovalQueue:
                 {"id": k, "decision": v, "ts": time.time()} for k, v in self._decided.items()
             ],
         }
-        with open(path, "w", encoding="utf-8") as f:
+        # 2026-09-19 审计修复：原子写（tmp+replace），中断不留半写文件
+        import os
+
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
 
     @classmethod
     def load_persisted(cls, persist_dir: str) -> "ApprovalQueue":
@@ -100,8 +105,11 @@ class ApprovalQueue:
         path = os.path.join(persist_dir, "pending_approvals.json")
         if not os.path.exists(path):
             return q
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return q  # 半写/损坏文件不崩调用方，按空队列起步（2026-09-19）
         for p in data.get("pending", []):
             req = ApprovalRequest(
                 id=p["id"], tool=p["tool"], params=p.get("params", {}),

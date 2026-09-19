@@ -163,11 +163,21 @@ def load_session(ws: Workspace, project_id: str,
     total = 0
     for t in reversed(turns):
         n = len(t["content"])
+        # 2026-09-19 审计修复：单轮超预算时截断该轮内容而非整条照收
+        # （此前 converge 吐出的整章会撑爆回放窗口，REPLAY_BUDGET 形同虚设）
+        if n > budget_chars:
+            t = {**t, "content": t["content"][-budget_chars:]
+                 + "\n…[回放截断：该轮原文超长，仅保留尾部]"}
+            n = budget_chars
         if total + n > budget_chars and out:
             break
         out.append(t)
         total += n
     out.reverse()
+    # 2026-09-19 审计修复：窗口首条必须对齐到 user——从 assistant 开场
+    # （配对的 user 被预算切掉）会让模型看到无主语的回答，部分后端直接拒收
+    while out and out[0]["role"] != "user":
+        out.pop(0)
     return out
 
 

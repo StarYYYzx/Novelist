@@ -1791,6 +1791,13 @@ def _produce_chapter_impl(
         blocks = soft_block_check(ws, project_id, gist_text_for_events)
         if blocks:
             _timeline_tick(ws, project_id, vol=vol, ch=ch)
+            if _reset_snap is not None:
+                # 拦截 = 本章不生成：必须把前置清理回滚，否则旧回写已删、新内容没写
+                try:
+                    _reset_snap.restore()
+                except Exception as restore_err:  # noqa: BLE001 - 还原失败留痕不阻断拦截
+                    soft_failures.append(
+                        f"soft-block 拦截后快照还原失败（工作区可能残留中间态）：{restore_err}")
             _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                     phase=getattr(phase, "value", phase), note="soft-block 拦截")
             return ProductionResult(
@@ -2383,8 +2390,10 @@ def _produce_chapter_impl(
         if _reset_snap is not None:
             try:
                 _reset_snap.restore()  # 生成失败 → 还原前置清理，不留中间态
-            except Exception as e:  # noqa: BLE001 - 还原失败要留痕：工作区可能残留中间态
-                soft_failures.append(f"生成失败后快照还原失败（工作区可能残留中间态，NFR-3）：{e}")
+            except Exception as restore_err:  # noqa: BLE001 - 还原失败要留痕（不得遮蔽外层 e：
+                # Python3 在 except 块尾 del e，同名内层会把外层 e 一并删掉 → 下方引用崩）
+                soft_failures.append(
+                    f"生成失败后快照还原失败（工作区可能残留中间态，NFR-3）：{restore_err}")
         _write_generation_audit(ws, project_id, vol, ch, provider, ok=False, mode=mode,
                                 phase=getattr(phase, "value", phase),
                                 note=f"生成异常：{str(e)[:60]}")

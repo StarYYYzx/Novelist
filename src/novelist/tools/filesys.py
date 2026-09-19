@@ -47,12 +47,22 @@ def _resolve(ws: Workspace, rel: str, project_id: str | None = None) -> Path:
 
 
 def _rel_in_project(raw: str, project_id: str) -> str:
-    """把模型给的路径归一成"相对项目根"的形式（兼容带项目名前缀的写法）。"""
+    """把模型给的路径归一成"相对项目根"的形式（兼容带项目名前缀的写法）。
+
+    2026-09-19 审计修复：归一化 `..`——此前 `drafts/../chapters/1-1.md` 能通过
+    `startswith("drafts/")` 的白名单/定级检查（定级 safe 自动放行、delete 白名单放行），
+    实际落点却逃出白名单目录。含 `..` 段的路径一律硬拒（抛 WorkspaceError）。
+    """
     rel = Path(str(raw or "")).as_posix()
     while rel.startswith("./"):
         rel = rel[2:]
     prefix = f"{project_id}/"
-    return rel[len(prefix):] if rel.startswith(prefix) else rel
+    if rel.startswith(prefix):
+        rel = rel[len(prefix):]
+    parts = [p for p in rel.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        raise WorkspaceError(f"refuse path with '..': {raw!r}")
+    return "/".join(parts)
 
 
 def tools(ws: Workspace) -> list[Tool]:

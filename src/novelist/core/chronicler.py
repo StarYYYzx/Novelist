@@ -27,6 +27,7 @@ from typing import Callable
 
 from .llm import LLMMessage, LLMRequest
 from .memory import MemoryConflictError, MemoryWriter, tokenize
+from ..storage.workspace import WorkspaceError
 
 EVENT_KINDS = ("conflict", "discovery", "reveal", "turning_point", "dialogue", "departure")
 
@@ -336,12 +337,18 @@ class Chronicler:
           并记 `returned` 落点——"收尾期回收清单"的自动兑现判定。
         - 返回本次状态流转的伏笔数。
         """
-        p = self.ws._abs(f"{self.project_id}/bible/plot_threads.json")
-        if not p.exists() or not events:
+        # 2026-09-19 审计修复：读写统一走 Workspace 通道（write_json 原子写，
+        # 此前 write_text 直写，中断即半截文件——伏笔账本损坏会让后续章节注入崩）
+        if not events:
+            return 0
+        p = self.ws.bible_path(self.project_id, "plot_threads")
+        if not p.exists():
             return 0
         try:
-            threads = json.loads(p.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            threads = self.ws.read_json(self.project_id, p)
+        except (ValueError, OSError, WorkspaceError):
+            return 0
+        if not isinstance(threads, list):
             return 0
         if not isinstance(threads, list):
             return 0
@@ -374,8 +381,7 @@ class Chronicler:
                         paid_off += 1
         if activated or paid_off:
             try:
-                p.write_text(json.dumps(threads, ensure_ascii=False, indent=2),
-                             encoding="utf-8")
+                self.ws.write_json(p, threads)  # 原子写（tmp + replace，ADR-016）
             except OSError:  # pragma: no cover
                 pass
         return activated + paid_off

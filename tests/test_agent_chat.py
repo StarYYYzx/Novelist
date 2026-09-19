@@ -118,10 +118,21 @@ def test_chat_agent_history_replay_on_reopen(ws_factory):
     a1.ask("记住：主角叫林原")
     a2 = ChatAgent(ws, pid, FakeProvider(reply="第二轮"))
     msgs = a2.runner.export_messages()
-    # 首条是新快照；历史里含上一轮的 user/assistant
-    assert "【当前项目】" in msgs[0]["content"]
+    # msgs[0] 是主编剧 SYSTEM_PROMPT（2026-09-19 修复：回放不再抹掉 system）；
+    # msgs[1] 是新快照；历史里含上一轮的 user/assistant
+    assert msgs[0]["role"] == "system" and "主编剧" in msgs[0]["content"]
+    assert "【当前项目】" in msgs[1]["content"]
     assert any(m["content"] == "记住：主角叫林原" for m in msgs)
     assert any(m["content"] == "第一轮回答" for m in msgs)
+
+
+def test_system_prompt_survives_history_replay(ws_factory):
+    """回归钉死：load_messages 不得抹掉先注入的 system prompt（审计 P0）。"""
+    ws, pid = _proj(ws_factory)
+    agent = ChatAgent(ws, pid, FakeProvider(reply="ok"))
+    agent.ask("你好")
+    roles = [m["role"] for m in agent.runner.export_messages()]
+    assert roles[0] == "system" and roles.count("system") == 1
 
 
 def test_chat_agent_cost_cap_enforced(ws_factory):

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from ..core.tools import LEVEL_SAFE, Tool, ok
+from ..core.tools import LEVEL_SAFE, SCHEMA_FAIL, Tool, fail, ok
 from ..storage.workspace import Workspace
 
 # bible 可读的段（白名单——防止拿它当任意文件读，read_file 才是那个通道）
@@ -90,8 +90,9 @@ def tools(ws: Workspace) -> list[Tool]:
                             "content": body[:8000], "chars": len(body),
                             "truncated": len(body) > 8000})
         if section not in _BIBLE_SECTIONS:
-            return ok(data={"error": f"unknown section {section!r}",
-                            "available": list(_BIBLE_SECTIONS) + ["blueprint", "blueprint:<子段>"]})
+            return fail(SCHEMA_FAIL,
+                        {"error": f"unknown section {section!r}",
+                         "available": list(_BIBLE_SECTIONS) + ["blueprint", "blueprint:<子段>"]})
         data = _read_json(session.project_id, f"bible/{section}.json")
         if data is None:
             return ok(data={"section": section, "found": False})
@@ -125,9 +126,9 @@ def tools(ws: Workspace) -> list[Tool]:
         try:
             vol_i, ch_i = int(vol), int(ch) if ch is not None else None
         except (TypeError, ValueError):
-            return ok(data={"error": "vol/ch 必须是整数"})
+            return fail(SCHEMA_FAIL, {"error": "vol/ch 必须是整数"})
         if ch_i is None:
-            return ok(data={"error": "读卷总纲用 vol；读章细纲要 vol+ch 一起给"})
+            return fail(SCHEMA_FAIL, {"error": "读卷总纲用 vol；读章细纲要 vol+ch 一起给"})
         p = ws._abs(f"{pid}/outline/chapters/{vol_i}-{ch_i}.md")  # noqa: SLF001
         if not p.exists():
             return ok(data={"found": False, "vol": vol_i, "ch": ch_i})

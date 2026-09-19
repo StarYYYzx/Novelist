@@ -54,7 +54,12 @@ def load_review(ws: Any, project_id: str) -> dict:
         return _default_config()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        # 2026-09-19 审计修复：损坏静默回默认 = pending 丢失（闸门洞开）且无告警
+        from ..core.output import emit
+
+        emit(f"[gate][警告] review.json 读取失败（{type(e).__name__}），本轮按默认配置"
+             f"（全部开关开、无待审）运行——请检查 {REVIEW_REL}")
         return _default_config()
     cfg = _default_config()
     cfg["switches"].update(data.get("switches") or {})

@@ -686,7 +686,7 @@ novelist forge rollback <dir> [--to <name>]   # 回退到快照（缺省最近 =
 novelist forge snapshots <dir>        # 列出快照目录
 ```
 
-**子命令全景（19 个，2026-09-19 校准；`novelist forge --help` 为准）**：
+**子命令全景（21 个，2026-09-19 校准；`novelist forge --help` 为准）**：
 
 | 子命令 | 作用 | 备注 |
 | --- | --- | --- |
@@ -696,13 +696,14 @@ novelist forge snapshots <dir>        # 列出快照目录
 | `show` / `validate` | 蓝图进度 / V1–V6 契约校验 | §9 |
 | `rollback` / `snapshots` | 快照回退 / 快照列表 | §7.6 |
 | `review` / `approve` / `revise` | 模块审核闸门（ADR-024）：待审 / 放行 / 打回 | 见 `review.json` |
+| `approve-all` | **放行机制**（2026-09-19）：`approve-all <模块\|all>` 批准+永久关开关，`--off` 恢复 | 放权/收权写 history |
 | `covenant` / `switches` | 承诺账本 / 明暗线开关 | ADR-026 |
 | `craft` / `lines-replay` | 手改产物 / 线索账本回放转正 | 人工修订后必修（docs/08） |
 | `shell` / `conflicts` | 常驻设定会话壳（§5.5） / **结构冲突人工裁决**（2026-09-16 拍板） | `conflicts` 见 §12 末行 |
 | `doctor` | **蓝图体检**（2026-09-19 拍板，档 1 agent 化）：确定性预检 + 只读证据环 LLM 审查，报告落 `workspace/forge/doctor.md`；build/seed/resume 默认构建末尾自动跑（`--no-doctor` 关） | 只读，不改蓝图/bible |
 
 > `conflicts` 与 `shell` 是 2026-09-16/09-10 才新增的，早期文档只数到 17 个子命令；
-> `doctor` 是第 20 个（2026-09-19）。
+> `doctor`（体检）与 `approve-all`（放行机制）是第 20/21 个（2026-09-19）。
 
 ### 7.9 类型包声明式扩展节点（2026-09-19 拍板，档 2 后半）
 

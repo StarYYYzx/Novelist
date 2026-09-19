@@ -185,11 +185,13 @@ def test_build_halts_at_book_gate_and_renders_reviews(ws_factory):
     assert "叶蓝" in chars_md and "审核评审稿" in chars_md
     # 未越卷：book 之后直接暂停
     assert res.volumes_written == 0 and res.chapters_written == 0
-    # 已消耗 book 一次调用；再 build（仍有 pending）→ 零新调用直接交还
-    used = res.calls_used
+    # 已消耗 book 一次调用；再 build（仍有 pending）→ 零新调用直接交还。
+    # 2026-09-19 口径修正：calls_used 是**本轮**计数（此前跨轮累计会让 resume
+    # 起步即撞预算顶 = 续跑死锁）；闸门拦截本轮零消耗，与 324 行设计注释一致。
+    assert res.calls_used == 1
     res2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60,
                  resume=True, deepen=False)
-    assert res2.gate_halted and res2.calls_used == used
+    assert res2.gate_halted and res2.calls_used == 0
 
 
 def test_approve_then_resume_completes(ws_factory):

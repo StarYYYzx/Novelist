@@ -391,8 +391,9 @@ A1 不满足。本里程碑把"人手写 bible + 细纲"这一步自动化，是
 | F5 | `validate.py` V1–V6（含 FakeProvider 可写冒烟）+ report 双写 + rollback/--diff + pipeline 推进到「细纲」 | ✅ 完成（2026-09-01，见下） |
 
 验收：AG1 一句话 → 项目可直接 `chapter 1 1` 且 `bible_injected=True`；AG2 3 章样章 → 第 4 章起可接写
-且记忆非空；AG3 商讨 12 问内收敛；AG4 构建调用数不超分阶段配额（build 卷 1 = 60 / roll 每卷 = 40 /
-ingest = 30）。设计三轮敲定（2026-09-01），29 项分支决策见 `docs/10` §15。
+且记忆非空；AG3 商讨 12 问内收敛；AG4 构建调用数不超预算（2026-09-19 起按 N/K/M 推导：
+`12+N×3+K×2+min(M,24)` 下限 12；命令硬默认 resume 60 / roll 40 / roll-window width×2+2 /
+ingest 30，详见 docs/10 §7.3）。设计三轮敲定（2026-09-01），29 项分支决策见 `docs/10` §15。
 **执行顺序**：本里程碑在 **M3m（时间线 T1–T3）之后**启动——F3 的 ingest 依赖 chronicler
 时间行（T1 产物），先接泵再摄入。
 
@@ -1098,6 +1099,19 @@ min_event_words = 120
 不引入 plan mode。**工具面（拍板 C）**：流水线命令（chapter/build/roll）暂不包成 Tool；
 **刻意不做** CLI 直通工具。**产出形态（拍板 D）**：docs 定稿 → 编码。
 
+### M3ad — 2026-09-19 交互整改与综合审计修复（✅ 全部落地）
+
+| 批次 | 内容 | 提交 |
+| --- | --- | --- |
+| UX-1/2/3 | 审批放行（approve-all/approve all/--remember 全链贯通）、构建心跳（output.heartbeat）、多选输入宽容（Slot.multi + split_multi_enum） | `1bfdac6` |
+| Forge 档 1/2 | doctor 蓝图体检（确定性预检+只读证据环）、写入可见性（节点完成播报产物增量）、类型包声明式扩展节点 | `2a4c923` |
+| M3ac | 常驻对话 Agent（console 自然语通道 + ChatAgent + 5 查询工具 + update_blueprint + session.jsonl 持久化） | `ba2377b` |
+| 真机复盘修复 | obs 预算跨轮泄漏、对话可见性（trace_tools/心跳/锚点）、chat tokens 4000→8000 | `385764e` |
+| 综合审计修复 | 路径穿越归一（filesys/governance 同口径硬拒 `..`）、load_messages 保留 system、converge 不污染消息流、roll 闸门 finally 落盘、resume 预算本轮计数、decision_fn 回写队列、report 项目前缀、chronicler/review/approval 原子写与告警 | 见 git log |
+
+待办（决策清单见 `docs/综合工程审计与决策清单-2026-09-19.md`）：schema 死字段清理、
+bible_feedback 漂移、BIBLE_CONTRACT 缺口、publish/promote 合并、obs 耗尽拦截、实然错位迁移。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。
@@ -1118,8 +1132,10 @@ min_event_words = 120
 其中实测适配器 openai/deepseek 均为 OpenAI 兼容，无 Anthropic / Gemini / 智谱 / Kimi 等原生厂商
 独立适配文件（真实厂商经 `PRESETS`
 factory 复用基类，见 X2）；`ProviderConfig`（config.py:15-22）无 api-key 字段，密钥散落在环境变量、
-无统一管理；且 docs/11 P0-2 记载 `REGISTRY`（providers/__init__.py:16-57）是死代码——`cli.py:354
-_make_cli_provider` 用 if/elif 自行装配，未走注册表。多厂商接入必须先清偿 P0-2（Provider 双轨制）。
+无统一管理。
+
+> 注（2026-09-19 口径修正）：上文 `REGISTRY` 死代码与 if/elif 装配是 2026-09-12 的历史实况——
+> Provider 双轨制已清偿（X1：`providers.create()` 单轨工厂），多厂商接入的前置已消失。
 
 **排序**：排在当前未做完工作（M3l F3–F5、M3m T4、M4、docs/11 §13 P0/P1 整改清单）之后，不插队。
 

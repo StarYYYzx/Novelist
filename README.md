@@ -46,7 +46,7 @@
 pip install -e ".[dev,providers]"
 
 # 跑测试（本仓库默认不带真实 LLM，快而稳）
-python -m pytest tests/ -q          # 1132 passed · 1 skipped（1134 收集，slow 默认跳过）
+python -m pytest tests/ -q          # 1198 passed · 1 skipped（1200 收集，slow 默认跳过）
 
 # 查看 CLI 帮助
 python -m novelist.cli --help       # 需 src 在 sys.path；或 pip install 后直接用 novelist
@@ -85,7 +85,7 @@ src/novelist/
   tools/         工具注册表（filesys / writing / memory / governance）
   consistency/   确定性规则引擎与审校
   cli.py / server.py / config.py
-tests/           1134 收集（1132 passed · 1 skipped · 1 deselected）；单测绝不真调 LLM（docs/09）
+tests/           1200 收集（1198 passed · 1 skipped · 1 deselected）；单测绝不真调 LLM（docs/09）
 ```
 
 ## 文档导航

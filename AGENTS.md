@@ -80,7 +80,7 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   的超时分支因此直接在锁内标记 deny，而不重入 `decide()`）。
 - 关键决策：ADR-002 正文严格串行逐章 | ADR-011 bible=应然 / memory=实然 | ADR-013 事件落定即实时回写 |
   ADR-016 文件=持久事实源（SQLite/RAG 仅可再生缓存）| ADR-017/018 Forge 递归硬边界 | ADR-019 worldstate |
-  ADR-021 事件级选角 | ADR-034 跨工具 AI 规范与技能分发 | **ADR-036 常驻对话 Agent（设计中，docs/08 M3ac）**。
+  ADR-021 事件级选角 | ADR-034 跨工具 AI 规范与技能分发 | **ADR-036 常驻对话 Agent（M3ac 已落地，docs/08 M3ac）**。
 - **3-E 拍板（2026-09-15）**：S-1 润色层术语硬约束**不做**（语言风格主观，非当前主要矛盾——
   上下文一致性才是）；S-2/S-3 世界观基座已统一注入（director 层 + forge 卷纲/细纲/人物卡节点，
   共享 `context.worldview_base_lines`，同一数据源同一措辞）；U7 已落地——`chapter` 的预算/
@@ -120,6 +120,8 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   **`prompt组装与多Agent结构审计-2026-09-19.md`**（34 个 LLM 交互点全枚举：09-12 批次 2 修复项
   复验全成立；新缺口 10 项 P1 / 11 项 P2，含 beats 人物层丢失、审校无实然状态、构建链
   承上启下断档；另审 ADR-036 的 AgentRunner 会话化缺口 S-1…S-6 与工具面 T-1…T-3）、
+  **`综合工程审计与决策清单-2026-09-19.md`**（七维度全工程审计：编排/工具/Agent/schema/
+  存档结构/文档对齐；17 项 P0-P1 已修复落地，14 项待拍板决策 D-1…D-14 各带推荐方案）、
   **`构建期交互体验整改方案-2026-09-19.md`**（真机会话复盘：审批疲劳（7 分钟 12 次）、
   构建期零反馈、工艺卡多选被拒、金手指被 seed 写进世界观且 revise 指令被 `/` 前缀陷阱吃掉；
   整改分 UX-1 审批减负 / UX-2 心跳 / UX-3 输入宽容 / FIX-1 金手指信息架构 / FIX-2 命令发现性）。

@@ -121,10 +121,9 @@ def test_deepen_resume_skips_done_nodes(ws_factory, capsys):
     _init_bp(ws, pid)
     r1 = build(ws, pid, provider=ScriptedProvider(_deepen_script()), max_calls=60, gate=False)
     assert r1.ok
-    n1 = r1.calls_used
     # resume：nodes/ + 产物齐备 → 零新调用
     r2 = build(ws, pid, provider=ScriptedProvider([]), max_calls=60, resume=True)
-    assert r2.calls_used == n1
+    assert r2.calls_used == 0  # 续跑零新调用（本轮计数口径）
     capsys.readouterr()
 
 

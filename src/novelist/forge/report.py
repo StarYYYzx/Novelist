@@ -200,7 +200,8 @@ def write_reports(ws: Workspace, project_id: str, *, smoke: bool = False) -> tup
     # 摘要：取 # 标题到「3. 调用与耗时」之前（含校验小节）即可
     marker = "## 3. 调用与耗时"
     head = full.split(marker, 1)[0].rstrip() if marker in full else full
-    stats_path = ws._abs(f"reports/stats/forge-{time.strftime('%Y%m%d-%H%M%S')}.md")  # noqa: SLF001
+    stats_path = ws._abs(  # noqa: SLF001 - 2026-09-19 修复：补项目前缀（此前写沙箱根，跨项目串扰）
+        f"{project_id}/reports/stats/forge-{time.strftime('%Y%m%d-%H%M%S')}.md")
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     stats_path.write_text(head + "\n", encoding="utf-8")
     return full_path, stats_path

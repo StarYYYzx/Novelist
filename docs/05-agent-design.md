@@ -162,6 +162,14 @@ SubagentResult {
 | 治理 | `delete_file`, `batch_rewrite`, `checkpoint`, `publish` | **danger** | 默认 ask 门禁 |
 | 观测 | `get_status`, `read_audit`, `get_budget` | safe | 查询 |
 
+> **2026-09-19 对齐注**：本表是**设计意图**，其中 `list_dir` / `batch_rewrite` /
+> `update_entity` / `add_plot_thread` / `set_timeline` / `write_outline` / `patch_outline` /
+> `get_status` / `read_audit` / `get_budget` / `append_*` 三件套 / 围读会三件套
+> **从未注册实现**（实际注册 18 个：filesys 3 + writing 2 + memory_tools 4 + governance 4 +
+> query 5，见 `tools/__init__.py`；权威清单以 docs/07 §3 与代码为准）。
+> 2026-09-19 新增：`list_chapters` / `get_bible` / `get_outline` / `list_conflicts` /
+> `get_worldstate`（全 safe 只读）与 `update_blueprint`（sensitive，合并写蓝图+bible 联动）。
+
 ### 4.2 工具定义 schema（示例，完整接口见 07）
 ```
 def write_draft(params: {
@@ -289,7 +297,8 @@ Agent 请求工具 → 注册表解析级别
 
 ### 8.4 明示未落地项（勿按本文档 §3/§5 误以为已实现）
 - 角色演员 `character_take` 生产路径：仅 `readback_excerpt`（回读素材）有实现，takes 落地/整合未接。
-- 围读会工具（`scene_tools.py`）仅 tool-mode 挂载，无生产触发路径。
+- 围读会工具（`scene_tools.py`）**从未注册**进任何 registry（`tools/__init__.py` 的 all_tools 不含它），
+  无生产触发路径——纯预留件（docs/08 §2 对照表口径）。
 - 伏笔监理独立伏笔表管理（当前只有 chronicler 事件→伏笔链）。
 - **§2.5 常驻对话形态（ADR-036 / M3ac）**：✅ 已实现（2026-09-19）——console 非 `/`
   输入进 `ChatAgent`；M3ac-5 真机验收（FC 在真实 provider 上的 tools 往返）并入批次 D，

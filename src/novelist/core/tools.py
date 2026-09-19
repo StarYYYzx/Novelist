@@ -228,6 +228,13 @@ class ToolRegistry:
             ) if self._approvals is not None else None
             if self._decision_fn is not None:
                 verdict = self._decision_fn(req)  # 回调自行处理 req（可为 None）
+                # 2026-09-19 审计修复（P0）：回调通道此前从不回写队列——已裁决的请求
+                # 在持久化 pending 里幽灵累积，`grant` 会重复列出并允许重复批准。
+                if req is not None and verdict in ("allow", "deny"):
+                    try:
+                        self._approvals.decide(req.id, verdict)
+                    except Exception:  # noqa: BLE001 - 回写失败不影响本次裁决生效
+                        pass
             elif req is not None:
                 verdict = self._approvals.wait_for_decision(req.id, timeout=approval_timeout)
             else:

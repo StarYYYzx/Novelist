@@ -319,7 +319,9 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
     pack = pack or _pack_for_bp(bp)
     state = ForgeState.load(ws, project_id)
     state.stage = "build"
-    calls_used = int(state.calls_used or 0)
+    # 2026-09-19 审计修复（P1）：预算是**本轮**语义——此前跨轮累计读入，
+    # 首轮耗尽后 resume 起步即 exhausted（续跑死锁）；累计总量在收尾统一入账
+    calls_used = 0
 
     # ---- 审核闸门（ADR-024）：有待审模块 → 不消耗任何调用，直接交还用户 ----
     pending_now = sorted(pending_modules(ws, project_id)) if gate else []
@@ -670,7 +672,7 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
             ws.write_json(_ws_path, wstate)
         bp.save(ws, project_id)
         sync_bible(ws, project_id, bp)
-        state.calls_used = calls_used
+        state.calls_used = int(state.calls_used or 0) + calls_used  # 累计入账（与 roll 同口径）
         state.stage = ("review" if gate_halted
                        else "built" if not interrupted else "build")
         state.save(ws, project_id)
@@ -701,10 +703,12 @@ def _build_impl(ws: Workspace, project_id: str, *, provider,
                 run_doctor(ws, project_id, bp, provider, log=log)
             except Exception as e:  # noqa: BLE001 - 体检绝不阻断构建收尾
                 warnings.append(f"doctor 体检失败：{_one_line(e)}")
-        # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态
+        # 结果快照（F5e diff 基线 / 默认 rollback 点）：build 完成后的产物状态。
+        # 2026-09-19 审计修复：中断/闸门暂停不拍 build-ok（否则 rollback 默认回到失败态）
         from .snapshot import take_snapshot
 
-        take_snapshot(ws, project_id, label="build-ok")
+        _clean = not interrupted and not gate_halted and not budget_exhausted
+        take_snapshot(ws, project_id, label="build-ok" if _clean else "build-partial")
 
     _log_round_summary(log, kind="构建", calls_used=calls_used, max_calls=max_calls,
                        nodes_done=nodes_done, nodes_failed=nodes_failed,
@@ -1131,6 +1135,12 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
         interrupted = True
         warnings.append("SIGINT：当前节点后落盘退出")
     finally:
+        # 2026-09-19 审计修复（P0）：roll 的 finally 此前没有 bp.save/sync_bible——
+        # chapter 闸门 raise _GateHalt 时被闸章节的 bp.chapters 行丢失，但 gist md
+        # 已落盘；resume 以 gist 存在为判据 → 永不重生成，蓝图与细纲持久分裂。
+        # 对齐 build finally（671-672）的收尾口径。
+        bp.save(ws, project_id)
+        sync_bible(ws, project_id, bp)
         # ---- 幂等追加新卷 after_days → worldstate.pending（不覆盖 time/characters）----
         _append_roll_pending(ws, project_id, bp, vol)
         # G1：调用数入 ForgeState 账（原先局部计数丢弃，跨阶段总量失真）
@@ -1141,10 +1151,13 @@ def roll(ws: Workspace, project_id: str, *, provider, vol: int,
                           budget_exhausted=budget_exhausted, interrupted=interrupted,
                           gate_halted=gate_halted,
                           warnings=warnings[:10])
-        # 结果快照（F5e diff 基线 / 默认 rollback 点）
+        # 结果快照（F5e diff 基线 / 默认 rollback 点）。
+        # 2026-09-19：中断/闸门暂停不拍 ok 标签（同 build 口径）
         from .snapshot import take_snapshot
 
-        take_snapshot(ws, project_id, label=f"roll-ok-v{vol}")
+        _clean = not interrupted and not gate_halted and not budget_exhausted
+        take_snapshot(ws, project_id,
+                      label=f"roll-ok-v{vol}" if _clean else f"roll-partial-v{vol}")
 
     _log_round_summary(log, kind=f"滚动第 {vol} 卷", calls_used=calls_used,
                        max_calls=max_calls, nodes_done=nodes_ok, nodes_failed=nodes_failed,
@@ -1259,10 +1272,10 @@ def _rerun_chapter(ws, project_id, bp, provider, *, vol: int, ch: int,
                       pack=_pack_for_bp(bp), vol=vol, ch=ch, prev_gist=prev,
                       arcs=arcs or None, extra_instruction=extra_instruction)
     try:
-        return run_node(ctx, "chapter")
+        return run_node(ctx, "chapter"), 1
     except ValueError as e:
         ctx.extra_instruction = f"{ctx.extra_instruction}\n（上次输出解析失败：{e}，请修正格式）"
-        return run_node(ctx, "chapter")
+        return run_node(ctx, "chapter"), 2  # retry 真实多耗一次调用（2026-09-19 记账修复）
 
 
 def _volume_chapter_range(bp: Blueprint, vol: int) -> int:
@@ -1357,12 +1370,12 @@ def _roll_window_impl(ws: Workspace, project_id: str, *, provider, vol: int,
         log(f"[{started}/{budget} 调用] chapter {vol}-{ch} 窗口重生成 … 生成中")  # UX-2
         try:
             with heartbeat(f"chapter {vol}-{ch} 窗口重生成"):
-                res = _rerun_chapter(ws, project_id, bp, provider,
-                                     vol=vol, ch=ch,
-                                     extra_instruction=_window_instruction(vol, ch, old))
-            calls_used = started
+                res, _n_calls = _rerun_chapter(
+                    ws, project_id, bp, provider, vol=vol, ch=ch,
+                    extra_instruction=_window_instruction(vol, ch, old))
+            calls_used = started - 1 + _n_calls  # 按真实调用数记账（retry 耗 2 次时不再漏计）
         except (ValueError, ModerationBlockedError) as e:  # noqa: BLE001
-            calls_used = started
+            calls_used = started + 1  # retry=1 后仍失败 = 实耗 2 次
             warnings.append(f"chapter {vol}-{ch}: 滚动重生成失败（保留旧细纲）: {e}")
             continue
         except Exception as e:  # noqa: BLE001 - 节点异常不拖垮整个窗口

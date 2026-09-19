@@ -183,6 +183,18 @@ level==danger && profile != allow → wait(HumanDecision); deny if != allow
 `write_draft`、`publish`）的 `path` 一律相对**当前项目根**解析，兼容带项目名前缀的写法；
 跨项目读写硬拒。此前 `write_file` 以沙箱根为基准且定级 `safe`，可跨项目写、也能绕过
 `publish` 的 danger 审批直接把内容塞进 `chapters/`。
+**路径归一化（2026-09-19 加固）**：`_rel_in_project`/`_strip_project_prefix` 归一 `..` 段，
+含 `..` 一律硬拒——否则 `drafts/../chapters/x.md` 可穿过 `startswith("drafts/")` 的
+定级/白名单检查。
+
+**注册工具清单（2026-09-19 实测 18 个，`tools/__init__.py` 装配）**：
+`read_file` / `write_file`（level_fn 路径感知）/ `grep_text`（filesys）；
+`write_draft` / `promote_draft`（writing）；
+`query_memory` / `get_character_history` / `get_plot_events` / `reindex_memory`（memory_tools）；
+`publish` / `delete_file` / `checkpoint` / `update_blueprint`（governance）；
+`list_chapters` / `get_bible`（含 blueprint 段）/ `get_outline` / `list_conflicts` /
+`get_worldstate`（query，2026-09-19 新增，全 safe 只读，双写证据环白名单）。
+其中只读面（EVIDENCE_TOOL_NAMES）供证据环子代理（chronicler/reviewer/doctor）复用。
 
 ### 3.4 权限策略文件（policy，TOML）
 门禁判定引用 `profile`（权限面名，来自 `SessionInfo.permission_profile`）；策略文件定义各 profile 对工具级 `level` 的处置：
@@ -260,8 +272,9 @@ novelist feedback <dir> --list     # 列出本项目的反馈 op 与待决审批
 novelist feedback <dir> --apply <id>  # 审批通过并原子写回该 op
 novelist feedback <dir> --deny <id>   # 拒绝该 op（不写回）
 novelist export <dir> --format md  # 导出发布包
-novelist forge seed <dir> ...      # 模式一：一句话/已有稿子 → bible+大纲+细纲
-novelist forge build <dir> ...     # 模式二：已有稿子/设定 → 精修
+novelist forge seed <dir> ...      # 模式一：一句话需求 → 蓝图+bible+细纲
+novelist forge ingest <dir> ...    # 模式二：已有稿子/设定 → 抽取建蓝图（docs/10 §6）
+novelist forge build <dir> ...     # 递归构建：蓝图 → 各模块产物
 novelist server                    # 启动 HTTP 服务
 ```
 涉及 LLM 的命令统一支持连接透传选项（P0-2）：

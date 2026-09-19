@@ -52,6 +52,16 @@ novel_workspace/
     └── .checksum.json                # 关键文件 hash 索引（用于一致性定位）
 ```
 
+> **2026-09-19 增补**（综合审计对齐）：上树之外的在盘文件族——
+> `bible/lines.json`（线索卡）、`bible/entity_progress.json`（实体进度实然缓存，无 schema）、
+> `bible/review_lessons.json`（审校教训）、`bible/settings_pending.json` /
+> `character_needs_pending.json`（JIT 待审）、`outline/arcs.json`（arc 层，无 schema）、
+> `workspace/forge/`（blueprint.json / transcript.jsonl / nodes/ / snapshots/ / review.json /
+> conflicts.json / doctor.md / report.md）、`workspace/agent/session.jsonl`（对话持久化，ADR-036）、
+> `workspace/feedback/ops.json`、`memory/directions/`、`memory/castings/`、
+> `drafts/*.src.json`（溯源双轨）、`reports/reviews/`（细纲连读审查）。
+> 其中无 schema 的六个文件见《综合工程审计与决策清单-2026-09-19》D-3（待拍板是否纳入契约）。
+
 ## 3. 核心实体数据模型
 
 > 全部采用 JSON（除章节正文为 Markdown）。以下为字段示意，正式 Schema 见 §5。
