@@ -63,14 +63,56 @@ def test_apply_delta_syncs_card_on_advance(tmp_path):
     assert _card_level(ws, pid, "char:lf") == "筑基初期"
 
 
-def test_apply_delta_keeps_card_on_regression(tmp_path):
-    """倒退不同步卡：卡保留高水位（合法跌境须人工仲裁后再改）。"""
+def test_apply_delta_rejects_regression(tmp_path):
+    """DL-009-① 回写边界断言：倒退拒绝落库——realm/history 保持高水位，原因回传 rejects。
+
+    旧语义（倒退值照记、盘后 R-STATE 再报警）会让错误状态进入后续所有事件的
+    上下文（回写即污染）；合法跌境情节仍走人工仲裁后再改。
+    """
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     init_from_bible(ws, pid)
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 1})
-    assert load(ws, pid)["characters"]["char:lf"]["realm"] == "炼气二层"  # 实然已变
-    assert _card_level(ws, pid, "char:lf") == "炼气三层"  # 卡不动
+    rejects: list[str] = []
+    apply_delta(ws, pid, "char:lf", {"修为": "筑基初期"}, at={"vol": 1, "ch": 1})
+    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 2},
+                rejects=rejects)
+    st = load(ws, pid)["characters"]["char:lf"]
+    assert st["realm"] == "筑基初期"  # 保持高水位，倒退值不落库
+    assert not any("realm" in (h.get("delta") or {}) for h in st["history"]
+                   if (h.get("at") or {}).get("ch") == 2)
+    assert _card_level(ws, pid, "char:lf") == "筑基初期"  # 卡不动
+    assert rejects and "境界倒退被拒" in rejects[0]
+
+
+def test_apply_delta_allows_binding_mark(tmp_path):
+    """波动标记豁免：「借用」类 realm 是机制不是编纂错误，照常落库不拒（v5 P0-1）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "金丹初期"}, at={"vol": 1, "ch": 1})
+    rejects: list[str] = []
+    apply_delta(ws, pid, "char:lf", {"修为": "借用筑基中期"}, at={"vol": 1, "ch": 2},
+                rejects=rejects)
+    assert load(ws, pid)["characters"]["char:lf"]["realm"] == "借用筑基中期"
+    assert not rejects
+
+
+def test_apply_delta_allows_fluctuating_char(tmp_path):
+    """worldview.realm_fluctuates 名单豁免：境界波动角色不做倒退拒绝（v5 P0-1 完整版）。"""
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    _write(ws, pid, "bible/worldview.json", {
+        "name": "青冥界",
+        "power_system": {"levels": ["炼气", "筑基", "金丹", "元婴"]},
+        "realm_fluctuates": ["char:lf"],
+        "rules": []})
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "金丹初期"}, at={"vol": 1, "ch": 1})
+    rejects: list[str] = []
+    apply_delta(ws, pid, "char:lf", {"修为": "筑基初期"}, at={"vol": 1, "ch": 2},
+                rejects=rejects)
+    assert load(ws, pid)["characters"]["char:lf"]["realm"] == "筑基初期"
+    assert not rejects
 
 
 def test_apply_delta_no_sync_out_of_system(tmp_path):
@@ -97,12 +139,20 @@ def test_baselines_snapshot_immutable_by_resync(tmp_path):
 
 
 def test_rstate_uses_baselines_after_card_sync(tmp_path):
-    """卡被实然同步后，R-STATE 仍能依据 baselines 锚检出倒退（核心契约）。"""
+    """卡被实然同步后，R-STATE 仍能依据 baselines 锚检出倒退（核心契约）。
+
+    DL-009-① 之后 apply_delta 拒绝倒退落库——倒退历史只能来自旧数据/外部直改，
+    盘后 R-STATE 仍须能对这类存量检出（守卫不撤，只是不再产出新污染）。
+    """
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
     init_from_bible(ws, pid)
     apply_delta(ws, pid, "char:lf", {"修为": "筑基初期"}, at={"vol": 1, "ch": 1})
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 2})
+    # 模拟旧数据/外部直改产生的倒退历史（DL-009-① 后 apply_delta 不再产出）
+    st = load(ws, pid)
+    st["characters"]["char:lf"]["history"].append(
+        {"at": {"vol": 1, "ch": 2}, "delta": {"realm": "炼气二层"}})
+    ws.write_json(ws._abs(f"{pid}/bible/worldstate.json"), st)
     alerts = [a for a in run_state_checks(ws, pid) if a.rule_id == "R-STATE"]
     assert any(a.level == "block" and "倒退" in a.detail for a in alerts)
 
@@ -157,3 +207,38 @@ def test_apply_delta_dead_flag_lands(tmp_path):
     init_from_bible(ws, pid)
     apply_delta(ws, pid, "char:twy", {"阵亡": "是"}, at={"vol": 1, "ch": 2})
     assert load(ws, pid)["characters"]["char:twy"]["dead"] is True
+
+
+# ---------------------------------------------------------------- 回写边界断言（DL-009-①）
+
+
+def test_validate_realm_deltas_flags_regression_before_write(tmp_path):
+    """落库前校验：只读、命中倒退、豁免口径与 apply_delta 一致。"""
+    from novelist.core.worldstate import validate_realm_deltas
+
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "筑基初期"}, at={"vol": 1, "ch": 1})
+    rej = validate_realm_deltas(ws, pid, [("char:lf", {"修为": "炼气二层"})])
+    assert rej and "境界倒退" in rej[0]
+    # 合法推进/波动标记/无关键不报
+    assert not validate_realm_deltas(ws, pid, [("char:lf", {"修为": "金丹初期"})])
+    assert not validate_realm_deltas(ws, pid, [("char:lf", {"修为": "借用筑基中期"})])
+    assert not validate_realm_deltas(ws, pid, [("char:lf", {"位置": "藏经阁"})])
+    assert load(ws, pid)["characters"]["char:lf"]["realm"] == "筑基初期"  # 只读不写
+
+
+def test_chronicler_commit_surfaces_realm_rejection(tmp_path):
+    """编纂 commit：被世界状态拒绝的倒退 delta 显式进 report.rejected（不静默）。"""
+    from novelist.core.chronicler import Chronicler
+
+    ws, pid = _project(tmp_path)
+    _seed(ws, pid)
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "筑基初期"}, at={"vol": 1, "ch": 1})
+    ch = Chronicler(ws, pid)  # llm=None：commit 是确定性落库，无需 LLM
+    report = ch.commit([], 1, 2, state_changes=[("char:lf", {"修为": "炼气二层"})])
+    assert any("境界倒退被拒" in r for r in report.rejected)
+    assert load(ws, pid)["characters"]["char:lf"]["realm"] == "筑基初期"  # 高水位
+    assert "char:lf" not in report.state_updates

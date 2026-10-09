@@ -65,6 +65,10 @@ NOOP_VALUES = {"无", "无变化", "未变", "不变", "无碍", "无伤", "没�
 _CAPABILITY_SUFFIXES = ("力量", "能力", "权", "权限", "警告", "信息", "提示",
                         "关注", "气息", "感应", "状态", "权限", "使用权")
 
+# 境界波动标记（DL-009-① 回写边界断言的豁免表，与 rules.py R-STATE 同口径）：
+# realm 含这些标记 = 临时借用/机制波动而非自身境界推进，不做倒退拒绝。
+_REALM_FLOAT_MARKS = ("借用", "同步", "临时", "绑定", "附体", "借调")
+
 # 不可出场状态词表（ADR-019，docs/06 §3.3.2）：状态行/约定文本命中这些词时，
 # 该人物进入「不可出场期」（闭关/失踪/昏迷/被囚/渡劫…），R-STATE 校验其不得出场。
 # 这是通用包基础词表；`bible/worldview.json` 的 `unavailable_states` 字段可覆盖，
@@ -199,6 +203,67 @@ def _realm_levels(ws, project_id: str) -> list[str]:
         return []
 
 
+def _fluctuating_set(ws, project_id: str) -> set[str]:
+    """worldview.realm_fluctuates 名单（v5 P0-1）：境界随机制波动的角色（id 或名）。
+
+    这些角色的 realm 变化是机制本身（绑定→暴涨→解绑→回落），不做倒退拒绝——
+    与 rules.py R-STATE 的单调性豁免同一数据源、同一口径。
+    """
+    try:
+        wv = json.loads(ws.bible_path(project_id, "worldview")
+                        .read_text(encoding="utf-8"))
+        raw = wv.get("realm_fluctuates")
+        return {str(x) for x in raw} if isinstance(raw, list) else set()
+    except (ValueError, OSError, AttributeError):
+        return set()
+
+
+def _is_realm_regression(levels: list[str], old_txt: str, new_txt: str) -> bool:
+    """倒退判定（与 rules.R-STATE 同口径）：大境界倒退，或双方都有细分的细分倒退。"""
+    old = parse_realm(old_txt, levels) if old_txt else None
+    new = parse_realm(new_txt, levels)
+    if old is None or new is None:
+        return False
+    return new[0] < old[0] or (new[0] == old[0] and bool(new[1]) and bool(old[1])
+                               and new[1] < old[1])
+
+
+def validate_realm_deltas(ws, project_id: str,
+                          state_changes: list[tuple[str, dict]]) -> list[str]:
+    """回写边界断言（DL-009-①·2026-10-09）：落库**前**校验境界 delta 单调性。
+
+    返回违规描述列表（空 = 全部合法）。只读不写，供编纂流程在 commit 前调用：
+    违规时编排层先带原因重写事件正文，错误状态不进 worldstate/memory——
+    设计哲学是「回写即污染」：倒退值一旦落盘就进入后续所有事件的上下文。
+    判定口径与 apply_delta 的拒绝逻辑完全一致（大境界倒退 / 双方都有细分的
+    细分倒退；豁免：借用等波动标记 + worldview.realm_fluctuates 名单）。
+    """
+    levels = _realm_levels(ws, project_id)
+    if not levels:
+        return []
+    fluct = _fluctuating_set(ws, project_id)
+    state = load(ws, project_id)
+    out: list[str] = []
+    for cid, delta in (state_changes or []):
+        cur = (state.get("characters") or {}).get(cid) or {}
+        name = str(cur.get("name") or cid)
+        if cid in fluct or name in fluct:
+            continue
+        for key, raw in (delta or {}).items():
+            if _STATE_KEYS.get(str(key), str(key)) != "realm":
+                continue
+            value = str(raw or "").strip()
+            if not value or value in NOOP_VALUES or value == cur.get("realm"):
+                continue
+            if any(m in value for m in _REALM_FLOAT_MARKS):
+                continue
+            old_txt = str(cur.get("realm") or "")
+            if _is_realm_regression(levels, old_txt, value):
+                out.append(f"境界倒退：{name} {old_txt} → {value}"
+                           f"（回写将保留高水位 {old_txt}，正文须改写）")
+    return out
+
+
 def _sync_card_realm(ws, project_id: str, char_id: str, realm_text: str) -> None:
     """事件级实然同步（ADR-013 完全体·用户拍板 2026-09-06）：境界变更实时写回角色卡。
 
@@ -230,13 +295,18 @@ def _sync_card_realm(ws, project_id: str, char_id: str, realm_text: str) -> None
 
 
 def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None = None,
-                registry=None) -> dict:
+                registry=None, rejects: list[str] | None = None) -> dict:
     """把一次状态变更合并进世界状态，并记录历史（R-STATE 依据历史校验单调性）。
 
     `registry`：物品/功法注册表（core/registry.Registry）。给出时，"获得/失去"里的
     异名（残篇/残卷）归一化为规范名再入库——解决同物异名堆积（讨论决策）。
 
     `at` 除 `{vol, ch}` 外可带 `t`（相对天数，ADR-019），供时间轴与 R-STATE 交叉核对。
+
+    `rejects`（DL-009-① 回写边界断言·2026-10-09）：境界倒退 delta **拒绝落库**
+    （realm 与 history 都保持高水位），拒绝原因追加进该列表供编排层重写正文——
+    旧语义（倒退值照记、盘后 R-STATE 再报警）会让错误状态进入后续所有事件的
+    上下文（回写即污染）。reason 通道可不传（拒绝行为不变，只是不回传）。
     """
     if registry is None:
         from .registry import Registry
@@ -260,18 +330,28 @@ def apply_delta(ws, project_id: str, char_id: str, delta: dict, at: dict | None 
         if field == "realm":
             if value and value != cur.get("realm"):
                 _prev_realm = str(cur.get("realm") or "")
-                cur["realm"], recorded["realm"] = value, value
-                # 事件级实然同步角色卡（ADR-013 完全体）——**仅合法推进才同步**：
-                # R-STATE 以卡上 power.level 为单调性基线（rules.py:504），倒退时
-                # 必须保留卡上高水位，否则卡被一起改低、倒退告警被静默抹掉。
                 _levels = _realm_levels(ws, project_id)
-                if not _levels:
-                    _sync_card_realm(ws, project_id, char_id, value)  # 无表 → 放行
+                # 回写边界断言（DL-009-①）：倒退拒绝落库；豁免 = 波动标记词 +
+                # worldview.realm_fluctuates 名单（绑定流是机制，不是编纂错误）。
+                if (_levels and _is_realm_regression(_levels, _prev_realm, value)
+                        and not any(m in value for m in _REALM_FLOAT_MARKS)
+                        and char_id not in _fluctuating_set(ws, project_id)
+                        and str(cur.get("name") or "") not in _fluctuating_set(ws, project_id)):
+                    if rejects is not None:
+                        rejects.append(f"境界倒退被拒：{cur.get('name') or char_id} "
+                                       f"{_prev_realm} → {value}（保留高水位 {_prev_realm}）")
                 else:
-                    _new = parse_realm(value, _levels)
-                    _old = parse_realm(_prev_realm, _levels) if _prev_realm else None
-                    if _new is not None and (_old is None or _new >= _old):
-                        _sync_card_realm(ws, project_id, char_id, value)
+                    cur["realm"], recorded["realm"] = value, value
+                    # 事件级实然同步角色卡（ADR-013 完全体）——**仅合法推进才同步**：
+                    # R-STATE 以卡上 power.level 为单调性基线（rules.py:504），倒退时
+                    # 必须保留卡上高水位，否则卡被一起改低、倒退告警被静默抹掉。
+                    if not _levels:
+                        _sync_card_realm(ws, project_id, char_id, value)  # 无表 → 放行
+                    else:
+                        _new = parse_realm(value, _levels)
+                        _old = parse_realm(_prev_realm, _levels) if _prev_realm else None
+                        if _new is not None and (_old is None or _new >= _old):
+                            _sync_card_realm(ws, project_id, char_id, value)
         elif field == "location":
             if value != cur.get("location"):
                 cur["location"], recorded["location"] = value, value

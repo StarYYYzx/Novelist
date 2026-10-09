@@ -487,11 +487,17 @@ class Chronicler:
             from .worldstate import apply_delta
 
             end_t = now_of(wsmod.load(self.ws, self.project_id))
+            _ws_rejects: list[str] = []
             for cid, delta in deltas_by_char.items():
                 applied = apply_delta(self.ws, self.project_id, cid, delta,
-                                      at={"vol": vol, "ch": ch, "t": end_t})
+                                      at={"vol": vol, "ch": ch, "t": end_t},
+                                      rejects=_ws_rejects)
                 if applied:
                     report.state_updates[cid] = applied
+            if _ws_rejects:
+                # DL-009-① 回写边界断言：被拒的倒退 delta 与地点闸门同走
+                # report.rejected 通道显式回传编排层（拒绝可见，不静默）。
+                report.rejected.extend(f"[{vol}:{ch}] {r}" for r in _ws_rejects)
         return report
 
     # ---- P0-C 入库闸门（确定性，零调用）----

@@ -123,6 +123,16 @@ _REVISE_HINT = (
     "结尾必须是完整的收束句。"
 )
 
+# 回写边界断言（DL-009-①·2026-10-09 设计哲学：回写即污染）：编纂抽取的境界
+# delta 被世界状态拒绝（倒退）→ 带拒绝原因重写事件一次，错误状态不得落库。
+_STATE_REJECT_HINT = (
+    "\n\n【状态断言失败，必须重写】\n"
+    "上一稿与已确立的世界状态矛盾：\n{problems}\n"
+    "重写要求：修正上述矛盾——人物修为只能合理推进，不得倒退（除非剧情明确写明"
+    "跌境/自废修为的原因与代价）；其余情节、人物与文风保持不变；"
+    "直接输出重写后的完整事件正文。"
+)
+
 # 接缝审查（批次三·方案2）：确定性 strip_seam_overlap 挡"字面复述"，
 # 这里用 LLM 挡"换措辞重演同一情节"（ch1"母亲来电"写两遍的实证根因）。
 _SEAM_WINDOW = 350       # 送审窗口：前片段尾 / 新片段头各取多少字
@@ -999,6 +1009,7 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
                 banned_names: list[str] | None = None,
                 line_cards: list[str] | None = None,
                 live_state: str = "",
+                fact_lines: list[str] | None = None,
                 prev_state: str = "") -> str:
     """装配单个事件的生成目标（细纲要点 + 人物调度 + 接缝上下文 + 先忆 + 设定 + RAG）。
 
@@ -1038,6 +1049,14 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
         # ADR-013 完全体（2026-09-06 用户拍板）：worldstate 实然状态行，钉死层。
         # 事件级回写（写侧）与本块（读侧）合起来才是"事件落定→全文档实时更新"。
         blocks.append(("live_state", live_state))
+    if fact_lines:
+        # DL-009-② 章级事实账本（2026-10-09）：本章此前事件/上一章末尾已确立的
+        # 事实，确定性注入钉死层（不走 RAG 概率命中）——C4 类崩法（事件间各自
+        # 编规则、谎言不自洽）的预防层。
+        blocks.append(("facts", "\n".join([
+            "【本章已确立事实】下列事实在此前事件中已经发生/确立（含上一章末尾），"
+            "已落定、不可反悔：后续剧情不得与之矛盾，不得重新谈判或改变结果，"
+            "也不得当作未发生：", *fact_lines[-8:]])))
     if cast_lines:
         blocks.append(("cast", "\n".join([
             "【本场出场人物】（严格按各自的人设写：性格、称谓、立场、"
@@ -1952,6 +1971,15 @@ def _produce_chapter_impl(
                 # 事件循环（第二批第 2 条）：按声明式 key_events 逐事件推进、逐事件回写。
                 # 这是 ADR-013「事件落定即回写」的落地——章内后续事件可先忆到上一事件。
                 pieces: list[str] = []
+                _state_rewrite_done: set[int] = set()  # DL-009-①：每事件状态重写限一次
+                # DL-009-② 章级事实账本：上一章末尾事实确定性带入（不走 RAG 概率命中）
+                chapter_facts: list[str] = []
+                try:
+                    from .chapter_facts import carryover_lines, load_entries
+
+                    chapter_facts = carryover_lines(load_entries(ws, project_id), vol, ch)
+                except Exception as e:  # noqa: BLE001 - 读取失败不阻断写作
+                    soft_failures.append(f"章级事实账本读取失败（上一章末尾事实未注入）：{e}")
                 seam = max(200, min(400, _SEAM_CHARS))
                 prev_end_state = ""  # dp-seam：上一事件的结束状态锚（非空时事件接缝用它）
                 _prev_cast_names: list[str] = []  # ADR-021：上一事件出场者（广播"前情"输入）
@@ -2148,6 +2176,7 @@ def _produce_chapter_impl(
                                          # 钉死层注入——修为/位置/持物以 worldstate 为准）
                                          live_state=_live_state_block(
                                              ws, project_id, cast_names, bible_chars),
+                                         fact_lines=chapter_facts,
                                          # H9 修复（2026-09-05）：原先调用点漏传
                                          # banned_names——"广播拒绝点名"禁令整体是
                                          # 死代码。传入并与本场 cast 求差：若该人物
@@ -2314,6 +2343,7 @@ def _produce_chapter_impl(
                         chronicler = _make_chronicler(ws, project_id, provider, embedding,
                                                       semantic_checker)
                     if chronicler is not None:
+                        _appended = False
                         try:
                             if agentic_chronicle:
                                 from .chronicler_agent import run_agentic
@@ -2325,17 +2355,64 @@ def _produce_chapter_impl(
                                     max_rounds=agentic_chronicle_rounds,
                                 )
                                 chronic_reports.append(_rep)
+                                _appended = True
                                 # AG-22：证据环回退留痕（ADR-032 F1 的"回退不劣于旧路径"要求可见）
                                 if getattr(_arb, "note", ""):
                                     soft_failures.append(f"编纂证据环降级(e{idx})：{_arb.note}")
+                                if any("境界倒退被拒" in r for r in _rep.rejected):
+                                    soft_failures.append(
+                                        f"状态断言(e{idx})：证据环路径拒绝境界倒退（未自动重写）")
                             else:
-                                chronic_reports.append(
-                                    chronicler.run(piece, vol, ch, max_events=2,
-                                                   tag=f"e{idx}",
-                                                   payoff=(phase is Phase.TAIL)))
+                                # DL-009-① 回写边界断言（2026-10-09 设计哲学：回写即污染）：
+                                # 先抽取 → 落库前校验境界单调性 → 违规带原因重写一次 → 再
+                                # commit。错误状态不进 worldstate/memory（旧语义是先落库、
+                                # 盘后 R-STATE 才报警，倒退值已污染后续全部事件的上下文）。
+                                from .worldstate import validate_realm_deltas
+
+                                _extraction = chronicler.extract(piece, max_events=2)
+                                _ws_rej = validate_realm_deltas(ws, project_id,
+                                                                _extraction.state_changes)
+                                if _ws_rej and idx not in _state_rewrite_done:
+                                    _state_rewrite_done.add(idx)
+                                    revised = _generate_with_continuation(
+                                        provider, system_prompt or "",
+                                        prompt + _STATE_REJECT_HINT.format(
+                                            problems="\n".join(f"- {r}" for r in _ws_rej)),
+                                        generation_tokens, max_continuations,
+                                        content_tokens=content_tokens)
+                                    if len(revised) >= event_floor:
+                                        piece = revised
+                                        # 改写稿替换已追加片段，重做接缝去重保持拼接纪律
+                                        pieces[-1] = (strip_seam_overlap(pieces[-2], piece)
+                                                      if len(pieces) > 1 else piece)
+                                        _extraction = chronicler.extract(piece, max_events=2)
+                                        _ws_rej = validate_realm_deltas(
+                                            ws, project_id, _extraction.state_changes)
+                                if _ws_rej:
+                                    # 改写后仍违规：worldstate 侧拒绝落库（高水位），
+                                    # 正文残留矛盾留痕待审校/人工——不无限重试防预算风暴
+                                    soft_failures.append(
+                                        f"状态断言未通过(e{idx})：{'；'.join(_ws_rej)}")
+                                chronic_reports.append(chronicler.commit(
+                                    _extraction.events, vol, ch,
+                                    state_changes=_extraction.state_changes,
+                                    tag=f"e{idx}", payoff=(phase is Phase.TAIL),
+                                    time_lines=_extraction.time_lines,
+                                    pending_lines=_extraction.pending_lines,
+                                    line_rows=_extraction.line_rows))
+                                _appended = True
                         except Exception as e:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             # 事件是记忆的最小单位：漏一个是永久缺口，必须留痕
                             soft_failures.append(f"事件编纂失败(e{idx})：{e}")
+                        if _appended:
+                            # DL-009-② 章级事实账本：本事件已落定事实追加进钉死注入
+                            # 清单（被闸门拒收的事件不进账本）。确定性追加，零 LLM 成本。
+                            _rep_last = chronic_reports[-1]
+                            for _ev in getattr(_rep_last, "events", None) or []:
+                                _s = str(getattr(_ev, "summary", "") or "").strip()
+                                if _s and not any(_s[:30] in _r for _r
+                                                  in getattr(_rep_last, "rejected", []) or []):
+                                    chapter_facts.append(f"- {_s[:80]}")
                         # 角色视角记忆（ADR-020 决策四）：事件落定即记，一人一条视角
                         if perspective_memory and cast_names:
                             try:
@@ -2349,6 +2426,16 @@ def _produce_chapter_impl(
                                                    ev_text, piece)
                         if _anchor:
                             prev_end_state = _anchor
+                # DL-009-②：本章已确立事实落盘（保留最近 2 章；下一章开头确定性带入）
+                try:
+                    from .chapter_facts import load_entries as _cf_load
+                    from .chapter_facts import record as _cf_record
+                    from .chapter_facts import save as _cf_save
+
+                    _cf_save(ws, project_id,
+                             _cf_record(_cf_load(ws, project_id), vol, ch, chapter_facts))
+                except Exception as e:  # noqa: BLE001 - 落盘失败不阻断成稿
+                    soft_failures.append(f"章级事实账本写入失败：{e}")
                 final = _dedupe_chapter_titles("\n\n".join(pieces))
                 # 章级近重复确定性修复（ch7/ch8 实证）：事件循环里每个片段单独看过
                 # 都没问题，拼起来才发现"同一收尾动作写了两遍"——片段级去重够不着，

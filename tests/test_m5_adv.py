@@ -144,12 +144,20 @@ def _seed_state_history(ws, pid):
     return ws
 
 
+def _seed_regression_history(ws, pid):
+    """DL-009-① 后 apply_delta 拒绝倒退落库——盘后 R-STATE 用存量历史直写来测。"""
+    init_from_bible(ws, pid)
+    apply_delta(ws, pid, "char:lf", {"修为": "炼气三层"}, at={"vol": 1, "ch": 1})
+    st = json.loads(ws._abs(f"{pid}/bible/worldstate.json").read_text(encoding="utf-8"))
+    st["characters"]["char:lf"]["history"].append(
+        {"at": {"vol": 1, "ch": 2}, "delta": {"realm": "炼气二层"}})
+    ws.write_json(ws._abs(f"{pid}/bible/worldstate.json"), st)
+
+
 def test_rstate_blocks_realm_regression(tmp_path):
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
-    init_from_bible(ws, pid)
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气三层"}, at={"vol": 1, "ch": 1})
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 2})  # 倒退
+    _seed_regression_history(ws, pid)
     alerts = [a for a in run_state_checks(ws, pid) if a.rule_id == "R-STATE"]
     assert any(a.level == "block" and "倒退" in a.detail for a in alerts)
 
@@ -190,12 +198,11 @@ def test_run_rule_checks_includes_state(tmp_path):
 
     2026-09-18：此例原先用 MagicMock 造了个 ws 就断言 `callable(run_rule_checks)`——
     恒真、且**从未调用**被测函数，规则从全量入口里掉出去也不会红。改为真实跑一遍。
+    DL-009-①（2026-10-09）：apply_delta 拒绝倒退落库，倒退历史改由直写存档模拟。
     """
     ws, pid = _project(tmp_path)
     _seed(ws, pid)
-    init_from_bible(ws, pid)
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气三层"}, at={"vol": 1, "ch": 1})
-    apply_delta(ws, pid, "char:lf", {"修为": "炼气二层"}, at={"vol": 1, "ch": 2})  # 倒退
+    _seed_regression_history(ws, pid)
 
     all_alerts = run_rule_checks(ws, pid)
     ids = {a.rule_id for a in all_alerts}
