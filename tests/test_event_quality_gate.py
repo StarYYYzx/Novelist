@@ -71,6 +71,46 @@ def test_short_with_participant_event_kept(tmp_path):
     assert len(c.extract("正文略").events) == 1
 
 
+# ------------------------------------------------------------ 证据回指校验（DL-009-P1·2026-10-10）
+
+
+def test_evidence_mismatch_rejected(tmp_path):
+    """证据对不上正文 → 事件拒收（抽取幻觉的确定性防线，宁缺勿错记）。"""
+    ws, pid = _project(tmp_path)
+    line = "外山一场恶战打得天昏地暗 | conflict | 苏晚｜证据：鬼面跌出秘境\n"
+    c = Chronicler(ws, pid, llm=_StubLLM(line))
+    ex = c.extract("苏晚在外山与人恶战，打得天昏地暗。")
+    assert ex.events == []
+    assert ex.rejected and "证据不符" in ex.rejected[0]
+
+
+def test_evidence_match_kept(tmp_path):
+    ws, pid = _project(tmp_path)
+    line = "苏晚在外山与人恶战 | conflict | 苏晚｜证据：外山与人恶战\n"
+    c = Chronicler(ws, pid, llm=_StubLLM(line))
+    ex = c.extract("昨夜苏晚在外山与人恶战，直到天明。")
+    assert len(ex.events) == 1 and ex.events[0].evidence == "外山与人恶战"
+    assert ex.rejected == []
+
+
+def test_no_evidence_kept_legacy_compat(tmp_path):
+    """旧输出/旧 fixture 无证据标注 → 不校验照常入库（向后兼容）。"""
+    ws, pid = _project(tmp_path)
+    text = "夜袭过后校园结界波动未平，全城修士都在议论灵潮 | discovery\n"
+    c = Chronicler(ws, pid, llm=_StubLLM(text))
+    ex = c.extract("正文略")
+    assert len(ex.events) == 1 and ex.rejected == []
+
+
+def test_run_merges_evidence_rejection_into_report(tmp_path):
+    """run() 路径：证据拒收与落库闸门拒收同走 report.rejected（拒绝可见）。"""
+    ws, pid = _project(tmp_path)
+    line = "子虚乌有的大典 | reveal | 苏晚｜证据：子虚乌有\n"
+    c = Chronicler(ws, pid, llm=_StubLLM(line))
+    rep = c.run("苏晚在外山与人恶战。", 1, 2)
+    assert any("证据不符" in r for r in rep.rejected)
+
+
 # ------------------------------------------------------------ 合成事件消歧
 
 

@@ -242,3 +242,19 @@ def test_chronicler_commit_surfaces_realm_rejection(tmp_path):
     assert any("境界倒退被拒" in r for r in report.rejected)
     assert load(ws, pid)["characters"]["char:lf"]["realm"] == "筑基初期"  # 高水位
     assert "char:lf" not in report.state_updates
+
+
+# ---------------------------------------------------------------- 教训确定性回流（DL-009-P1）
+
+
+def test_lesson_lines_reads_memory_file(tmp_path):
+    """教训注入行：新位置 memory/ 优先，格式 [分类] 规则；空文件返回空。"""
+    from novelist.core.orchestrator import _lesson_lines
+
+    ws, pid = _project(tmp_path)
+    assert _lesson_lines(ws, pid) == []
+    _write(ws, pid, "memory/review_lessons.json", [
+        {"_key": "k1", "category": "战力越级", "issue": "ch2 跨章跳级",
+         "rule": "战力只能合理推进，突破须有机缘描写", "source": "1:2"}])
+    lines = _lesson_lines(ws, pid)
+    assert lines == ["- [战力越级] 战力只能合理推进，突破须有机缘描写"]

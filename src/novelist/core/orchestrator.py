@@ -1928,6 +1928,16 @@ def _produce_chapter_impl(
                                "标记为重复，本章**禁止**再出现，必须换全新写法：\n"
                                + "\n".join(f"- {b}" for b in _bans[:10]))
 
+            # ---- DL-009-P1（2026-10-10）：历史教训确定性回流 ----
+            # 旧链路 review_lessons 只走知识层 RAG 概率命中（prompt作用审计定性
+            # "死参数残余"）——教训必须变成防线：取最近 6 条钉死进 goal（事件/
+            # 直出两条路径共用此 goal，全覆盖）。文件按沉淀序，越新越相关。
+            _recent_lessons = _lesson_lines(ws, project_id)[-6:]
+            if _recent_lessons:
+                goal = goal + ("\n\n【历史教训（审校沉淀·必守）】以下问题在本项目真实"
+                               "发生并被审校拦截过，本章**不得**重蹈：\n"
+                               + "\n".join(_recent_lessons))
+
             # ---- 批次三·方案3：前卷事实清单注入（跨卷状态/时间线/伏笔连续性）----
             _prev_facts = ""
             try:
@@ -2400,6 +2410,9 @@ def _produce_chapter_impl(
                                     time_lines=_extraction.time_lines,
                                     pending_lines=_extraction.pending_lines,
                                     line_rows=_extraction.line_rows))
+                                if _extraction.rejected:
+                                    # DL-009-P1：证据校验拒收与落库闸门拒收同通道可见
+                                    chronic_reports[-1].rejected[:0] = _extraction.rejected
                                 _appended = True
                         except Exception as e:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             # 事件是记忆的最小单位：漏一个是永久缺口，必须留痕

@@ -51,6 +51,9 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 - 类型只能是：conflict、discovery、reveal、turning_point、dialogue、departure
 - 涉及人物只写正文里真实出现过的人名，不要编造
 - 事件简述**直接写内容，不要用括号括起，不要用「（」「）」**
+- 每条事件行**末尾必须**追加第四段「｜证据：<佐证本事件的最短原文短语>」：
+  逐字摘自正文（≤15 字，不要改写、不要概括）。证据对不上正文的事件会被拒收——
+  这是对抗抽取幻觉的硬校验，宁缺勿错记
 
 第二部分——状态行，以「状态：」开头，每行一个人物：
 状态：人物名 | 修为：新境界 | 位置：新地点 | 获得：物品 | 失去：物品 | 受伤：伤情 | 痊愈：伤情
@@ -142,6 +145,9 @@ class ExtractedEvent:
     kind: str
     participant_ids: list[str] = field(default_factory=list)
     threads: list[str] = field(default_factory=list)
+    # DL-009-P1（2026-10-10）：证据回指——事件行尾「｜证据：<正文原短语>」，
+    # 空串 = 模型未给（旧输出兼容）；非空时逐字回查正文，对不上即拒收。
+    evidence: str = ""
 
 
 @dataclass
@@ -157,6 +163,8 @@ class Extraction:
     time_lines: list[str] = field(default_factory=list)      # 「时间：+90日（| 备注）」原文
     pending_lines: list[str] = field(default_factory=list)   # 「约定：叶岚出关｜+90日」原文
     line_rows: list[dict] = field(default_factory=list)      # ADR-025：「线索：ln:x | 推 | …」解析结果
+    # DL-009-P1：证据校验拒收的事件（理由随行，commit 时并入 report.rejected）
+    rejected: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -283,7 +291,12 @@ class Chronicler:
         )
         if res.blocked or not res.content:
             return Extraction()
-        return self._parse(res.content, max_events)
+        ex = self._parse(res.content, max_events)
+        # DL-009-P1 证据校验（2026-10-10）：带证据的事件回指正文，对不上即拒收——
+        # 抽取幻觉（v7 实证「外山打斗」被抽成「鬼面跌出秘境」）此前只要与既有记忆
+        # 不冲突就放行入库；证据回指是最便宜的确定性防线（宁缺勿错记）。
+        self._validate_evidence(ex, chapter_text)
+        return ex
 
     def _parse(self, content: str, max_events: int) -> Extraction:
         from . import worldstate
@@ -315,6 +328,13 @@ class Chronicler:
         for line in event_lines:
             line = line.strip().lstrip("-•*").strip()
             line = re.sub(r"^\d+[.、)．]\s*", "", line)
+            # DL-009-P1：先剥离行尾证据标注（全角「｜」不与 ASCII 分隔竖线冲突），
+            # 再走既有的 ASCII 竖线拆列——旧输出无标注时 evidence 为空串。
+            evidence = ""
+            m_ev = re.search(r"｜证据：(.+)$", line)
+            if m_ev:
+                evidence = m_ev.group(1).strip()
+                line = line[:m_ev.start()].strip()
             if "|" not in line:
                 continue
             parts = [p.strip() for p in line.split("|")]
@@ -331,12 +351,34 @@ class Chronicler:
                 summary=summary[:120],
                 kind=kind,
                 participant_ids=self._resolve_names(summary, names),
+                evidence=evidence,
             ))
             if len(out) >= max_events:
                 break
         return Extraction(events=out, state_changes=state_changes,
                           time_lines=time_lines, pending_lines=pending_lines,
                           line_rows=line_rows)
+
+    @staticmethod
+    def _validate_evidence(ex: Extraction, chapter_text: str) -> None:
+        """证据回指校验：证据短语（去空白后）必须是正文的子串，否则事件拒收。
+
+        证据为空的行不校验（旧输出/旧 fixture 兼容；prompt 已要求必须带证据）。
+        拒收理由进 `ex.rejected`，由 run()/编排层并入 report.rejected——拒绝可见。
+        """
+        def _norm(s: str) -> str:
+            return re.sub(r"\s+", "", s)
+
+        text = _norm(chapter_text)
+        kept: list[ExtractedEvent] = []
+        for ev in ex.events:
+            if ev.evidence and _norm(ev.evidence) not in text:
+                ex.rejected.append(
+                    f"证据不符：{ev.summary[:30]} :: 证据「{ev.evidence}」未见于正文"
+                    "（宁缺勿错记）")
+                continue
+            kept.append(ev)
+        ex.events = kept
 
     # ---- 写入（含冲突双检）----
     def _link_threads(self, events: list[ExtractedEvent], vol: int, ch: int,
@@ -817,6 +859,10 @@ class Chronicler:
         `payoff`：收尾期传 True，命中事件的 active 伏笔判 paid_off（第九批）。
         """
         ex = self.extract(chapter_text, max_events=max_events)
-        return self.commit(ex.events, vol, ch, state_changes=ex.state_changes, tag=tag,
-                           payoff=payoff, time_lines=ex.time_lines,
-                           pending_lines=ex.pending_lines, line_rows=ex.line_rows)
+        rep = self.commit(ex.events, vol, ch, state_changes=ex.state_changes, tag=tag,
+                          payoff=payoff, time_lines=ex.time_lines,
+                          pending_lines=ex.pending_lines, line_rows=ex.line_rows)
+        if ex.rejected:
+            # DL-009-P1：证据校验拒收排在最前（commit 的闸门拒收在后）——拒绝可见
+            rep.rejected[:0] = ex.rejected
+        return rep
