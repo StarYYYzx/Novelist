@@ -206,7 +206,9 @@ class Chronicler:
         llm=None,
         embedding=None,
         semantic_checker: Callable[[str, list[str]], bool | None] | None = None,
+        evidence_required: bool = False,
     ) -> None:
+        self.evidence_required = evidence_required
         self.ws = ws
         self.project_id = project_id
         self.llm = llm
@@ -359,11 +361,14 @@ class Chronicler:
                           time_lines=time_lines, pending_lines=pending_lines,
                           line_rows=line_rows)
 
-    @staticmethod
-    def _validate_evidence(ex: Extraction, chapter_text: str) -> None:
+    def _validate_evidence(self, ex: Extraction, chapter_text: str) -> None:
         """证据回指校验：证据短语（去空白后）必须是正文的子串，否则事件拒收。
 
-        证据为空的行不校验（旧输出/旧 fixture 兼容；prompt 已要求必须带证据）。
+        DL-015（2026-10-24）堵口：`evidence_required=True` 时**无证据同样拒收**
+        ——此前"模型不给证据字段 → 直接放行"让防幻觉防线沦为尽力而为
+        （模型只要不写「｜证据：」就能绕过校验）。库默认 False（旧 fixture
+        兼容），CLI/运行时默认 True（[generation].evidence_required，resolve_opt
+        口径：显式 flag > 配置 > 出厂默认）。
         拒收理由进 `ex.rejected`，由 run()/编排层并入 report.rejected——拒绝可见。
         """
         def _norm(s: str) -> str:
@@ -372,7 +377,15 @@ class Chronicler:
         text = _norm(chapter_text)
         kept: list[ExtractedEvent] = []
         for ev in ex.events:
-            if ev.evidence and _norm(ev.evidence) not in text:
+            if not ev.evidence:
+                if self.evidence_required:
+                    ex.rejected.append(
+                        f"无证据拒收：{ev.summary[:30]} :: 未附「｜证据：」原文短语"
+                        "（编译级口径：无证据不落库，宁缺勿错记）")
+                    continue
+                kept.append(ev)
+                continue
+            if _norm(ev.evidence) not in text:
                 ex.rejected.append(
                     f"证据不符：{ev.summary[:30]} :: 证据「{ev.evidence}」未见于正文"
                     "（宁缺勿错记）")

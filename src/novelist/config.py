@@ -80,6 +80,11 @@ class GenerationConfig:
     agentic_review: bool | None = None
     agentic_chronicle_rounds: int | None = None
     agentic_review_rounds: int | None = None
+    # DL-015（2026-10-24）：编纂事件必须带「｜证据：」原文短语（无证据拒收）。
+    # 出厂默认 True（编译级口径）；库层 Chronicler 默认 False 兼容旧 fixture。
+    evidence_required: bool | None = None
+    # DL-015/ADR-038：章级三视角编译判定 + 修复循环。出厂默认 True（正确性优先）。
+    compile_review: bool | None = None
 
 
 @dataclass

@@ -64,14 +64,22 @@ PINNED = -1
 _UNKNOWN_KEEP = 50  # 未登记 tag 一律不淘汰（宁超不误删）
 
 
+class PromptBudgetClosureError(Exception):
+    """约束闭包失败（DL-015，2026-10-24）：可淘汰层全部让路后仍超预算。
+
+    钉死层是载重约束（目标/纪律/实然状态/事实账本……），超预算继续拼装等于
+    「静默祈祷模型注意」——按编译语义应**显式失败**（pinned 总量本身就是预算
+    下界），由编排层作为编译错误上抛，而不是截断或硬塞。
+    """
+
+
 def apply_prompt_budget(sections: list[tuple[str, str]], char_budget: int,
                         ) -> tuple[list[tuple[str, str]], list[str]]:
     """对拼装好的 prompt 分段做总量裁剪。
 
     `sections`：`[(tag, text)]`，text 为该段完整文本（含空行分隔）。
     返回 `(裁剪后 sections, 被淘汰的 tag 列表)`。总长未超预算时原样返回。
-
-    淘汰按 EVICT_PRIORITY 升序整段进行；钉死层与未登记 tag 不动。
+    可淘汰层全部淘汰后仍超预算 → 抛 `PromptBudgetClosureError`（约束闭包断言）。
     """
     total = sum(len(text) for _, text in sections)
     if char_budget <= 0 or total <= char_budget:
@@ -89,6 +97,12 @@ def apply_prompt_budget(sections: list[tuple[str, str]], char_budget: int,
         evicted.append(sections[i][0])
         if total <= char_budget:
             break
+    if total > char_budget:
+        pinned_total = sum(len(t) for k, (_, t) in enumerate(sections) if k in kept)
+        raise PromptBudgetClosureError(
+            f"约束闭包失败：钉死层总量 {pinned_total} 字符已超预算 {char_budget}"
+            f"（可淘汰层已全部让路：{','.join(evicted) or '无可淘汰段'}）"
+            "——硬塞等于静默丢约束，请提高预算或精简钉死层")
     return [s for k, s in enumerate(sections) if k in kept], evicted
 
 

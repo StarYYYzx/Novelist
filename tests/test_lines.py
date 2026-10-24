@@ -348,7 +348,8 @@ def test_prompt_budget_pins_lines():
 
     assert EVICT_PRIORITY["lines"] == -1
     sections = [("goal", "x" * 100), ("related:thread", "y" * 100), ("lines", "z" * 100)]
-    kept, evicted = apply_prompt_budget(sections, 150)
+    # DL-015 约束闭包：钉死层 goal+lines=200，预算 150 会编译失败——给 250
+    kept, evicted = apply_prompt_budget(sections, 250)
     assert "lines" not in evicted and "related:thread" in evicted
 
 

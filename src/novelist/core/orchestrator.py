@@ -62,7 +62,8 @@ class ProductionResult:
                  chapter_title: str = "", directions_built: int = 0,
                  perspectives_written: int = 0, broadcasts_built: int = 0,
                  rel_pairs: int = 0, rel_proposals: int = 0,
-                 soft_failures: list[str] | None = None):
+                 soft_failures: list[str] | None = None,
+                 compile: dict | None = None):
         self.ok = ok
         self.chapter_path = chapter_path
         self.result = result
@@ -98,6 +99,7 @@ class ProductionResult:
         # H1 修复（2026-09-05）：增强层"静默吞异常"的可观测出口——接缝审查/回写/
         # 润色等失败与"检查通过"在结果上不可区分，这里显式留痕供 CLI/审计展示。
         self.soft_failures = soft_failures or []
+        self.compile = compile or {}  # DL-015 章级编译报告（tribunal）：blocked/hard/soft/watchlist/rounds
 
     @property
     def ai_tone_before(self) -> float | None:
@@ -1133,12 +1135,14 @@ def _event_goal(chapter_goal: str, ev_text: str, idx: int, total: int, prev_piec
     return "\n\n".join(text for _, text in blocks)
 
 
-def _make_chronicler(ws, project_id: str, provider, embedding, semantic_checker):
+def _make_chronicler(ws, project_id: str, provider, embedding, semantic_checker,
+                     evidence_required: bool | None = None):
     try:
         from .chronicler import Chronicler
 
         return Chronicler(ws, project_id, llm=provider, embedding=embedding,
-                          semantic_checker=semantic_checker)
+                          semantic_checker=semantic_checker,
+                          evidence_required=bool(evidence_required))
     except Exception:  # noqa: BLE001
         return None
 
@@ -1687,6 +1691,11 @@ def _produce_chapter_impl(
     seam_state: bool = False,      # 状态锚接缝（dp-seam）：事件接缝从"原文末尾"改
                                    # "上一事件结束状态锚"（事实），缓解"续写与禁复述"两难；
                                    # 默认关→回退原文接缝，完全保持现有产出
+    # ---- DL-015（2026-10-24）两阶段管线·编译期 ----
+    evidence_required: bool | None = None,  # 编纂事件必须带「｜证据：」（None=库默认 False；
+                                            # CLI/运行时默认 True，resolve_opt 口径）
+    compile_review: bool = False,           # 章级三视角编译判定 + 修复循环（ADR-038）；
+                                            # CLI 默认 True（正确性优先于成本，2026-10-24 拍板）
 ) -> ProductionResult:
     """主编剧驱动产出第 vol 卷 ch 章草稿（严格串行，同时至多一章）。
 
@@ -2351,7 +2360,8 @@ def _produce_chapter_impl(
                     # 逐事件回写（ADR-013）；失败不阻断，交由章级兜底
                     if chronicler is None:
                         chronicler = _make_chronicler(ws, project_id, provider, embedding,
-                                                      semantic_checker)
+                                                      semantic_checker,
+                                                      evidence_required=evidence_required)
                     if chronicler is not None:
                         _appended = False
                         try:
@@ -2569,6 +2579,24 @@ def _produce_chapter_impl(
         comp = completeness(final)
     if near_dup_removed:
         comp["near_dup_removed"] = near_dup_removed
+
+    # ---- DL-015 章级编译闸门（ADR-038：三视角交叉判定 + 修复循环）----
+    # 放在落盘前：修订循环改写的是 final 本体；blocked 仍落盘草稿（人可看），
+    # 但 phase_reason 标"编译未过"+欠账入 doctor 清单——硬错误不静默放行。
+    compile_report: dict | None = None
+    if compile_review and provider is not None and (final or "").strip():
+        try:
+            from ..consistency.tribunal import compile_pass
+
+            final, compile_report = compile_pass(
+                ws, project_id, vol, ch, final, provider, rewrite_max=2)
+        except Exception as e:  # noqa: BLE001 - 判定器故障不杀章：降级留痕（宁降级不假绿）
+            soft_failures.append(f"编译判定器异常（本章跳过编译闸门）：{e}")
+        if compile_report and compile_report.get("blocked"):
+            phase_reason = "编译未过（硬错误修不掉，等人工处置）"
+            comp["compile_blocked"] = True
+        if compile_report:
+            comp["compile_rounds"] = compile_report.get("rounds")
 
     # ---- 3) 落盘草稿 ----
     draft = ws.draft_path(project_id, vol, ch)
@@ -2934,6 +2962,7 @@ def _produce_chapter_impl(
     return ProductionResult(ok=True, chapter_path=str(draft), result=final, events_committed=events,
                             mode=mode, bible_injected=bible_injected, attempts=attempts,
                             completeness=comp, polish=polish_res, chronicle=chronicle,
+                            compile=compile_report,
                             review_blocks=review_blocks, events_revised=events_revised,
                             lessons_added=lessons_added, jit_added=jit_added,
                             settings_pending=settings_pending,

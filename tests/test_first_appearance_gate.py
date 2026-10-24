@@ -77,7 +77,8 @@ def test_first_seen_and_banned_are_pinned():
     assert EVICT_PRIORITY.get("banned") == PINNED
     blocks = [("first_seen", "首" * 600), ("memories", "记" * 600),
               ("banned", "禁" * 600)]
-    kept, evicted = apply_prompt_budget(blocks, 800)
+    # DL-015 约束闭包：钉死层 first_seen+banned=1200，预算须 ≥1200（800 会编译失败）
+    kept, evicted = apply_prompt_budget(blocks, 1300)
     tags = [t for t, _ in kept]
     assert "first_seen" in tags and "banned" in tags
     assert "memories" in evicted

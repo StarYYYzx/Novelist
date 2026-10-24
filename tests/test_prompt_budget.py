@@ -38,7 +38,9 @@ def test_budget_disabled_when_zero():
 
 
 def test_budget_evicts_lowest_priority_first():
-    secs, evicted = apply_prompt_budget(_sections(), 100)
+    # DL-015（2026-10-24）约束闭包：预算 100 放不下钉死层 → 编译失败而非超着跑，
+    # 此测试改用足够容纳钉死层的预算验证淘汰顺序。
+    secs, evicted = apply_prompt_budget(_sections(), 1000)
     # 钉死层必须幸存
     tags = [t for t, _ in secs]
     assert "goal" in tags and "seam" in tags and "cast" in tags and "tail" in tags
@@ -50,10 +52,27 @@ def test_budget_evicts_lowest_priority_first():
 
 
 def test_budget_unknown_tag_kept():
+    # 未登记 tag 不淘汰（宁超不误删）——闭包语义下"未登记不淘汰"意味着它计入
+    # 钉死侧总量；预算放不下时同样触发闭包失败。给足预算验证保留行为。
     secs = [("goal", "a"), ("mystery_tag", "b" * 500), ("seam", "c")]
-    out, evicted = apply_prompt_budget(secs, 10)
-    # 未登记 tag 不淘汰（宁超不误删）
+    out, evicted = apply_prompt_budget(secs, 600)
     assert ("mystery_tag", "b" * 500) in out and "mystery_tag" not in evicted
+
+
+def test_budget_closure_failure_when_pinned_exceeds():
+    """DL-015 约束闭包断言：可淘汰层全部让路后仍超预算 → 显式编译失败。"""
+    import pytest
+
+    from novelist.core.prompt_budget import PromptBudgetClosureError
+
+    secs = [("goal", "g" * 300), ("seam", "s" * 200), ("memories", "m" * 100)]
+    # memories（可淘汰 15）让路后钉死层 500 仍超预算 400 → 抛闭包失败
+    with pytest.raises(PromptBudgetClosureError) as ei:
+        apply_prompt_budget(secs, 400)
+    assert "钉死层" in str(ei.value)
+    # 预算 0（关闭预算器）永不触发闭包失败
+    out, evicted = apply_prompt_budget(secs, 0)
+    assert out == secs and evicted == []
 
 
 def test_budget_pinned_never_evicted():

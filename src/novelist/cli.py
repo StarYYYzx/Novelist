@@ -305,6 +305,11 @@ def status(ctx: click.Context, directory: str | None) -> None:
               help="F1 取证预算：chronicler 证据环轮次上限（宁漏勿误杀，ADR-032）；缺省 6")
 @click.option("--agentic-review-rounds", type=int, default=None,
               help="F2 取证预算：reviewer 证据环轮次上限（ADR-032）；缺省 8")
+# ---- DL-015（2026-10-24）两阶段管线·编译期 ----
+@click.option("--evidence-required/--no-evidence-required", default=None,
+              help="编纂事件必须带「｜证据：」原文短语，无证据拒收（默认开，编译级口径）")
+@click.option("--compile-review/--no-compile-review", default=None,
+              help="章级三视角编译判定+修复循环（ADR-038；默认开，正确性优先于成本）")
 @click.pass_context
 def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provider: str,
             api_key: str | None, api_base: str | None, model: str | None,
@@ -318,7 +323,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
             agentic_chronicle: bool,
             agentic_review: bool,
             agentic_chronicle_rounds: int,
-            agentic_review_rounds: int) -> None:
+            agentic_review_rounds: int,
+            evidence_required: bool | None,
+            compile_review: bool | None) -> None:
     """串行写一章：圣经注入 → 生成 → 完整性校验 → 文风润色 → 编纂员回写事件。
 
     --provider 选后端；deepseek 等真实模型配 key（env/.env），custom 用 --api-base/--api-key/--model。
@@ -348,6 +355,9 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                                            gcfg.agentic_chronicle_rounds, 6)
     agentic_review_rounds = resolve_opt(agentic_review_rounds,
                                         gcfg.agentic_review_rounds, 8)
+    # DL-015：编译期两项——出厂默认全开（正确性优先于成本，2026-10-24 拍板）
+    evidence_required = resolve_opt(evidence_required, gcfg.evidence_required, True)
+    compile_review = resolve_opt(compile_review, gcfg.compile_review, True)
     # 布尔否定式 flag 对应配置里的肯定式键（inject_bible / jit_characters）
     no_bible = resolve_opt(no_bible,
                            None if gcfg.inject_bible is None else not gcfg.inject_bible,
@@ -417,11 +427,22 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                           agentic_chronicle=agentic_chronicle,
                           agentic_review=agentic_review,
                           agentic_chronicle_rounds=agentic_chronicle_rounds,
-                          agentic_review_rounds=agentic_review_rounds)
+                          agentic_review_rounds=agentic_review_rounds,
+                          evidence_required=evidence_required,
+                          compile_review=compile_review)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
     click.echo(f"草稿已落盘：{res.chapter_path}（模式={res.mode}，圣经注入={res.bible_injected}，"
                f"尝试={res.attempts}）")
+    _cmp = res.compile or {}
+    if _cmp:
+        if _cmp.get("blocked"):
+            click.echo(f"[compile] ✗ 编译未过：硬错误 {len(_cmp.get('hard') or [])} 条修不掉"
+                       "——本章等人工处置（欠账已入 doctor 清单）")
+        else:
+            click.echo(f"[compile] ✓ 通过（{_cmp.get('rounds')} 轮；软问题 "
+                       f"{len(_cmp.get('soft') or [])} 条入欠账，观察名单 "
+                       f"{len(_cmp.get('watchlist') or [])} 条每卷复盘）")
     click.echo(f"阶段：{res.phase}" + (f"（{res.phase_reason}）" if res.phase_reason else ""))
     if res.events_committed:
         click.echo(f"已回写事件：{res.events_committed}")

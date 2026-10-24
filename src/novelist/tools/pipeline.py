@@ -305,6 +305,8 @@ def tools(ws: Workspace, provider=None, ctx: PipelineContext | None = None) -> l
             # 完整管线档（《命令手册》推荐：事件循环 + 润色 + 逐事件回写）
             event_loop=True, polish=True,
             seam_review=True, volume_facts=True,
+            # DL-015 编译期默认（与 CLI 出厂口径一致：正确性优先）
+            evidence_required=True, compile_review=True,
         )
         chars = 0
         if res.chapter_path:

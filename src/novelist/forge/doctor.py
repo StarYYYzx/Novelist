@@ -247,6 +247,16 @@ def run_doctor(ws: Workspace, project_id: str, bp: Blueprint, provider, *,
             log(f"[doctor] LLM 体检失败（仅保留确定性预检）：{type(e).__name__}: {e}")
     report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
               "precheck": pre, "findings": findings, "usage": usage}
+    # DL-015（2026-10-24）：正文编译欠账（tribunal 落账，doctor 顺手展示——
+    # 软语义修不过的降级项 + 单视角观察名单，终润前清偿；观察名单每卷人工复盘一次）
+    try:
+        from ..consistency.tribunal import load_debt
+
+        debt = load_debt(ws, project_id)
+    except Exception:  # noqa: BLE001 - 欠账读取失败不影响体检
+        debt = {}
+    if debt.get("by_volume"):
+        report["compile_debt"] = debt["by_volume"]
     _write_report(ws, project_id, report)
     from .state import append_transcript
 
@@ -276,5 +286,16 @@ def _write_report(ws: Workspace, project_id: str, report: dict) -> None:
         for f in items:
             lines.append(f"- **[{f['level']}] `{f['module']}`** {f['issue']}"
                          + (f" —— 建议：{f['advice']}" if f.get("advice") else ""))
+        lines.append("")
+    debt = report.get("compile_debt") or {}
+    if debt:
+        n = sum(len(v) for v in debt.values())
+        lines.append(f"## 正文编译欠账（{n} 条，终润前清偿；观察名单每卷复盘一次）")
+        lines.append("")
+        for vol in sorted(debt, key=lambda x: int(x) if str(x).isdigit() else 0):
+            for r in debt[vol]:
+                tag = "阻断" if r.get("blocked") else r.get("severity", "soft")
+                lines.append(f"- **[{tag}] 第{vol}卷{r.get('ch')}章** {r.get('type')}"
+                             f"：「{str(r.get('quote'))[:40]}」——{r.get('basis')}")
         lines.append("")
     ws.write_text(ws._abs(f"{project_id}/{DOCTOR_REL}"), "\n".join(lines))  # noqa: SLF001

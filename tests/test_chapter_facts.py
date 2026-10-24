@@ -98,7 +98,8 @@ def test_facts_block_is_pinned_under_budget():
     """事实账本是钉死层：预算超限时不得被淘汰（确定性事实宁超不丢）。"""
     sections = [("goal", "目标" * 50), ("facts", "【本章已确立事实】事实" * 50),
                 ("memories", "前情" * 200)]
-    kept, evicted = apply_prompt_budget(sections, 400)
+    # DL-015 约束闭包：预算须容得下钉死层（goal+facts=650），否则编译失败而非超着跑
+    kept, evicted = apply_prompt_budget(sections, 700)
     tags = [t for t, _ in kept]
     assert "facts" in tags and "goal" in tags
     assert "memories" in evicted
