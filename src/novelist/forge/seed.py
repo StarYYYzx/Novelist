@@ -30,6 +30,8 @@ from .state import Blueprint, ForgeState, append_transcript
 DEFAULT_VOLUMES = 3
 DEFAULT_CHAPTERS = 20
 DEFAULT_WORDS = 2400
+# FIX-1 scale sanity：LLM 推测规模（卷×章）超此值即钳回默认并降置信（用户显式给的不受限）
+SCALE_SANITY_LIMIT = 100
 
 
 @dataclass
@@ -184,9 +186,24 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
     set_meta("template", pack_id, "template", 1.0)
     set_meta("logline", spec.logline or brief.strip()[:80], "llm", 0.8)
     scale = _scale_of(spec, volumes, chapters_per_volume, target_words, pack)
-    meta["scale"] = scale
     src = "user" if (volumes or chapters_per_volume or target_words) else "llm"
-    bp.set_provenance("meta.scale", src, 1.0 if src == "user" else 0.8)
+    # FIX-1（scale sanity，L6 实证：一句话被 LLM 自由发挥成 6×100=600 章）：
+    # 推测规模超阈值 → 钳回默认并**降置信**（0.4 < meta.scale 槽位阈值 0.5，
+    # detect_gaps 会列为 low_confidence 缺口——商讨轮/对话 agent 都会来确认）；
+    # 用户显式给规模（src=user）永不钳制。
+    if (src == "llm"
+            and scale["volumes"] * scale["chapters_per_volume"] > SCALE_SANITY_LIMIT):
+        _warnings.append(
+            f"规模 {scale['volumes']}×{scale['chapters_per_volume']} 超出常理"
+            f"（一句话创意不宜直接规划超长篇），已钳制为默认 "
+            f"{DEFAULT_VOLUMES}×{DEFAULT_CHAPTERS}；确需更大规模请显式指定")
+        scale = {"volumes": DEFAULT_VOLUMES, "chapters_per_volume": DEFAULT_CHAPTERS,
+                 "target_words_per_chapter": scale["target_words_per_chapter"]}
+        conf = 0.4
+    else:
+        conf = 1.0 if src == "user" else 0.8
+    meta["scale"] = scale
+    bp.set_provenance("meta.scale", src, conf)
     if spec.time_origin:
         set_meta("time_origin", spec.time_origin, "llm", 0.8)
 
@@ -206,15 +223,18 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
     if anchors:
         set_meta("anchors", anchors[:12], "user", 0.9)
 
-    # worldview：包默认（template）+ 提炼的机制（llm）
+    # worldview：只装包默认（template）。FIX-1（2026-09-19 方案 / 2026-10-24 落地）：
+    # 金手指（系统/异能）是**主角的所有物**，不再写进 worldview.power_system.mechanic——
+    # 此前 cheat 的唯一载体成了世界观，book 节点把它 elaboration 成多条世界铁律，
+    # 正文全篇零"系统"字样（proj-20260919091817 实证）。cheat 改落主角卡与
+    # meta.protagonist_hint（见下）。
     wv = bp.data["worldview"]
     wv["power_system"] = {
-        "mechanic": spec.protagonist_hint.get("cheat") or pack.get("power_system", {}).get("mechanic", ""),
+        "mechanic": (pack.get("power_system") or {}).get("mechanic", ""),
         "levels": list((pack.get("power_system") or {}).get("levels") or []),
     }
     if wv["power_system"]["mechanic"]:
-        bp.set_provenance("worldview.power_system.mechanic",
-                          "llm" if spec.protagonist_hint.get("cheat") else "template", 0.8)
+        bp.set_provenance("worldview.power_system.mechanic", "template", 1.0)
     if wv["power_system"]["levels"]:
         bp.set_provenance("worldview.power_system.levels", "template", 1.0)
 
@@ -256,21 +276,29 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
             st["craft_cards"] = picked
             bp.set_provenance("style.craft_cards", "user", 1.0)
 
-    # 主角骨架（提炼给名才建档；book 节点会补全/兜底）
-    name = spec.protagonist_hint.get("name", "")
+    # 主角线索：FIX-1——hint **持久化进蓝图 meta**（此前提炼完即丢，下游只能从
+    # 世界观反推主角机制）；cheat 同步写进主角骨架卡（人物卡 schema 已加 cheat 字段）。
+    ph = spec.protagonist_hint or {}
+    name = str(ph.get("name") or "").strip()
+    cheat = str(ph.get("cheat") or "").strip()
+    gender = ph.get("gender") if ph.get("gender") in ("male", "female") else "unknown"
+    meta["protagonist_hint"] = {"name": name, "gender": gender, "cheat": cheat}
+    bp.set_provenance("meta.protagonist_hint", "llm", 0.8)
+    # 主角骨架（提炼给名才建档；book 节点会补全/兜底；不预置泛型 char:protagonist 卡）
     if name:
-        gender = spec.protagonist_hint.get("gender")
-        if gender not in ("male", "female"):
-            gender = "unknown"
         cid = f"char:{_slug(name, 'protagonist')}"
-        bp.upsert("characters", {
+        card = {
             "id": cid,
             "name": name,
             "gender": gender,
             "role": "protagonist",
             "core_traits": [],
             "status": "active",
-        })
+        }
+        if cheat:
+            card["cheat"] = cheat
+            bp.set_provenance(f"characters[{cid}].cheat", "llm", 0.8)
+        bp.upsert("characters", card)
         bp.set_provenance(f"characters[{cid}].name", "llm", 0.8)
         bp.set_provenance(f"characters[{cid}].gender", "llm", 0.8)
         bp.set_provenance(f"characters[{cid}].role", "template", 1.0)

@@ -1112,6 +1112,23 @@ min_event_words = 120
 待办（决策清单见 `docs/综合工程审计与决策清单-2026-09-19.md`）：schema 死字段清理、
 bible_feedback 漂移、BIBLE_CONTRACT 缺口、publish/promote 合并、obs 耗尽拦截、实然错位迁移。
 
+### M3ae — 对话 Agent 流水线闭环（DL-014 · 2026-10-24 拍板执行 / ✅ 代码+测试落地，真机验收待做）
+
+> ADR-037（反转 M3ac 拍板 C）：开书/构建/写章全部可在对话里闭环完成——
+> 这就是 DL-003 后端完成线的本体。含 FIX-1 清偿（金手指归位 + scale 钳制）。
+
+| 子项 | 内容 | 状态 |
+| --- | --- | --- |
+| M3ae-1 流水线工具 | `tools/pipeline.py` 7 工具：create_project（safe）/ start_book / build_blueprint / approve_review / write_chapter / revise_module（sensitive）/ get_gaps（safe）；**provider 绑定才注册**（防子代理递归开构建） | ✅ |
+| M3ae-2 对话式填设定 | `get_gaps` 暴露 detect_gaps；SYSTEM_PROMPT v2 工作流（一次问 2~3 个、自然语言、有默认自己取并报备） | ✅ |
+| M3ae-3 枢纽层 | ChatAgent `hub=True` 工作台态（无项目自然语开书）；console 建书后自动切入 + 会话交接 | ✅ |
+| M3ae-4 会话级授权 | 审批 `[y/N/a]`：a=本会话不再问（内存态，不落盘）；danger 永不自动 | ✅ |
+| M3ae-5 FIX-1 清偿 | seed 金手指归位（主角卡 cheat 字段 + meta.protagonist_hint 落盘 + book prompt 归属约束 + schema）；scale sanity 钳制（LLM 推测 >100 章钳回默认并降置信成缺口） | ✅ |
+| M3ae-6 真机验收 | 即 M3ac-5 判据扩展：对话里完成"开书 → 填设定 → 构建 → 放行 → 写第一章"全链（raw-calls 出现 pipeline 工具往返） | ⬜ |
+
+测试：`tests/test_pipeline_tools.py` 15 例 + test_m13_forge_f1 / test_m14_forge_console
+两处旧契约更新。详见 ADR-037 与 `docs/决策台账.md` DL-014。
+
 ### M4 — 硬化与评测（持续）
 - 完整评测集（见 09）与回归，含"记忆自洽 / 人设保真"专项（A7/A8）。
 - 多个 Provider 实测（云 + 本地 Ollama/vLLM），含 Embedding 能力矩阵。

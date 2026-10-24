@@ -268,7 +268,7 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
 {pkg_block}
 
 【要求】
-1. 主角必给一张卡（role=protagonist）；原话没给主角名就按卖点拟一个合理的。
+1. 主角必给一张卡（role=protagonist；有金手指就写进卡上 cheat 字段，一句话）；原话没给主角名就按卖点拟一个合理的。
 2. volumes 恰好 {scale.get('volumes', 3)} 卷（vol=1..N），每卷给 title/summary/key_beats/threads_to_payoff。
 3. worldview.power_system.levels 沿用模板境界体系，可按本书微调。
 4. 所有 id 用前缀：char:/loc:/item:/pt:/ln:。
@@ -284,6 +284,10 @@ def _book_prompt(ctx: NodeContext) -> tuple[str, str]:
    没有区间的支线在构建期不会被点名，等于白登记。
 8c. threads（伏笔）若已知依附的线索，给 parent_line="ln:xxx"；回收窗口明确的
    给 payoff_window={{vol, start_ch, end_ch}}（超窗未回收会被构建期记为欠账）。
+9. 金手指归属（硬约束，FIX-1）：主角线索里的 cheat（系统/金手指/异能）是主角
+   **独有**的机制——只能体现在主角卡的 cheat 字段与具体剧情里；**不得**写成
+   世界铁律（worldview.rules）或世界通用力量机制。power_system.mechanic 描述的是
+   "这个世界所有人怎么修炼"，不是"主角比别人多什么"。
 
 按以下 JSON 输出（键名严格一致，缺省用空对象/空数组）：
 {_BOOK_OUTPUT_PROTOCOL}"""

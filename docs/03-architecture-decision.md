@@ -889,6 +889,46 @@ tools 下发与 get_bible/list_chapters 等真实 tool_calls 往返）；同时�
 `tool_calling` 实际不可用，AG-20 能力门控会让自然语通道退化为"单轮问答 + 无工具"，
 届时需另拍降级方案（伪工具协议或换 provider）。
 
+### ADR-037 对话 Agent 流水线闭环：开书/构建/写章工具化 + 枢纽层 + 会话级授权（· 拍板定稿 2026-10-24，**已实现**（DL-014，M3ae））
+
+> 本 ADR **反转 ADR-036 的拍板 C**（"流水线命令暂不包成 Tool"）。反转依据：用户定位
+> 对话 agent 为主交互主干（问答 Q9 / DL-002），而"开一本新书要 11~40 次输入与审批"
+> 的表单式链路（ask.py 31 槽位 8 轮 + 闸门三段急停）与该定位冲突；2026-10-24 用户
+> 明确构想"像工作 Agent 一样对话式交流，AI 结合当前情况问问题并解析回答填好设定"，
+> 并批准按推荐方案执行（G3：create_project + 无项目态枢纽 Agent；G4：首次必问 +
+> 会话内记住 + danger 永不自动）。
+
+**决策内容**（四件）：
+
+1. **流水线工具化（G1）**：`tools/pipeline.py` 新增 7 工具——`create_project`（safe）、
+   `start_book`/`build_blueprint`/`approve_review`/`write_chapter`/`revise_module`
+   （sensitive）、`get_gaps`（safe）。**provider 绑定才注册**：章节生成内部构建的
+   registry 不传 provider，天然杜绝"生成中的子代理再开构建"的递归。审批走既有
+   `review.py`（approve_review 与 /fr-approve 同语义，非旁路）。
+2. **对话式填设定（G2）**：`get_gaps` 把确定性缺口检测（`slots.detect_gaps`）暴露给
+   对话 agent——**缺口由引擎判定，问法与解析由模型承担**（slots.py"问题由引擎决定，
+   候选由模型生成"原则的自然延伸）；SYSTEM_PROMPT v2 规定工作流：一次最多问 2~3 个
+   真需拍板的问题、自然语言、有默认值自己取并报备。ask.py 表单退化为引擎兜底。
+3. **枢纽层（G3）**：ChatAgent 支持 `hub=True`（project_id=None，工作台态）——
+   "开新书"的对话发生在项目存在之前；console 在枢纽对话里建了项目后自动切入，
+   并把最后一轮对话交接进项目 agent 会话（上下文不断档）。
+4. **会话级授权（G4）**：审批提示从 `[y/N]` 扩为 `[y/N/a]`——a 把该工具加入**会话内**
+   授权集合（退出 console 失效，不落盘）；danger 级（publish/delete_file/checkpoint）
+   **永不入授权**。对照编码 agent 的 allow-always / session 语义。
+
+**顺带落地 FIX-1（2026-09-19 整改方案顺延项，本批一并清偿）**：金手指归位——
+`seed` 不再把 `cheat` 写进 `worldview.power_system.mechanic`（改落主角卡 `cheat` 字段
++ `meta.protagonist_hint` 落盘）；book 节点 prompt 加金手指归属硬约束；人物卡 schema
+加 `cheat` 字段；scale sanity——LLM 推测规模超 100 章钳回默认并降置信（缺口检测会
+要求确认，用户显式给的不受限）。
+
+**成本边界**：流水线工具自身的 LLM 消耗不计入对话轮成本硬顶（AgentRunner 只记自己
+发起的调用）——成本控制靠 sensitive 门禁（首次必问）+ 工具结果回带 calls_used，
+agent 动手前须向用户报备规模。
+
+**测试**：`tests/test_pipeline_tools.py` 15 例（工具行为/枢纽/授权/FIX-1）+ 既有
+test_m13/test_m14 两处旧契约更新（金手指归位、无项目自然语不再被拒）。
+
 ## 6. 与其他备选方案的对比小结
 
 | 备选 | 为何不选 |

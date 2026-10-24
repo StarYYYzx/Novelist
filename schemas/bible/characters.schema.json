@@ -73,6 +73,10 @@
         "type": "string",
         "description": "身世背景一句话（生成上下文注入，抑制人物凭空漂移）。"
       },
+      "cheat": {
+        "type": "string",
+        "description": "金手指/核心机制一句话（FIX-1，2026-10-24）：主角独有的系统/异能/机缘。归属约束——只能写在人物卡与剧情里，不得写成世界铁律或世界通用力量机制（worldview）。"
+      },
       "arc": {
         "type": "string"
       },

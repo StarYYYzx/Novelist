@@ -75,6 +75,9 @@ novel_workspace/
   "species": "human",
   "core_traits": ["谨慎", "外冷内热"],
   "power": {"level": "九阶", "faction": "青云宗"},
+  "cheat": "五五开系统",              // 金手指/核心机制一句话（FIX-1，2026-10-24）：
+                                      // 主角独有系统/异能——归属约束：只写人物卡与剧情，
+                                      // 不得写成世界铁律/世界通用力量机制（seed 自动归位）
   "arc": "从弃徒到掌门",
   "intent": "洗清冤屈，夺回苏家渊佩",   // dp-intent：此刻最执着的欲望（动机着色的权威源）
   "plan": "先回青源坊查证当年卷宗再赴藏剑阁",  // dp-intent：近段计划
@@ -342,6 +345,8 @@ planned(细纲完成) → drafting → draft_ready → reviewing → reviewed_ok
 - `characters.*.id`、`locations.*.id`、`plot_threads.*.id` 为全局唯一索引。
 - 正文章节头中的 `threads_involved`、人物 mention 等，均需命中对应实体 id（缺失即告警）。
 - schema 变化需与规则引擎白名单同步，避免"引擎不认识新字段"。
+  （2026-10-24 复核：人物卡新增 `cheat` 字段为生成侧字段——seed 归位与 prompt 注入消费，
+  规则引擎不读它，无需登记白名单。）
 
 ## 6. 检查点（ADR-010 双轨）
 - **版本轨（Git 友好）**：`bible/`、`outline/`、`chapters/` 为可 diff 文本文件，改动即有版本历史。

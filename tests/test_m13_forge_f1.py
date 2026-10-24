@@ -167,8 +167,12 @@ def test_run_seed_smoke_builds_blueprint(ws_factory):
     # 主角骨架建档
     proto = next(c for c in bp.section("characters") if c.get("role") == "protagonist")
     assert proto["name"] == "叶蓝" and proto["gender"] == "male"
-    # 提炼的机制覆盖模板
-    assert bp.get("worldview.power_system.mechanic") == "五五开系统"
+    # FIX-1（2026-10-24，DL-014）：金手指归主角，不进世界观——
+    # mechanic 保持类型包默认；cheat 落主角卡 + meta.protagonist_hint 落盘。
+    assert bp.get("worldview.power_system.mechanic") == \
+        (load_pack_for("修仙男频").get("power_system") or {}).get("mechanic")
+    assert proto["cheat"] == "五五开系统"
+    assert (bp.get("meta.protagonist_hint") or {}).get("cheat") == "五五开系统"
 
 
 def test_run_seed_scales_user_cli_overrides(ws_factory):

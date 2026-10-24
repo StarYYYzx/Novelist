@@ -157,7 +157,10 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   - `storage/`：`workspace`（沙箱 + 原子写）、`checkpoint`（双轨快照）、`indexdb`（SQLite 辅助索引）、
     `models`（Schema 校验）。
   - `tools/`：`filesys` / `writing` / `memory_tools` / `governance` / `query`（结构化只读查询：
-    list_chapters/get_bible/get_outline/list_conflicts/get_worldstate），经 `build_registry()` 装配。
+    list_chapters/get_bible/get_outline/list_conflicts/get_worldstate）/ **`pipeline`（DL-014/ADR-037
+    流水线工具：create_project/start_book/build_blueprint/approve_review/write_chapter/revise_module/
+    get_gaps——对话 agent 开书写章闭环；provider 绑定才注册，safe 级已登记 G3 白名单）**，
+    经 `build_registry()` 装配。
   - `cli.py`（click）、`server.py`（FastAPI）、`config.py`（TOML 配置）。
   - **目录结构以真实布局为准**，`docs/08` §2 附有"原图条目 → 实际落点"对照表。
 

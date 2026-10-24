@@ -16,6 +16,8 @@ from . import filesys  # noqa: F401
 from . import memory_tools  # noqa: F401
 from . import governance  # noqa: F401
 from . import query  # noqa: F401
+from . import pipeline  # noqa: F401  DL-014：流水线工具（provider 绑定才注册）
+from .pipeline import PipelineContext  # noqa: F401  对话层共享（类型再导出）
 
 # 判断型子代理（ADR-032 基座）允许的证据读取工具——只读，禁止写库/写文件的越权路径。
 # 唯一源在 `core/tools.EVIDENCE_TOOL_NAMES`（`ToolRegistry.select("evidence")` 也用它）。
@@ -28,25 +30,32 @@ def build_registry(
     approvals: "ApprovalQueue | None" = None,
     decision_fn=None,
     embedding=None,
+    provider=None,
+    pipeline_ctx: "PipelineContext | None" = None,
 ) -> ToolRegistry:
     """装配完整工具注册表（docs/05 §4.1 / docs/07 §3.3）。
 
     approvals/decision_fn 透传给 ToolRegistry（ask 处置的人工审批接入，docs/07 §3.3）。
     embedding 透传给记忆工具（docs/07 §7.1）；None 时检索降级为关键词索引（F9.4）。
+    provider/pipeline_ctx 透传给流水线工具（DL-014）：**provider=None 时流水线组
+    不注册**——章节生成内部构建的 registry 不带 provider，杜绝子代理递归开构建。
     """
     reg = ToolRegistry(gate=gate or PermissionGate(), approvals=approvals, decision_fn=decision_fn)
-    for tool in all_tools(ws, embedding=embedding):
+    for tool in all_tools(ws, embedding=embedding, provider=provider,
+                          pipeline_ctx=pipeline_ctx):
         reg.register(tool)
     return reg
 
 
-def all_tools(ws: Workspace, embedding=None) -> list[Tool]:
+def all_tools(ws: Workspace, embedding=None, provider=None,
+              pipeline_ctx: "PipelineContext | None" = None) -> list[Tool]:
     return (
         filesys.tools(ws)
         + writing.tools(ws)
         + memory_tools.tools(ws, embedding=embedding)
         + governance.tools(ws)
         + query.tools(ws)
+        + pipeline.tools(ws, provider=provider, ctx=pipeline_ctx)
     )
 
 

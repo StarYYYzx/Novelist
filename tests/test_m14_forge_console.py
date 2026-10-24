@@ -146,12 +146,15 @@ def test_compose_skips_init_and_show(tmp_path):
 # ---------- 全部命令接入（2026-09-10）----------
 
 def test_console_dispatch_unknown_warns(tmp_path):
-    """2026-09-19（M3ac-1）：非 / 输入**不再拒绝**——进对话 agent；
-    未选项目时提示先选项目（自然语也需要项目上下文）。"""
+    """2026-09-19（M3ac-1）：非 / 输入**不再拒绝**——进对话 agent。
+    2026-10-24（DL-014 G3）：未选项目时不再提示"先选项目"，而是进**枢纽 agent**
+    （工作台态：开新书/选书）；自然语在任何状态下都有归宿。"""
     c, io = _console(str(tmp_path), lines=["bogus", "/q"])
     c.run()
-    assert any("未选定项目" in ln for ln in io.out)
     assert not any("必须以 / 开头" in ln for ln in io.out)
+    assert not any("未选定项目" in ln for ln in io.out)
+    # 枢纽 agent 真被调用（fake provider 直出其固定回复）
+    assert any("演示：fake provider" in ln for ln in io.out)
 
 
 def test_console_dispatch_slash_then_space_no_crash(tmp_path):

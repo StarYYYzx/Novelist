@@ -206,6 +206,9 @@ _SAFE_TOOL_ALLOWLIST = {
     "write_draft",                      # 写草稿区（正文由 publish 转正，仍受 danger 门禁）
     # M3ac-2（2026-09-19）：结构化查询，全只读
     "list_chapters", "get_bible", "get_outline", "list_conflicts", "get_worldstate",
+    # DL-014（2026-10-24）：流水线工具中的零成本项——create_project 只建目录+写
+    # project.json（可 /delete 回收，无 LLM）；get_gaps 是纯确定性读（detect_gaps）。
+    "create_project", "get_gaps",
 }
 
 # (d) Forge 落盘事务（2026-09-16 事故）：`_apply_*` 是"先写蓝图、后校验"，

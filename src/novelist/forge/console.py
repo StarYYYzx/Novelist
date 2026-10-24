@@ -47,23 +47,44 @@ from ..core.output import use_output
 from ..storage.workspace import Workspace
 
 
-def _io_decision(io: FilterableIO):
+# G4 会话级授权（2026-10-24 拍板，DL-014）：首次必问 + 会话内记住 + danger 永不自动。
+# danger 级工具即使曾被授权也不自动放行——其语义是"须用户显式执行"（publish/delete/
+# checkpoint），会话授权只覆盖 sensitive 级的重复性操作（构建/写章/审批等）。
+_DANGER_TOOL_NAMES = frozenset({"publish", "delete_file", "checkpoint"})
+
+
+def _io_decision(io: FilterableIO, grants: "set[str] | None" = None):
     """门禁审批的 REPL 通道（M3ac-1）：sensitive 工具调用当场问用户。
 
     与 cli.py `_interactive_decision` 同语义，但走 console 的 FilterableIO
     （CliRunner 隔离环境里 click.prompt 接触不到真实 stdin）。
+
+    G4（DL-014）：传 `grants`（console 的会话授权集合）后，答 **a** 把该工具加入
+    集合——本会话内不再问；命中集合的直接放行。danger 级工具永不入集合。
     """
 
     def _decide(req) -> str:
         from ..core.output import heartbeat_paused
 
+        if grants is not None and req.tool in grants and req.tool not in _DANGER_TOOL_NAMES:
+            return "allow"
         io.output(f"[approval] 工具 {req.tool} 请求执行：{req.reason}")
         io.output(f"  参数：{str(req.params)[:200]}")
         # 等待决策期间暂停"思考中"心跳（2026-09-19：审批阻塞 input() 时心跳线程
         # 继续打假心跳，5 分钟"思考中"实为等输入，误导用户以为卡死去按 Ctrl+C）
         with heartbeat_paused():
-            ans = io.ask_free("  允许？[y/N]（回车/N 拒绝；Ctrl+C 中止本轮对话）")
-        return "allow" if (ans or "").strip().lower() in ("y", "yes") else "deny"
+            ans = io.ask_free("  允许？[y/N/a]（y=本次；a=本会话不再问；回车/N 拒绝）")
+        v = (ans or "").strip().lower()
+        if v in ("a", "always"):
+            if req.tool in _DANGER_TOOL_NAMES:
+                io.output("[i] danger 级工具不支持会话授权（安全边界）；"
+                          "y=单次允许，N=拒绝。")
+                return "deny"
+            if grants is not None:
+                grants.add(req.tool)
+                io.output(f"[i] 本会话内 {req.tool} 不再询问（退出 console 后失效）。")
+            return "allow"
+        return "allow" if v in ("y", "yes") else "deny"
 
     return _decide
 
@@ -276,8 +297,26 @@ class Console:
         self._ws = Workspace(root=self.ws_root)
         # M3ac-1（ADR-036）：对话 agent 按项目惰性创建、跨命令持有（会话内连续对话）
         self._chat_agents: dict[str, Any] = {}
+        # G3/G4（DL-014，2026-10-24）：枢纽 agent（无项目态）+ 会话级授权 +
+        # 流水线工具共享上下文（开书交接 / 审批回调透传给章节生成）
+        self._hub_agent: Any = None
+        self._session_grants: set[str] = set()
+        self._pipeline_ctx_obj: Any = None
 
     # —— 工具 ——
+
+    def _approval_decision(self):
+        """审批回调（G4：带会话授权集合——a=本会话不再问，danger 永不自动）。"""
+        return _io_decision(self.io, self._session_grants)
+
+    def _pipeline_ctx(self):
+        """流水线工具共享上下文（惰性建）：console 据此做开书交接。"""
+        if self._pipeline_ctx_obj is None:
+            from ..tools.pipeline import PipelineContext
+
+            self._pipeline_ctx_obj = PipelineContext(
+                decision_fn=self._approval_decision())
+        return self._pipeline_ctx_obj
 
     def _proj_dir(self, pid: str) -> str:
         return (self._ws.project_dir(pid)).as_posix()
@@ -697,34 +736,84 @@ class Console:
     # —— 对话 agent（ADR-036 / M3ac-1）——
 
     def _chat(self, line: str) -> None:
-        """自然语通道：非 / 输入 → 主编剧对话 agent（多轮工具循环后交付回答）。"""
-        if not self._need_project():
-            return
+        """自然语通道（M3ac-1 / G3）：非 / 输入 → 对话 agent。
+
+        已打开项目 → 主编剧（项目态）；未打开 → 枢纽助手（工作台态：开新书/选书）。
+        """
         from ..core.agent_chat import ChatAgent
 
+        if self.state.project_id is None:
+            self._hub_chat(line)
+            return
         pid = self.state.project_id
         agent = self._chat_agents.get(pid)
         if agent is None:
             agent = ChatAgent(self._ws, pid, self._make_provider(),
-                              decision_fn=_io_decision(self.io))
+                              decision_fn=self._approval_decision(),
+                              pipeline_ctx=self._pipeline_ctx())
             self._chat_agents[pid] = agent
+        self._chat_turn(agent, line)
+
+    def _hub_chat(self, line: str) -> None:
+        """枢纽态对话（G3，DL-014）：未打开项目时的自然语入口。"""
+        from ..core.agent_chat import ChatAgent
+
+        if self._hub_agent is None:
+            self._hub_agent = ChatAgent(self._ws, None, self._make_provider(),
+                                        decision_fn=self._approval_decision(),
+                                        pipeline_ctx=self._pipeline_ctx(),
+                                        hub=True)
+        answer = self._chat_turn(self._hub_agent, line) or ""
+        # 开书交接（G3）：枢纽对话里建了项目 → 自动切入 + 最后一轮对话交接进项目会话，
+        # 上下文不断档（项目 agent 首次创建时回放这段交接记录）。
+        pid = self._pipeline_ctx().last_created_project
+        if pid and pid in self._ws.list_projects() and pid != self.state.project_id:
+            self._adopt_project(pid, handoff_user=line, handoff_answer=answer)
+
+    def _adopt_project(self, pid: str, *, handoff_user: str = "",
+                       handoff_answer: str = "") -> None:
+        """切入项目（开书交接）：写 state + 把枢纽对话末轮续进项目 agent 会话。"""
+        from ..core.agent_chat import append_session
+
+        self.state.project_id = pid
+        if handoff_user:
+            append_session(self._ws, pid, {
+                "type": "turn", "role": "user",
+                "content": f"（承接工作台对话）{handoff_user}"})
+        if handoff_answer:
+            append_session(self._ws, pid, {
+                "type": "turn", "role": "assistant", "content": handoff_answer})
+        title, stage = self._meta(pid)
+        self.io.output(f"=> 已切换到新书 {pid}（{title or '（无题）'}，stage {stage or '—'}）；"
+                       f"后续对话直接针对这本书（设定/构建/写章继续说即可）。")
+
+    def _chat_turn(self, agent, line: str) -> None:
+        """一轮对话的公共外壳：输出转发 + 中断/异常兜底（主编剧与枢纽共用）。"""
         with use_output(self.io.output):
             try:
                 answer = agent.ask(line)
             except KeyboardInterrupt:
                 # 审批/生成中 Ctrl+C = 中止本轮对话（非退出 REPL、非拒绝该工具）
                 self.io.output("[已中断] 本轮对话中止，agent 会话已保留；可直接继续输入。")
-                return
+                return None
             except Exception as e:  # noqa: BLE001 - 对话失败不杀 REPL
                 self.io.output(f"[agent error] {type(e).__name__}: {e}")
-                return
+                return None
         self.io.output(answer)
+        return answer
 
     def cmd_agent(self, args: str) -> None:
         """/agent [status]：查看对话 agent 的会话状态（轮数/用量/成本）。"""
-        agent = self._chat_agents.get(self.state.project_id) if self.state.project_id else None
+        if self.state.project_id is None:
+            if self._hub_agent is None:
+                self.io.output("[agent] 工作台态——直接输入自然语开始"
+                               "（想开新书，说一句话即可）。")
+                return
+            self.io.output(self._hub_agent.status_line())
+            return
+        agent = self._chat_agents.get(self.state.project_id)
         if agent is None:
-            self.io.output("[agent] 尚未开始对话——直接输入自然语即开始（先 /open 选定项目）。")
+            self.io.output("[agent] 尚未开始对话——直接输入自然语即开始。")
             return
         self.io.output(agent.status_line())
 
