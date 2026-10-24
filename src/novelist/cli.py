@@ -466,6 +466,16 @@ def chapter(ctx: click.Context, directory: str | None, vol: int, ch: int, provid
                           compile_review=compile_review)
     if not res.ok:
         raise click.ClickException(f"chapter production failed: {res.result}")
+    # 2026-10-25 真机修复（短篇 E2E 连章必现）：章内回写（memory/bible/entities）
+    # 会修改已记入 .checksum.json 的文件，而 chapter 命令开头 restore、结尾从不
+    # save——下一章 ck.restore 必报 "file checksum changed"。`run` 命令章末有
+    # save（L232），standalone chapter 缺同一环。失败仅告警（不阻断成稿）。
+    try:
+        ck.save(project_id,
+                dict(ws.read_json(project_id, ws.project_json_path(project_id))))
+    except Exception as e:  # noqa: BLE001 - 刷新失败不吞成稿
+        click.echo(f"[warn] 检查点刷新失败（下一章若报 checksum changed 请重跑本章"
+                   f"或手动刷新）：{e}", err=True)
     click.echo(f"草稿已落盘：{res.chapter_path}（模式={res.mode}，圣经注入={res.bible_injected}，"
                f"尝试={res.attempts}）")
     _cmp = res.compile or {}
@@ -607,6 +617,11 @@ def _make_cli_provider(
     from novelist.providers.fake import FakeProvider, ScriptedProvider
 
     if provider == "fake":
+        # 2026-10-25 真机踩坑（短篇 E2E）：forge 子命令 --provider 默认 fake，
+        # 裸跑 build/resume 会用演示替身"瞬时失败"，错误还伪装成 JSON 解析问题。
+        # 默认值不能直接改（离线测试依赖它），但必须让用户看见自己在用替身。
+        click.echo("[!] 当前使用 fake 演示 provider——不会真实生成（测试替身）。"
+                   "真实构建/写章请加 --provider deepseek", err=True)
         return FakeProvider(reply="演示：fake provider 直接返回文本。")
     if provider in ("scripted", "demo"):
         return ScriptedProvider(

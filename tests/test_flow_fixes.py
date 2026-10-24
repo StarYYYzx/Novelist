@@ -336,6 +336,7 @@ def test_book_node_out_tokens_scale():
             assert path == "meta.scale"
             return {"volumes": 3, "chapters_per_volume": 8}
 
-    assert _node_out_tokens("book", FakeBP()) == 2600 + 900 * 2
+    # 2026-10-25 真机修复（短篇 E2E）：book 基线 2600→6000（固定产出超预算截断）
+    assert _node_out_tokens("book", FakeBP()) == 6000 + 900 * 2
     assert _node_out_tokens("volume", FakeBP()) == 2600
     assert _node_out_tokens("worldview", FakeBP()) == 2600

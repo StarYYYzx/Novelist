@@ -2091,8 +2091,10 @@ def _ensure_json_hint(system: str, user: str) -> tuple[str, str]:
 def _node_out_tokens(kind: str, bp: Any) -> int:
     """节点输出 token 预算。
 
-    book 节点的 artifact 含全部卷规划，随 meta.scale.volumes 线性放大——
-    3 卷蓝图在 2600 预算下 JSON 残缺（2026-09-05 真机：连续两次解析失败回退）。
+    book 节点的 artifact 固定部分（worldview+characters+style+lines 骨架含
+    planned_span/reveal_points——8b/8c 协议扩充后）就已超出 2600，卷规划再随
+    meta.scale.volumes 线性放大。2026-10-25 真机（1 卷短篇）：2600 预算下
+    finish=length 截断成残缺 JSON，两次解析失败回退——基线上调到 6000。
     其余节点输出规模与卷数无关，维持 2600。
     """
     base = 2600
@@ -2104,7 +2106,7 @@ def _node_out_tokens(kind: str, bp: Any) -> int:
             n = int(((bp.get("meta.scale") or {}).get("volumes")) or 1)
         except Exception:  # noqa: BLE001
             n = 1
-        return base + 900 * max(0, n - 1)
+        return 6000 + 900 * max(0, n - 1)
     return base
 
 
@@ -2328,6 +2330,21 @@ def _run_node_impl(ctx: NodeContext, kind: str) -> NodeResult:
 
 
 # ---- 审核 revise：book 模块定向段重生成（ADR-024）----
+def _schema_foreign_keys(sec: str, val) -> set[str]:
+    """revise 产物中 schema 未定义的顶层键（过滤白名单用；schema 缺段/段非 dict 不拦）。"""
+    if not isinstance(val, dict):
+        return set()
+    try:
+        from ..storage.models import SchemaRegistry
+
+        props = (((SchemaRegistry().load("forge/blueprint")
+                   .get("properties") or {}).get(sec) or {}).get("properties")) or {}
+        allowed = set(props) | {"id"}
+        return {k for k in val if k not in allowed}
+    except Exception:  # noqa: BLE001 - schema 读不到时不拦（校验兜底仍在）
+        return set()
+
+
 def revise_book_section(provider: Any, bp: Blueprint, module: str,
                         suggestions: str) -> tuple[Any, list[str]]:
     """按用户建议重生成单个 book 审核模块（一次 LLM 调用，只动该模块段）。
@@ -2341,6 +2358,7 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
         raise ValueError(f"not a book-section module: {module}")
     sections = spec["sections"]
     old = {sec: bp.data.get(sec) for sec in sections}
+    diffs_extra: list[str] = []   # 2026-10-25：schema 外字段丢弃留痕
     meta = bp.get("meta") or {}
     # 兄弟模块要点（保持连贯，不整体重生成）
     sibling = {
@@ -2389,14 +2407,33 @@ def revise_book_section(provider: Any, bp: Blueprint, module: str,
     merged = {}
     for sec in sections:
         if sec in new:
+            # 2026-10-25 真机修复（短篇 E2E）两处：
+            # ①段内字段白名单（模型带 schema 外字段 → 落盘校验崩）；
+            # ②段名本身不是蓝图顶层段时路由到 meta——REVIEW_MODULES 的 worldview
+            #   模块 sections=["worldview", "time_origin"]，而 time_origin 在
+            #   seed 侧是 meta.time_origin，直接写顶层必炸。
+            if sec == "time_origin":
+                if isinstance(new[sec], str) and new[sec].strip():
+                    bp.data.setdefault("meta", {})["time_origin"] = new[sec].strip()
+                    diffs_extra.append(f"time_origin → meta.time_origin：{new[sec].strip()[:40]}")
+                continue
+            val = new[sec]
+            dropped = _schema_foreign_keys(sec, val)
+            if dropped and isinstance(val, dict):
+                val = {k: v for k, v in val.items() if k not in dropped}
+                diffs_extra.append(f"已丢弃 schema 外字段 {sec}: {'、'.join(sorted(dropped))}")
+            dropped = _schema_foreign_keys(sec, val)
+            if dropped and isinstance(val, dict):
+                val = {k: v for k, v in val.items() if k not in dropped}
+                diffs_extra.append(f"已丢弃 schema 外字段 {sec}: {'、'.join(sorted(dropped))}")
             # G6 修复（2026-09-05）：整段替换改为**保护合并**——与正常落库路径
             # _apply_items 同一契约（docs/10 §7.6 user 字段永不被模型产物覆盖）。
-            bp.data[sec] = _merge_protected_section(bp, sec, bp.data.get(sec), new[sec])
+            bp.data[sec] = _merge_protected_section(bp, sec, bp.data.get(sec), val)
             merged[sec] = bp.data[sec]  # diff 以实际合并结果为准（保护字段不算变更）
     if not merged:
         raise ValueError(f"revise reply missing section keys {sections}")
     bp.data["rev"] = int(bp.data.get("rev") or 1) + 1
-    diffs: list[str] = []
+    diffs: list[str] = list(diffs_extra)
     for sec in sections:
         diffs.extend(diff_section(old.get(sec), merged.get(sec), sec))
     return merged, diffs
