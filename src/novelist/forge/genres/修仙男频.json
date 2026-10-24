@@ -150,6 +150,7 @@
   "volume_arc_hint": "入门立足→宗门大比→外域历练→宗门危机→真相揭露",
   "default_cards": [
     "chapter-rhythm",
-    "foreshadowing"
+    "foreshadowing",
+    "opening"
   ]
 }

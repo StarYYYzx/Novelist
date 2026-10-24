@@ -58,6 +58,7 @@
   "default_banned": [],
   "volume_arc_hint": "",
   "default_cards": [
-    "chapter-rhythm"
+    "chapter-rhythm",
+    "opening"
   ]
 }
