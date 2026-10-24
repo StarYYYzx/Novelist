@@ -6,9 +6,18 @@
 
 注入片段用 HTML 注释 `<!-- INJECT:BEGIN -->` / `<!-- INJECT:END -->` 包裹，
 该段内容原样进 LLM prompt。
+
+DL-015（2026-10-24）工艺卡重定位为**构建期参考资料 → 实例化为本书规则**：
+- frontmatter 新增 `phase: compile | polish | both`（默认 compile——DL-015 拍板：
+  生成期毛坯正文只保结构性工艺，风味规范归终润）；
+- 机检规范用 `<!-- CHECKS:BEGIN/END -->` 包 JSON 数组（与 INJECT 同一先例；
+  frontmatter 解析器只支持两层，放不下列表-of-字典）。每条 check：
+  {id, kind: min_count|max_count|contains|not_contains, pattern(正则),
+   min/max, note}——实例化后进 craft_rules，由编译器在生成期逐章判定。
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +26,8 @@ CARDS_DIR = Path(__file__).parent / "cards"
 
 _BEGIN = "<!-- INJECT:BEGIN -->"
 _END = "<!-- INJECT:END -->"
+_CHK_BEGIN = "<!-- CHECKS:BEGIN -->"
+_CHK_END = "<!-- CHECKS:END -->"
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
 
@@ -32,6 +43,9 @@ class CraftCard:
     body: str = ""          # frontmatter 之后的全文（给人看）
     inject: str = ""        # INJECT 段（给 LLM 看）
     path: Path | None = None
+    # DL-015：分相（默认 compile）与机检规范模板（实例化参数化后由编译器消费）
+    phase: str = "compile"
+    checks: list[dict] = field(default_factory=list)
 
     @property
     def title(self) -> str:
@@ -105,6 +119,20 @@ def _split_inject(body: str) -> tuple[str, str]:
     return body.strip(), ""
 
 
+def _parse_checks(body: str) -> list[dict]:
+    """解析 `<!-- CHECKS:BEGIN/END -->` JSON 数组（坏 JSON 退化为空——卡是参考资料，
+    机检规范缺失不致命，语义判定仍有三视角兜底）。"""
+    if _CHK_BEGIN in body and _CHK_END in body:
+        _, _, tail = body.partition(_CHK_BEGIN)
+        raw, _, _ = tail.partition(_CHK_END)
+        try:
+            data = json.loads(raw.strip())
+        except ValueError:
+            return []
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+    return []
+
+
 def load_card(card_id: str) -> CraftCard | None:
     p = CARDS_DIR / f"{card_id}.md"
     if not p.exists():
@@ -122,6 +150,10 @@ def load_card(card_id: str) -> CraftCard | None:
         body=body,
         inject=inject,
         path=p,
+        phase=(str(fm.get("phase") or "compile")
+               if str(fm.get("phase") or "compile") in ("compile", "polish", "both")
+               else "compile"),
+        checks=_parse_checks(body),
     )
 
 

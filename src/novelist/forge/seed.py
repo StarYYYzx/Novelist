@@ -275,6 +275,22 @@ def _init_blueprint(ws: Workspace, project_id: str, brief: str, spec: SeedSpec,
         if picked:
             st["craft_cards"] = picked
             bp.set_provenance("style.craft_cards", "user", 1.0)
+    else:
+        # DL-015（2026-10-24）：类型包默认卡——未显式勾选时自动带上（防新用户漏勾，
+        # 如系统流忘勾系统卡），provenance=template（商讨/对话里可增删覆盖）
+        for cid in (pack.get("default_cards") or []):
+            s = str(cid).strip()
+            if s and s not in st["craft_cards"]:
+                st["craft_cards"].append(s)
+    # DL-015⑦ 工艺卡重定位：卡（通用知识）+ 本书拍板（meta.romance 等）→
+    # **确定性实例化**为 style.craft_rules（本书规则）——生成期注入与编译期
+    # 判定的都是这份实例化产物；卡的 INJECT 段降级为模板。详见 craft/instantiate.py。
+    from ..craft.instantiate import instantiate_craft_rules
+
+    crules = instantiate_craft_rules(st, meta)
+    if crules:
+        st["craft_rules"] = crules
+        bp.set_provenance("style.craft_rules", "user" if craft else "template", 1.0)
 
     # 主角线索：FIX-1——hint **持久化进蓝图 meta**（此前提炼完即丢，下游只能从
     # 世界观反推主角机制）；cheat 同步写进主角骨架卡（人物卡 schema 已加 cheat 字段）。

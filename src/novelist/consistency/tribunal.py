@@ -308,18 +308,40 @@ def rewrite_with_verdicts(text: str, hard: list[Issue], provider,
     return out
 
 
+def _load_craft_rules(ws: Workspace, project_id: str) -> list[dict]:
+    """读本书实例化工艺规则（bible/style.json 的 craft_rules，DL-015⑦）。"""
+    p = ws.bible_path(project_id, "style")   # D-8 棘轮：路径访问器族是唯一正道
+    try:
+        st = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        st = {}
+    rules = st.get("craft_rules") if isinstance(st, dict) else None
+    return [r for r in (rules or []) if isinstance(r, dict)]
+
+
 def compile_pass(ws: Workspace, project_id: str, vol: int, ch: int,
                  text: str, provider, *, rewrite_max: int = 2) -> tuple[str, dict]:
-    """编译闸门：三视角判定 → 修复循环（hard 修不过阻断 / soft 降级欠账）。
+    """编译闸门：机检规则层（零 LLM）+ 三视角判定 → 修复循环（hard 修不过阻断 /
+    soft 降级欠账）。
 
     返回 `(文本, 报告dict)`——报告恒为 dict（含 blocked/hard/soft/watchlist/rounds），
     调用方（编排层）把它并进 ProductionResult；判定器自身异常由调用方降级跳过。
     """
+    from ..craft.instantiate import eval_craft_checks
+
+    craft_rules = _load_craft_rules(ws, project_id)
     rounds = 0
     report = TribunalReport()
     current = text
     while True:
+        # 第一道闸：工艺规则机检（DL-015⑦，确定性零 LLM）——违例直接 hard
+        # （机器可证），与三视角多数决互补：规则管可判定的，交叉判定管语义地带。
         report = run_tribunal(ws, project_id, vol, ch, current, provider)
+        for v in eval_craft_checks(craft_rules, current):
+            report.hard.append(Issue(
+                perspective="rules", type=f"工艺规则违反（{v.get('check_id')}）",
+                quote=str(v.get("quote") or "")[:120],
+                basis=str(v.get("note") or ""), severity="hard"))
         rounds += 1
         emit(f"[compile] 第{rounds}轮：hard={len(report.hard)} soft={len(report.soft)} "
              f"观察名单={len(report.watchlist)}（无效引用 {report.invalid_quotes}）")

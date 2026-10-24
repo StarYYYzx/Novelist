@@ -321,16 +321,30 @@ def build_system_prompt(bible: dict, cast: list[dict], vol: int, ch: int,
 
     # 题材工艺卡（craft）：设定敲定阶段勾选的硬规范（src/novelist/craft/cards/*.md）。
     # 动机（2026-09-05 lingyu5 真机）：设定阶段只拍了"写什么"，"怎么呈现"交给模型
-    # 自由发挥 → 风格节点把"系统提示音/叮/机械音"当俗套写进禁用词表，系统流小说里
+    # 自由发挥 → 风格节点把"系统提示音/叮/机械音"当俗套写进禁用词表，系统流小说
     # 系统零次发声。卡片把工艺规范固化下来，随文风一起进 prompt。
-    craft_ids = [str(x) for x in (st.get("craft_cards") or []) if str(x).strip()]
-    if craft_ids:
-        from ..craft.loader import inject_block
+    # DL-015⑦（2026-10-24）：优先注入**实例化后的本书规则**（style.craft_rules——
+    # seed 时由卡+拍板确定性生成）；存量项目无实例化产物时回退卡的 INJECT 原文。
+    crules = [r for r in (st.get("craft_rules") or []) if isinstance(r, dict)]
+    _rule_parts: list[str] = []
+    for r in crules:
+        if r.get("phase") in ("compile", "both", None) and str(r.get("rule") or "").strip():
+            tag = str(r.get("card") or "")
+            if r.get("mode"):
+                tag += f"（{r['mode']}）"
+            _rule_parts.append(f"【本书工艺规则 · {tag}】\n{r['rule']}")
+    if _rule_parts:
+        L.append("")
+        L.append("\n\n".join(_rule_parts))
+    else:
+        craft_ids = [str(x) for x in (st.get("craft_cards") or []) if str(x).strip()]
+        if craft_ids:
+            from ..craft.loader import inject_block
 
-        blk = inject_block(craft_ids)
-        if blk:
-            L.append("")
-            L.append(blk)
+            blk = inject_block(craft_ids)
+            if blk:
+                L.append("")
+                L.append(blk)
         # 注：system prompt 不注入字数目标；下限注入走 user_goal（build_chapter_context，
         # 2026-09-06 拍板），chapter-rhythm 卡只规范节奏结构与"不足补什么"。
 

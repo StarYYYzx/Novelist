@@ -158,6 +158,40 @@ def init(ctx: click.Context, directory: str | None, title: str | None) -> None:
 
 @cli.command()
 @click.argument("directory", required=False, default=None)
+@click.option("--provider", default="deepseek", help="LLM 后端（providers.create 单轨工厂）")
+@click.option("--api-key", default=None, help="显式 API key（优先级：显式 > 环境变量 > .env）")
+@click.option("--api-base", default=None, help="自定义 OpenAI 兼容端点（custom 预设）")
+@click.option("--model", default=None, help="覆盖预置模型名")
+@click.option("--rebuild-fingerprint", is_flag=True, default=False,
+              help="强制重建风格指纹（默认复用已有的 bible/style_fingerprint.json）")
+@click.pass_context
+def polish(ctx: click.Context, directory: str | None, provider: str, api_key: str | None,
+           api_base: str | None, model: str | None, rebuild_fingerprint: bool) -> None:
+    """全书终润（DL-015/ADR-038 两阶段管线·第二阶段；手动触发——终润是交稿动作）。
+
+    生成期只保正确性（毛坯正文），人类味道在此统一处理：风格指纹（含人物口吻卡）
+    → 分窗句级润色（不动情节/事实/段序）→ 轻量事实复检（工艺规则机检 + 人物覆盖率
+    + 篇幅比，越权即回滚该章）。产物落 chapters_polished/（不动原文），
+    报告落 reports/polish_report.json。
+    """
+    from novelist.core.polish_book import build_fingerprint, polish_book
+
+    ws, project_id = _resolve_project(ctx.obj["workspace"], directory)
+    prov = _make_cli_provider(provider, 0, 0, api_key=api_key,
+                              api_base=api_base, model=model)
+    if rebuild_fingerprint:
+        build_fingerprint(ws, project_id, prov)
+        click.echo("[polish] 风格指纹已重建：bible/style_fingerprint.json")
+    report = polish_book(ws, project_id, prov)
+    click.echo(f"[polish] 完成：润色 {report['polished']} 章、回滚 {report['rolled_back']} 章"
+               f"（{report['windows']} 窗）；报告 reports/polish_report.json")
+    for row in report["chapters"]:
+        if row["rolled_back"]:
+            click.echo(f"  ✗ {row['vol']}-{row['ch']} 回滚：{('；'.join(row['problems']))[:100]}")
+
+
+@cli.command()
+@click.argument("directory", required=False, default=None)
 @click.option("--to", "to_stage", default="正文", help="跑流水线到指定工序")
 @click.pass_context
 def run(ctx: click.Context, directory: str | None, to_stage: str) -> None:

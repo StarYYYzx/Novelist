@@ -960,8 +960,23 @@ test_m13/test_m14 两处旧契约更新（金手指归位、无项目自然语�
 - 时间线/物品写时断言：核查后确认**现有机制已覆盖**（advance 的 dt≤0 钳制、
   apply_delta 注册表归一），未重复造轮子。
 
-**后续批次**：1.5 工艺卡实例化（craft_rules + romance 三卡合一 + 类型包默认卡）；
-2 生成期审校维度收缩；3 终润层（风格指纹 + 分窗句级润色 + 事实复检 + `novelist polish`）。
+**后续批次（同日全部落地）**：
+- **批次 1.5 工艺卡实例化**：`craft/instantiate.py`——卡（通用知识）+ 本书拍板
+  （meta.romance 联动）→ **确定性实例化**为 `style.craft_rules`（本书规则）；
+  生成期注入与编译期判定都对着实例化产物（`context` 注入切换 + `compile_pass`
+  机检第一道闸）；卡的 INJECT 段降级为模板。卡格式升级：`phase`（compile/polish）
+  + `<!-- CHECKS:BEGIN/END -->` JSON 机检谓词（min/max_count、contains、not_contains）。
+  **romance 三卡合一**（harem/no-heroine/single-heroine → romance 按 mode 分节，
+  槽位 `meta.romance` 拍板值自动联动取值——槽位定"是什么"，卡定"怎么写"）；
+  类型包 `default_cards`（seed 未显式勾选自动带上，防漏勾）。
+- **批次 2 生成期简化**：核查确认**现状已满足**——审校 8 维度（设定矛盾/人设漂移/
+  称谓/时间线/战力/事实/细纲/伏笔）本就全是正确性维度（无文风/修辞维度），
+  逐章润色默认本就关闭；风格维度归属由批次 1.5 的 phase 字段承载。未改码。
+- **批次 3 终润层**：`core/polish_book.py` + CLI `novelist polish`（手动触发——
+  终润是交稿动作）。风格指纹（全局特征 + **每人物口吻卡**，对白区分度挂账项在此
+  落地）→ 分窗句级润色（4 章/窗，指纹 + 前窗尾部锚定，硬边界禁改情节/事实/段序）
+  → 轻量事实复检（工艺规则机检 + 人物名覆盖率 + 篇幅比，越权即回滚该章）。
+  产物落 `chapters_polished/`（不动原文），报告 `reports/polish_report.json`。
 
 ## 6. 与其他备选方案的对比小结
 

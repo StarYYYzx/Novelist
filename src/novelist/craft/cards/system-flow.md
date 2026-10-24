@@ -2,7 +2,8 @@
 id: system-flow
 name: 系统流
 kind: craft
-version: 1
+phase: compile
+version: 2
 scope: [style, chapter]
 summary: 主角绑定一个只对自己可见的金手指"系统"，系统发布任务、结算奖励、有限答疑；呈现上用【】专用于系统发言。
 knobs:
@@ -83,3 +84,12 @@ knobs:
 7. 系统有自身目的，且该目的不是"帮主角变强"。每卷末解锁一层权限并给出一句
    关于其来源或目的的线索（仅一句），全书终局才揭示。
 <!-- INJECT:END -->
+
+<!-- CHECKS:BEGIN -->
+[
+  {"id": "sys_appear_min", "kind": "min_count", "pattern": "【", "min": 1,
+   "note": "系统每章至少露面一次（【】为系统发言专用标识；连续两章沉默即题材根基缺位——2026-09-05 事故教训）"},
+  {"id": "sys_appear_max", "kind": "max_count", "pattern": "【", "max": 8,
+   "note": "每章系统发言不超过 8 处（卡规范 3-5 次为宜，超过即刷屏）"}
+]
+<!-- CHECKS:END -->
