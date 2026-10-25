@@ -25,6 +25,15 @@ from typing import Any
 ROMANCE_MODES = {"无CP": "none", "单女主": "single", "多女主后宫": "harem",
                  "副线淡化": "de-emphasized"}
 
+# 本章人物卡缓存（tribunal 注入，供 requires=protagonist 判定；None=退化为"有人物即算在场"）
+_PRESENT_PROTAGONIST_CACHE: list[dict] | None = None
+
+
+def set_presence_context(character_cards: list[dict] | None) -> None:
+    """注入本章人物卡（tribunal 调用）：判定切片 characters 中的 id 是否主角。"""
+    global _PRESENT_PROTAGONIST_CACHE
+    _PRESENT_PROTAGONIST_CACHE = character_cards
+
 
 def instantiate_craft_rules(style: dict, meta: dict) -> list[dict]:
     """把勾选的工艺卡实例化为本书 craft_rules（确定性，零 LLM）。
@@ -75,20 +84,39 @@ def _romance_rule(inject: str, mode: str) -> str:
     return inject
 
 
-def eval_craft_checks(rules: list[dict], chapter_text: str) -> list[dict]:
+def eval_craft_checks(rules: list[dict], chapter_text: str,
+                      present_character_ids: list[str] | None = None) -> list[dict]:
     """对一章正文跑 craft_rules 的机检谓词（编译器第一道闸——零 LLM）。
 
     返回违例列表：{card, check_id, kind, note, quote}——quote 取首个命中上下文
     （供三视角聚合与修复循环复用）。非法 pattern/check 项静默跳过（卡是参考资料，
     坏谓词不炸编译）；`phase != compile` 的条目不检（polish 相归终润）。
+
+    `present_character_ids`（2026-10-25 多视角修正）：本章出场角色 id——check 带
+    `requires: "protagonist"` 时，主角不在场的章跳过该谓词（如系统流的【】频次
+    下限：整章他人视角时强迫系统露面=违反同卡"系统只对主角可见"，两条规则打架）。
     """
     import re
 
+    present = {str(x) for x in (present_character_ids or [])}
+    # 主角在场判定：切片 characters ∩ 主角卡（bible 人物卡由 set_presence_context 注入）。
+    # 语义是**保守执行**：只有阳性判定"主角不在场"才跳过；人物卡未注入或无法判定时
+    # 照常检查（漏检可被三视角兜住，误跳过等于防线消失）。
+    if _PRESENT_PROTAGONIST_CACHE is not None:
+        protagonist_ids = {str(c.get("id")) for c in _PRESENT_PROTAGONIST_CACHE
+                           if isinstance(c, dict)
+                           and (c.get("is_protagonist") or c.get("role") == "protagonist")}
+        has_protagonist = bool(present & protagonist_ids)
+    else:
+        has_protagonist = True
     out: list[dict] = []
     for r in rules or []:
         if r.get("phase") not in (None, "compile", "both"):
             continue
         for c in (r.get("checks") or []):
+            req = str(c.get("requires") or "").strip()
+            if req == "protagonist" and not has_protagonist:
+                continue
             kind = str(c.get("kind") or "")
             pattern = str(c.get("pattern") or "")
             cid = str(c.get("id") or f"{r.get('card')}:{kind}")

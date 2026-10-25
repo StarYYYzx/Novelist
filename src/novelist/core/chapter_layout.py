@@ -181,6 +181,11 @@ def materialize_outline(ws, project_id: str, vol: int, sl: dict) -> Path:
         "threads_involved": threads,
         "lines_present": lines,
         "after_days": sum(int(ev.get("days") or 0) for ev in evs),
+        # ADR-039 多视角修正（2026-10-25）：绝对天锚——并行视角回填/抽取时间行基准
+        "at_day_start": next((int(ev.get("at_day") or 0) for ev in evs
+                              if ev.get("at_day") is not None), None),
+        "at_day_end": next((int(ev.get("at_day") or 0) for ev in reversed(evs)
+                            if ev.get("at_day") is not None), None),
         "beats": [],
     }
     # 复用 forge 的渲染器（唯一实现，避免格式漂移；函数内延迟导入避免层次倒置）。

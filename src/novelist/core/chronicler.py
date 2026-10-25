@@ -70,10 +70,15 @@ EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取
 
 时间：+90日
 - 表示这段正文结束后故事时间推进了多少（**相对天数**，不是历法日期）
-- **每段正文必须输出 1 条**：正文明确写到时间跨度（"三日后""闭关三月"）→ 写对应
-  +N日；正文没有时间流逝、多线并进 → 写「时间：同日」；回忆插叙 → 写「时间：闪回」
-- **禁止编造**：正文没有时间依据时写「时间：同日」，绝不要自行加天数
+- **每段正文必须输出 1 条**：正文明确写到时间跨度（"三日后""闭关三月""一夜之间"
+  "翌日""当夜……天亮"）→ 按实际跨度写 +N日；多线并进/同场连续 → 写「时间：同日」；
+  回忆插叙 → 写「时间：闪回」
+- 若下方【细纲时间跨度】给出了本段计划天数：正文没有**更明确**的表述时，
+  按该跨度写 +N日（细纲是规划层对本段时间跨度的知情表态，压缩叙事不算
+  "没有时间依据"）；正文显式表述与细纲冲突时以正文为准
+- **禁止编造**：连细纲跨度都没有时才写「时间：同日」，绝不要自行加天数
 - 可加备注：时间：+90日 | 叶岚闭关结束
+{planned_span_block}
 
 约定：叶岚出关｜+90日
 - 表示正文中角色**约定/宣告**在未来某时发生的事（闭关出关、三年之约、比试之期等）
@@ -274,8 +279,8 @@ class Chronicler:
         return "【本书线索账本】（线索行只准引用下列 id）：\n" + "\n".join(rows)
 
     # ---- 抽取 ----
-    def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500
-                ) -> Extraction:
+    def extract(self, chapter_text: str, *, max_events: int = 3, max_chars: int = 2500,
+                planned_days: int | None = None) -> Extraction:
         """LLM 从正文抽取事件、状态变化、时间推进、约定与线索行（ADR-019 / ADR-025）。
 
         无 LLM 时返回空 `Extraction`（不做假）。时间/约定/线索行搭在同一次抽取调用里，
@@ -293,9 +298,11 @@ class Chronicler:
         """
         if self.llm is None or not chapter_text.strip():
             return Extraction()
-        res = self._extract_call(max_events, max_chars, chapter_text, thinking=True)
+        res = self._extract_call(max_events, max_chars, chapter_text, thinking=True,
+                                 planned_days=planned_days)
         if not (res.content or "").strip() and getattr(res, "finish_reason", "") == "length":
-            res = self._extract_call(max_events, max_chars, chapter_text, thinking=False)
+            res = self._extract_call(max_events, max_chars, chapter_text, thinking=False,
+                                     planned_days=planned_days)
         if res.blocked:
             return Extraction(warnings=[f"抽取被审核拦截：{res.block_reason or '未知'}"])
         if not (res.content or "").strip():
@@ -310,13 +317,17 @@ class Chronicler:
         return ex
 
     def _extract_call(self, max_events: int, max_chars: int,
-                      chapter_text: str, *, thinking: bool):
+                      chapter_text: str, *, thinking: bool,
+                      planned_days: int | None = None):
+        span_block = (f"【细纲时间跨度】本段按规划跨越约 {planned_days} 天。"
+                      if planned_days else "")
         return self.llm.complete(
             LLMRequest(
                 messages=[LLMMessage(role="user",
                                      content=EXTRACT_PROMPT.format(
                                          max_events=max_events,
-                                         lines_block=self._build_lines_block())
+                                         lines_block=self._build_lines_block(),
+                                         planned_span_block=span_block)
                                      + _chapter_window(chapter_text, max_chars))],
                 max_tokens_out=2500,
                 temperature=0.3,

@@ -221,3 +221,26 @@ def test_dangling_line_declaration_becomes_pending_proposal(ws_factory):
     assert any("待转正提案" in w for w in warns), warns
     pend = [x for x in led if x["status"] == "pending"]
     assert [x["id"] for x in pend] == ["ln:jiuzhu"]
+
+
+def test_materialize_outline_carries_at_day(tmp_path):
+    """多视角修正（F13）：切片物化把 at_day_start/end 写进细纲 front-matter——
+    并行视角回填与抽取时间行基准的锚点。"""
+    import json as _json
+
+    from novelist.core.chapter_layout import materialize_outline
+    from novelist.storage.workspace import Workspace
+
+    ws = Workspace(root=str(tmp_path))
+    ws.create_project("p")
+    events = [
+        {"desc": "甲", "scene": "s", "pov": "陆沉", "days": 0, "at_day": 3, "est_words": 500},
+        {"desc": "乙（他人视角，与甲同时）", "scene": "s2", "pov": "苏清颜", "days": 0,
+         "at_day": 3, "est_words": 500},
+        {"desc": "丙", "scene": "s", "pov": "陆沉", "days": 2, "at_day": 5, "est_words": 500},
+    ]
+    sl = {"ch": 1, "start": 0, "end": 3, "events": events, "est_words": 1500,
+          "break": "stream-end"}
+    p = materialize_outline(ws, "p", 1, sl)
+    fm = _json.loads(p.read_text(encoding="utf-8").split("---")[1])
+    assert fm["at_day_start"] == 3 and fm["at_day_end"] == 5

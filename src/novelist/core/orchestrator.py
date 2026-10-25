@@ -1877,6 +1877,40 @@ def _produce_chapter_impl(
     except (OSError, ValueError):
         pass  # 修复提示读取失败不影响写章
 
+    # ---- 1.8) 切片时间锚与 POV 纪律（2026-10-25，多视角修正 F13）----
+    # 从细纲 front-matter 读 at_day_start/after_days/pov：
+    # a) planned_days 供抽取时间行做基准（防"同日"偏向 → 时钟停摆）；
+    # b) POV 纪律：非主角视角的章注入信息边界（防主角私有机制泄露进他人场景）；
+    # c) at_day_end 供章末时钟对账（规划跨度 vs 实然推进）。
+    _slice_after_days: int | None = None
+    _slice_at_day_end: int | None = None
+    try:
+        from .bible import parse_gist as _parse_gist
+
+        _gist = _parse_gist(ws, project_id, vol, ch)
+        if isinstance(_gist, dict):
+            if _gist.get("after_days") is not None:
+                _slice_after_days = max(0, int(_gist["after_days"]))
+            if _gist.get("at_day_end") is not None:
+                _slice_at_day_end = int(_gist["at_day_end"])
+            _slice_pov = str(_gist.get("pov") or "").strip()
+            if _slice_pov:
+                _protag_names = set()
+                try:
+                    for _c in ws.read_json(project_id, ws.bible_path(project_id, "characters")) or []:
+                        if isinstance(_c, dict) and (
+                                _c.get("is_protagonist") or _c.get("role") == "protagonist"):
+                            _protag_names.add(str(_c.get("name") or ""))
+                except Exception:  # noqa: BLE001 - 人物卡读不到就不注入 POV 纪律
+                    _protag_names = set()
+                if _protag_names and _slice_pov not in _protag_names:
+                    goal = (goal + f"\n\n【本场视角纪律】本场视角人物是「{_slice_pov}」"
+                            "（主角不在场）：只写该角色可感知、可知晓的信息；"
+                            "主角的私有机制（系统面板/内心独白/私密对话等）"
+                            "不得出现在本场景叙述中。")
+    except (OSError, ValueError):
+        pass  # 时间锚/POV 纪律失败不阻断写章
+
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
@@ -2415,7 +2449,8 @@ def _produce_chapter_impl(
                                 # 盘后 R-STATE 才报警，倒退值已污染后续全部事件的上下文）。
                                 from .worldstate import validate_realm_deltas
 
-                                _extraction = chronicler.extract(piece, max_events=2)
+                                _extraction = chronicler.extract(
+                                    piece, max_events=2, planned_days=_slice_after_days)
                                 _ws_rej = validate_realm_deltas(ws, project_id,
                                                                 _extraction.state_changes)
                                 if _ws_rej and idx not in _state_rewrite_done:
@@ -2431,7 +2466,8 @@ def _produce_chapter_impl(
                                         # 改写稿替换已追加片段，重做接缝去重保持拼接纪律
                                         pieces[-1] = (strip_seam_overlap(pieces[-2], piece)
                                                       if len(pieces) > 1 else piece)
-                                        _extraction = chronicler.extract(piece, max_events=2)
+                                        _extraction = chronicler.extract(
+                                    piece, max_events=2, planned_days=_slice_after_days)
                                         _ws_rej = validate_realm_deltas(
                                             ws, project_id, _extraction.state_changes)
                                 if _ws_rej:
@@ -2642,6 +2678,27 @@ def _produce_chapter_impl(
                 pass
         if compile_report:
             comp["compile_rounds"] = compile_report.get("rounds")
+
+        # ---- 1.8b) 时钟规划-实然对账（2026-10-25 多视角修正 F13/时钟停摆）----
+        # 抽取时间行偏向"同日"（防幻觉规则的副作用），时钟因此停摆——规划层的
+        # at_day_end 是对时间跨度的知情表态：实然 now 落后于规划终点时，把差值
+        # 作为"细纲跨度对账"推进（正文显式表述 > 细纲 > 同日，此处只补下限）。
+        if _slice_at_day_end is not None:
+            try:
+                from . import worldstate as _wsm
+                from .timeline import now_of as _now_of
+
+                _now = _now_of(_wsm.load(ws, project_id))
+                if _slice_at_day_end > _now:
+                    from .timeline import advance as _tl_advance
+
+                    _tl_advance(ws, project_id, _slice_at_day_end - _now,
+                                vol=vol, ch=ch, event="细纲跨度对账")
+                    soft_failures.append(
+                        f"时钟对账：实然推进落后细纲跨度，补进 {_slice_at_day_end - _now} 天"
+                        f"（now → {_slice_at_day_end}）")
+            except Exception as e:  # noqa: BLE001 - 对账失败不阻断成稿
+                soft_failures.append(f"时钟对账失败：{e}")
 
     # ---- 3) 落盘草稿 ----
     draft = ws.draft_path(project_id, vol, ch)

@@ -638,6 +638,10 @@ def _event_stream_prompt(ctx: NodeContext) -> tuple[str, str]:
 2. 事件数约 {target_events} 条；每条 desc 一句话（含动作与结果，40–80 字）；
    est_words 为该事件正文预估字数（400–1200，全节合计 ≈ {K * tw} 字的合理份额）。
 3. 场景/an 视角连续：scene 写具体地点，pov 写视角人物；days 为距上一事件的天数（同日填 0）。
+   **每条事件同时给 at_day（距全书时间原点的累计天数，monotonic 不回退）**——并行视角
+   （主角不在场的他人场景）与主线同日的事件，at_day 必须与主线当日一致（ simultaneity
+   锚点，回写侧据此登记时点）；全卷 at_day 跨度必须覆盖设定锚点的倒计时（如「三个月
+   大考」→ 卷末事件 at_day ≈ 90，days 合计与锚点对账，不得把 90 天压成几天）。
    场景切换、视角切换、时间跳（days>0）、高潮收束——这些是**切章的自然位置**，请让它们清晰可辨。
 4. 线索动作：只引用上面【线索骨架】里的 ln: id（禁止自造）；区间起点的事件给 open，
    区间终点的事件给 close 并在 note 里写 yield（留给主线的收获）；其余给 advance/flicker。
@@ -649,7 +653,7 @@ def _event_stream_prompt(ctx: NodeContext) -> tuple[str, str]:
 
 【输出 JSON】
 {{"events": [
-  {{"desc": "一句话事件", "scene": "地点", "pov": "视角人物", "days": 0,
+  {{"desc": "一句话事件", "scene": "地点", "pov": "视角人物", "days": 0, "at_day": 0,
     "est_words": 800, "climax": false,
     "characters": ["char:xxx"], "threads_involved": ["pt:xxx"],
     "beads": {{"lines": [{{"id": "ln:xxx", "action": "open|advance|flicker|close", "note": "一句话（close 须含 yield=…）"}}]}},
@@ -1755,6 +1759,8 @@ def render_gist_md(gist: dict, vol: int, ch: int, char_names: list[str]) -> str:
         "threads_involved": [str(t) for t in (gist.get("threads_involved") or [])],
         "lines_present": [dict(x) for x in (gist.get("lines_present") or [])
                           if isinstance(x, dict)],   # ADR-025：本章线索动作（事件层消费）
+        "at_day_start": gist.get("at_day_start"),
+        "at_day_end": gist.get("at_day_end"),
         "after_days": int(gist.get("after_days") or 0),
         "beats": [str(b) for b in (gist.get("beats") or [])],  # F4b：重场戏拍级提示
     }

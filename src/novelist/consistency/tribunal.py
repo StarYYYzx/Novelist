@@ -363,9 +363,18 @@ def compile_pass(ws: Workspace, project_id: str, vol: int, ch: int,
     返回 `(文本, 报告dict)`——报告恒为 dict（含 blocked/hard/soft/watchlist/rounds），
     调用方（编排层）把它并进 ProductionResult；判定器自身异常由调用方降级跳过。
     """
+    from ..craft import instantiate as _craft
     from ..craft.instantiate import eval_craft_checks
 
     craft_rules = _load_craft_rules(ws, project_id)
+    # 本章出场角色（细纲 characters 字段）：机检 requires=protagonist 判定用
+    _gist = _read_text(ws, project_id, f"outline/chapters/{vol}-{ch}.md")
+    import re as _re
+
+    _present_ids = _re.findall(r"char:[A-Za-z0-9_-]+", _gist)
+    _cards = _read_json(ws, project_id, "bible/characters.json") or []
+    _craft.set_presence_context([c for c in (_cards if isinstance(_cards, list) else [])
+                                 if isinstance(c, dict)])
     rounds = 0
     report = TribunalReport()
     current = text
@@ -373,7 +382,7 @@ def compile_pass(ws: Workspace, project_id: str, vol: int, ch: int,
         # 第一道闸：工艺规则机检（DL-015⑦，确定性零 LLM）——违例直接 hard
         # （机器可证），与三视角多数决互补：规则管可判定的，交叉判定管语义地带。
         report = run_tribunal(ws, project_id, vol, ch, current, provider)
-        for v in eval_craft_checks(craft_rules, current):
+        for v in eval_craft_checks(craft_rules, current, _present_ids):
             report.hard.append(Issue(
                 perspective="rules", type=f"工艺规则违反（{v.get('check_id')}）",
                 quote=str(v.get("quote") or "")[:120],

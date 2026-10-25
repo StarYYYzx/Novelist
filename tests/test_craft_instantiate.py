@@ -164,3 +164,35 @@ def test_system_prompt_prefers_instantiated_rules(tmp_path):
     bible_legacy = {"style": {"craft_cards": ["system-flow"]}}
     out2 = build_system_prompt(bible_legacy, [], 1, 1)
     assert "只能用于包裹系统发言" in out2 or "系统呈现规范" in out2
+
+
+def test_eval_craft_checks_requires_protagonist_skips_when_absent():
+    """多视角修正（F13）：requires=protagonist 的谓词在主角不在场的章跳过——
+    整章他人视角时强迫系统【】露面 = 违反同卡"系统只对主角可见"。"""
+    from novelist.craft.instantiate import set_presence_context
+
+    set_presence_context([{"id": "char:lin", "role": "protagonist"},
+                          {"id": "char:x"}])
+    rules = [{"card": "system-flow", "phase": "compile", "rule": "",
+              "checks": [{"id": "sys_appear_min", "kind": "min_count",
+                          "pattern": "【", "min": 1, "requires": "protagonist"}]}]
+    # 主角在场：无【 仍违例
+    assert eval_craft_checks(rules, CH, ["char:lin"]) != []
+    # 主角不在场：同文本跳过（阳性缺席判定）
+    assert eval_craft_checks(rules, CH, ["char:x"]) == []
+    # 人物卡未注入：保守执行（无法证明缺席 → 检查照跑，漏检有三视角兜底）
+    set_presence_context(None)
+    assert eval_craft_checks(rules, CH) != []
+
+
+def test_set_presence_context_protagonist_resolution():
+    from novelist.craft.instantiate import eval_craft_checks, set_presence_context
+
+    set_presence_context([{"id": "char:a", "role": "protagonist"},
+                          {"id": "char:b"}])
+    rules = [{"card": "c", "phase": "compile", "rule": "",
+              "checks": [{"id": "x", "kind": "min_count", "pattern": "【", "min": 1,
+                          "requires": "protagonist"}]}]
+    assert eval_craft_checks(rules, CH, ["char:a"]) != []   # 主角在场 → 检
+    assert eval_craft_checks(rules, CH, ["char:b"]) == []   # 主角不在 → 跳
+    set_presence_context(None)  # 清理，不污染其他测试
