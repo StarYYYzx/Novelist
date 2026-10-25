@@ -135,7 +135,10 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
   - `core/`：`llm`（Provider 抽象）、`embedding`（Embedding + 关键词降级）、`memory`（索引/检索/写入）、
     `writeback`（事件实时回写）、`worldstate`（人物硬状态 + 时间轴/pending）、`tools`（注册表 + 三级门禁）、
     `approval`（审批队列）、`pipeline`（工序状态机）、`orchestrator` + `agent_runner`（Agent 循环）、
-    `phase`（分阶段工作流）、`entity`（实体引入状态机）、`scene`（围读会总线）、`export`、`errors`、
+    `phase`（分阶段工作流）、`entity`（实体引入状态机）、
+    `chapter_layout`（**事件流与确定性切章**，ADR-039）、`chapter_facts`（章级事实账本，
+    重写级联失效）、`chronicler`（事件抽取/证据回指回写）、`polish_book`（全书终润：
+    风格指纹+口吻卡+分窗句级润色+事实复检）、`scene`（围读会总线）、`export`、`errors`、
     `agent_chat`（**常驻对话 Agent** 装配层：ChatAgent + 主编剧 SYSTEM_PROMPT + 项目快照 +
     session.jsonl 持久化，ADR-036/M3ac）、
     `events`、`moderation`、`calllog`（原始 LLM 调用日志，ADR-035：完整 prompt/请求体/原始响应 +
@@ -143,6 +146,9 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
       耗时格式化：生成期输出不再裸 `print`，console/server 下可实时转发且有 UTF-8 兜底）、
     `normalize`（确定性文本/数据归一：禁令去重、术语清单拆分与归并——
       装配侧与 Forge 写入侧**共用同一份**）。
+  - `consistency/`：确定性规则引擎 + LLM 审校 + **`tribunal`（三视角交叉编译判定：
+    设定守护者/读者/编辑，多数决+证据复核+修复循环+欠账清单，ADR-038）**、
+    `chapter_layout` 配套物化…
   - `forge/`：`state`（Blueprint/provenance + `BlueprintTxn` 事务化落库）、`slots`（槽位与缺口）、
     `ask` + `io_console`（分轮商讨）、`seed`（模式一）、`ingest`（模式二）、`engine` + `nodes`（递归构建）、
     `genres`（类型包）、    `validate` + `report`（契约校验与构建报告）、`snapshot`（双快照/回滚）、
@@ -161,6 +167,9 @@ E:/python/ana/Scripts/ruff.EXE check src tests scripts    # ruff 不在 PATH 时
     流水线工具：create_project/start_book/build_blueprint/approve_review/write_chapter/revise_module/
     get_gaps——对话 agent 开书写章闭环；provider 绑定才注册，safe 级已登记 G3 白名单）**，
     经 `build_registry()` 装配。
+  - `craft/`：题材工艺卡（`cards/*.md` 14 张）+ **`instantiate`（卡=构建期参考资料 →
+    确定性实例化为 `style.craft_rules` 本书规则**，romance 槽位联动；CHECKS 机检谓词
+    进编译闸门）**；类型包 `default_cards` 防漏勾。
   - `cli.py`（click）、`server.py`（FastAPI）、`config.py`（TOML 配置）。
   - **目录结构以真实布局为准**，`docs/08` §2 附有"原图条目 → 实际落点"对照表。
 
