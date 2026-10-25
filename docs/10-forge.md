@@ -748,6 +748,39 @@ src/novelist/forge/
 
 ---
 
+### 7.10 事件先行与确定性切章（2026-09-19 拍板，ADR-039 · 2026-10-25 补录）
+
+> 本节为补录：该架构 2026-09-19 已随 d9a3c69 落地并运行，但此前只存在于
+> `core/chapter_layout.py` 模块 docstring 与《线索系统评估与穿珠子优化方案》§八，
+> 未进本编号文档（2026-10-25 体检发现的回填债之一）。
+
+**决策**：规划期**不逐章产细纲**，只产出**卷级连续事件流**；章数不预定，
+正文生成前按"目标字数 + 叙事切点"**确定性切章**（零 LLM），章细纲文件是
+切片的派生物。
+
+**为什么弃"章节先行"**（真机实证，proj-20260919164352）：
+1. 逐章生成细纲每章只看得到前一章 gist → 局部延续、全局失向
+   （卷一 ch12 起 72 章只有主角一人出场）；
+2. 章节是**阅读排版单位**（场景结束/冲突爆点/悬念/时间跳转/视角切换处切），
+   不是故事逻辑单位——预定章数与实际叙事长度必然错位（归属审计 S4）。
+
+**机制**（`core/chapter_layout.py`）：
+- 事件流落 `outline/events/vol-{N}.json`；每条事件带 `desc/scene/pov/days/
+  climax/est_words/beads`；`event_stream` 节点多轮生成直到累计预估字数覆盖
+  本卷目标（`meta.scale.chapters_per_volume` 降级为规模提示值）；
+- `slice_chapters()` 切点优先级（累计 ≥min_words=1500 才有切章资格）：
+  **climax > time-skip（下条 days>0）> pov 变 > scene 变 > target_words=2400
+  软目标 > max_words=4200 硬上限 > stream-end 兜底**；
+- `materialize_outline()` 把切片物化成 `outline/chapters/<vol>-<ch>.md`——
+  **路径与 front-matter 格式与旧版逐字一致**（审校/publish/统计下游零改动）；
+- `events_from_outlines()`：存量项目的旧章细纲可摊平成事件流，无需重跑 build。
+
+**术语澄清（两个"切章"、两个"事件流"，勿混）**：
+- 本节的"切章"是**生成侧**规划事件流 → 章的确定性切分；§6.1 模式二 ingest
+  的"切章"是**导入侧**对已有文本的标题识别/预览确认——两套独立机制；
+- 本节的"事件流"是**规划侧**的 `outline/events/vol-N.json`（应然·计划）；
+  `memory/plot_events.json` 是**回写侧**剧情事件（实然·已发生，ADR-011/013）。
+
 ## 12. 失败与降级
 
 | 失败 | 处置 |
