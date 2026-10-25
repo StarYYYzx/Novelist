@@ -1854,6 +1854,29 @@ def _produce_chapter_impl(
     if pending_lines:
         goal = goal + "\n\n" + "\n".join(pending_lines)
 
+    # ---- 1.7) 上轮编译阻断的修复提示注入（2026-10-25，大章节 E2E）----
+    # 本章此前被三视角判定阻断时，workspace/compile_fix_hint.json 留有硬错误
+    # 清单（带原文引用）。重跑本章 = 用户授权重写 → 把清单注入 goal，重写
+    # 不再盲改（三视角按证据复核，修复才有收敛目标）。
+    try:
+        _fixp = ws.workspace_sub(project_id, "compile_fix_hint.json")
+        if _fixp.exists():
+            import json as _fixjson
+
+            _hint = _fixjson.loads(_fixp.read_text(encoding="utf-8"))
+            if (int(_hint.get("vol") or 0) == vol and int(_hint.get("ch") or 0) == ch
+                    and _hint.get("hard")):
+                _fix_lines = []
+                for _i, _h in enumerate(_hint["hard"][:9], 1):
+                    _fix_lines.append(
+                        f"{_i}. [{_h.get('type')}] 正文「{str(_h.get('quote'))[:40]}」"
+                        f"——{str(_h.get('basis'))[:80]}")
+                goal = (goal + "\n\n【上轮编译未过的硬错误清单（本轮重写必须逐条消除；"
+                        "这些是判定器按设定与正文前文复核过的结论，不要质疑，"
+                        "直接改写对应段落）：】\n" + "\n".join(_fix_lines))
+    except (OSError, ValueError):
+        pass  # 修复提示读取失败不影响写章
+
     # ---- 2) 生成（事件循环 / 剧本草稿 / 完整性校验与续写，B-04 + 第二、三批讨论）----
     mode = "tool"
     attempts = 0
@@ -2603,6 +2626,20 @@ def _produce_chapter_impl(
         if compile_report and compile_report.get("blocked"):
             phase_reason = "编译未过（硬错误修不掉，等人工处置）"
             comp["compile_blocked"] = True
+            # 2026-10-25（大章节 E2E）：blocked 时把硬错误清单写进项目级"章修复
+            # 提示"——本章重跑时读取并注入生成目标，重写不再盲改（上轮 ch1 三轮
+            # 重写各犯各的 9 条，就因为不带前轮判定证据）。
+            try:
+                _fixp = ws.workspace_sub(project_id, "compile_fix_hint.json")
+                _fixp.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json
+
+                _fixp.write_text(_json.dumps({
+                    "vol": vol, "ch": ch, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "hard": compile_report.get("hard") or [],
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:
+                pass
         if compile_report:
             comp["compile_rounds"] = compile_report.get("rounds")
 

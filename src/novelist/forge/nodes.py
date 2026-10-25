@@ -600,8 +600,28 @@ def _event_stream_prompt(ctx: NodeContext) -> tuple[str, str]:
                       + json.dumps(ctx.prev_gist, ensure_ascii=False)[:800])
     target_events = max(4, min(30, int(K * tw / 800) or 6))
 
-    user = f"""你是**事件流规划师**。为第 {vol} 卷的这一节产出**连续事件流**（不划分章节）。{wv_block}
+    # 2026-10-25（大章节 E2E 教训）：类型节奏拍板此前只存在于设定文档与
+    # craft_rules 文本里，事件流规划不消费 → 细纲把金手指激活挤到章末一行，
+    # 三视角按"细纲即真理"判 9 条 hard 阻断。现将实例化工艺规则中**结构性的
+    # 节奏约定**提取为事件流第 0 号纪律（craft_rules 的 rule 文本原样注入，
+    # 由模型在排事件时执行——黄金三章的兑现位置/每章兑现密度是排事件的
+    # 排布约束，不是文风问题）。
+    rhythm_block = ""
+    crules = [r for r in ((bp.get("style") or {}).get("craft_rules") or [])
+              if isinstance(r, dict) and str(r.get("rule") or "").strip()]
+    if crules:
+        rows = []
+        for r in crules:
+            tag = str(r.get("card") or "")
+            if r.get("mode"):
+                tag += f"（{r['mode']}）"
+            rows.append("【" + tag + "】" + chr(10) + str(r["rule"]))
+        header = (chr(10) * 2 + "【类型节奏硬约束（本书工艺规则的排布类条目——"
+                  "事件流的排布必须满足它们；与细纲冲突时以此为准）】" + chr(10))
+        rhythm_block = header + (chr(10) * 2).join(rows)
 
+    user = f"""你是**事件流规划师**。为第 {vol} 卷的这一节产出**连续事件流**（不划分章节）。{wv_block}
+{rhythm_block}
 【本卷主线】{json.dumps({k: volume.get(k) for k in ("title", "summary", "key_beats") if volume.get(k)}, ensure_ascii=False)}
 【本节 brief】{arc_block}{prev_block}
 
