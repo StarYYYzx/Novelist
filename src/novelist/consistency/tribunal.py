@@ -162,6 +162,26 @@ def _guardian_context(ws: Workspace, pid: str) -> str:
                     f"境界={c.get('realm') or '—'}", f"位置={c.get('location') or '—'}",
                     f"状态={'死亡' if c.get('dead') else '存活'}"]
             lines.append("；".join(bits))
+    # 2026-10-25（大章节 E2E）：守护者此前看不到人物卡——把主角金手指判成
+    # "凭空引入设定外元素"（cheat 就在主角卡上）。补关键人物卡的 cheat/身份。
+    try:
+        cards = _read_json(ws, pid, "bible/characters.json") or []
+        for c in cards[:16]:
+            if not isinstance(c, dict):
+                continue
+            bits = [f"{c.get('id')} {c.get('name') or ''}"]
+            if c.get("is_protagonist") or c.get("role") == "protagonist":
+                bits.append("【主角】")
+            pw = c.get("power") or {}
+            if isinstance(pw, dict) and pw.get("level"):
+                bits.append(f"境界={pw['level']}")
+            if c.get("cheat"):
+                bits.append(f"金手指（设定内，出现相关描写不算凭空引入）: {str(c['cheat'])[:80]}")
+            if c.get("background"):
+                bits.append(f"身份: {str(c['background'])[:50]}")
+            lines.append("；".join(bits))
+    except Exception:  # noqa: BLE001 - 人物卡读取失败不阻断判定
+        pass
     wv = _read_json(ws, pid, "bible/worldview.json") or {}
     rules = wv.get("rules") or []
     ps = (wv.get("power_system") or {}) if isinstance(wv, dict) else {}
@@ -185,8 +205,10 @@ _ISSUE_PROTOCOL = """只输出 JSON（不要解释、不要围栏），结构：
 {"issues": [{"type": "问题类型短语（如：境界倒退/物品凭空出现/逻辑矛盾/动机断裂/偏离细纲）",
              "quote": "正文中体现该问题的原文片段（10-40 字，必须逐字摘自正文）",
              "basis": "判定依据一句话（对照什么、为何冲突）",
+             "verdict": "issue（确认为问题，可省略）或 not_an_issue（复核后不成立）",
              "suggestion": "修法建议一句话"}]}
-没有问题时输出 {"issues": []}。宁可少报不误报；每条必须能给 quote。"""
+没有问题时输出 {"issues": []}。宁可少报不误报；每条必须能给 quote；
+拿不准或复核后自相矛盾的条目给 verdict=not_an_issue，不要硬凑。"""
 
 
 def _perspective_prompt(perspective: str, ws: Workspace, pid: str,
@@ -248,6 +270,12 @@ def _parse_issues(raw: str, perspective: str, chapter_text: str) -> tuple[list[I
         quote = str(row.get("quote") or "").strip()
         if not quote or _norm(quote) not in body:
             invalid += 1          # 引用复核失败：判定无效（ADR-038 拍板）
+            continue
+        # 2026-10-25（大章节 E2E）：判定器自查后认为不成立的条目不再输出为
+        # hard——真机出现过"此条仅核验，不成立，应删除"仍被计成 hard 的噪声。
+        verdict = str(row.get("verdict") or "").strip()
+        basis0 = str(row.get("basis") or "")
+        if verdict in ("not_an_issue", "不成立", "false_positive")                 or ("不成立" in basis0 and len(basis0) < 60):
             continue
         issues.append(Issue(
             perspective=perspective,
