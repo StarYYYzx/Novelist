@@ -424,7 +424,8 @@ def _judge_reuse(provider, need: CharacterNeed, cands: list[dict]) -> tuple[str,
     try:
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=200, temperature=0.2, response_format="json_object",
+            # 2026-10-25 盘点：200+思考=必吃满，从严判定给 600
+            max_tokens_out=600, temperature=0.2, response_format="json_object",
             thinking=True))  # 判断类：复用人选从严判定，开思考
         import json as _json
 

@@ -254,8 +254,9 @@ class KnowledgeBase:
                                      content=QUERY_PROMPT.format(
                                          ev_text=head_tail_window(ev_text, QUERY_EV_CHARS,
                                                                   head_chars=QUERY_EV_HEAD)))],
-                max_tokens_out=120, temperature=0.2,
-                thinking=True))  # 判断类：检索意图抽取，开思考
+                max_tokens_out=200, temperature=0.2,
+                thinking=False))  # 生成类枚举（查询词 3-5 个）：120+思考=必被吃满；关思考
+        # 2026-10-25 盘点：原 120+thinking=True 结构性必死（思考>预算）
         except Exception:  # noqa: BLE001
             return [ev_text]
         if not res.content or res.blocked:

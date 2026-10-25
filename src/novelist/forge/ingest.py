@@ -427,7 +427,8 @@ def _llm_extract(provider, text: str, max_chars: int, genre_hint: str = "") -> d
         messages=[LLMMessage(role="system", content=_EXTRACT_SYSTEM),
                   LLMMessage(role="user", content=_EXTRACT_PROMPT.format(
                       genre_hint=hint, max_chars=max_chars, text=text[-max_chars:]))],
-        temperature=0.3, max_tokens_out=900, response_format="json_object",
+        # 2026-10-25 盘点：900+思考吃满风险（与 chronicler 同病），给 2500
+        temperature=0.3, max_tokens_out=2500, response_format="json_object",
         thinking=True))  # 判断类：已有稿→蓝图结构化抽取，开思考
     if res.blocked:
         raise RuntimeError(f"审核拦截: {res.block_reason or 'unknown'}")

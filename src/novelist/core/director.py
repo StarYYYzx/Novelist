@@ -322,7 +322,7 @@ def build_direction(ws, project_id: str, provider, *, vol: int, ch: int,
                     event_index: int, ev_text: str, cards: list[dict],
                     history_lines: list[str] | None = None,
                     system_prompt: str | None = None,
-                    max_tokens: int = 700) -> DirectionSheet | None:
+                    max_tokens: int = 1600) -> DirectionSheet | None:
     """生成本场人物调度单（每事件 +1 次 LLM 调用）。失败返回 None（调用方降级）。"""
     sheet = DirectionSheet(vol=vol, ch=ch, event_index=event_index, event_text=ev_text)
     if provider is None or not cards:

@@ -272,9 +272,17 @@ def run_tribunal(ws: Workspace, project_id: str, vol: int, ch: int,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user",
                                  content=_perspective_prompt(p, ws, project_id, vol, ch, windowed))],
-            temperature=0.2, max_tokens_out=1600, response_format="json_object",
+            # 2026-10-25 盘点：1600+思考=真机 7 次全 0 字（三视角判定层实际未工作过），
+            # 预算 3000；仍空/截断时关思考重试一次（多数决容忍缺票，但 0 字=三票全缺）
+            temperature=0.2, max_tokens_out=3000, response_format="json_object",
             thinking=True,  # 判断类：一致性判定，开思考
         ))
+        if not (getattr(res, "content", "") or "").strip()                 and getattr(res, "finish_reason", "") == "length":
+            res = provider.complete(LLMRequest(
+                messages=[LLMMessage(role="user",
+                                     content=_perspective_prompt(p, ws, project_id, vol, ch, windowed))],
+                temperature=0.2, max_tokens_out=3000, response_format="json_object",
+                thinking=False))
         if getattr(res, "blocked", False) or not (res.content or "").strip():
             continue  # 单视角失败不炸整轮（多数决天然容忍缺一票）
         got, bad = _parse_issues(res.content, p, chapter_text)

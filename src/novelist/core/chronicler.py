@@ -781,7 +781,7 @@ class Chronicler:
 
     # ---- 角色视角记忆（ADR-020 决策四）----
     def record_perspectives(self, text: str, cast_names: list[str], vol: int, ch: int,
-                            *, event_index: int = 0, max_tokens: int = 600,
+                            *, event_index: int = 0, max_tokens: int = 2000,
                             project_id: str = "") -> int:
         """为每个出场人物补一条**角色视角**经历（每事件 +1 次 LLM 调用）。
 

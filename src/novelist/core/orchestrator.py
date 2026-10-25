@@ -376,7 +376,9 @@ def _seam_retell(provider, system_prompt: str, prev_tail: str, new_head: str) ->
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
             response_format="json_object",  # P1-5（2026-09-12 审计）：此前靠正则抠 JSON
-            max_tokens_out=200, temperature=0.2,
+            # 2026-10-25 盘点：200+思考=必吃满（真机同款），预算 600；失败静默回退
+            # 原判定（调用方 try/except 已兜），不再加重试——此调用失败成本低
+            max_tokens_out=600, temperature=0.2,
             thinking=True))  # 判断类：接缝复述判定，开思考提 recall
         raw = (res.content or "").strip() if getattr(res, "ok", False) else ""
     except Exception:  # noqa: BLE001
@@ -421,8 +423,8 @@ def _event_end_state(provider, system_prompt: str, ev_text: str, piece: str) -> 
             messages=[LLMMessage(role="system", content=system_prompt or ""),
                       LLMMessage(role="user", content=_END_STATE_PROMPT.format(
                           ev=_strip_expanded_tag(ev_text), body=piece[-800:]))],
-            max_tokens_out=120, temperature=0.3,
-            thinking=True))  # 判断类：接缝状态锚提取，开思考
+            max_tokens_out=200, temperature=0.3,
+            thinking=False))  # 生成类一句话状态锚：2026-10-25 盘点关思考（原 120+思考必截断）
         if res.blocked or not (res.content or "").strip():
             return None
         return " ".join(res.content.strip().split())
@@ -716,7 +718,8 @@ def _supplement_settings(ws, project_id: str, ev_text: str, provider,
         )
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="user", content=prompt)],
-            max_tokens_out=400, temperature=0.3, response_format="json_object",
+            # 2026-10-25 盘点：400+思考吃满风险，JSON 数组输出给 900
+            max_tokens_out=900, temperature=0.3, response_format="json_object",
             thinking=True))  # 判断类：新设定抽取决策，开思考
         if res.blocked or not (res.content or "").strip():
             return 0
@@ -811,8 +814,8 @@ def _generate_beats(provider, system_prompt: str, goal: str, ev_text: str,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="system", content=system_prompt or ""),
                       LLMMessage(role="user", content=plan_prompt)],
-            max_tokens_out=200, temperature=0.4,
-            thinking=True))  # 判断类：重场戏拍级规划，开思考
+            max_tokens_out=400, temperature=0.4,
+            thinking=False))  # 生成类拍清单（2-3 行）：2026-10-25 盘点关思考（原 200+思考必截断）
         if res.blocked or not (res.content or "").strip():
             return None
         beats = []
@@ -888,8 +891,8 @@ def _generate_microbeats(provider, system_prompt: str, goal: str, ev_text: str,
         res = provider.complete(LLMRequest(
             messages=[LLMMessage(role="system", content=system_prompt or ""),
                       LLMMessage(role="user", content=plan_prompt)],
-            max_tokens_out=200, temperature=0.4,
-            thinking=True))  # 判断类：事件微拍规划，开思考
+            max_tokens_out=400, temperature=0.4,
+            thinking=False))  # 生成类微拍清单：2026-10-25 盘点关思考（原 200+思考必截断）
         if res.blocked or not (res.content or "").strip():
             return None
         beats = []
