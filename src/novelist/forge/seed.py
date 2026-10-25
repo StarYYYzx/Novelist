@@ -84,7 +84,7 @@ def _seed_user_prompt(brief: str, packs: list[str], genre_pack: str | None) -> s
   "conflict": "核心冲突一句话",
   "tone_hint": "文风基调提示（如：热血激昂/严谨冷肃/诙谐幽默）",
   "scale_hint": {{"volumes": 卷数, "chapters_per_volume": 每卷章数}},
-  "time_origin": "故事时间原点（t=0 的语义锚点，如「叶蓝穿越之日」；没有则空串）",
+  "time_origin": "故事时间原点（t=0 的语义锚点，如「主角穿越之日」；没有则空串）",
   "anchors": ["从创意原句中原样摘抄的硬性设定锚点（数字/时间跨度/年龄/事实因果），每条一字不改，如「灵气复苏仅过去了一年」「大学生，23 岁」；原句没有则空数组"],
   "unknowns": ["这句话里你无法确定、需要后续澄清的要素，每条一句"]
 }}"""

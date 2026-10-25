@@ -1384,14 +1384,18 @@ def forge_switches(ctx: click.Context, module: str | None, state: str | None,
 
 
 # forge seed 的 fake 演示回复（SeedSpec JSON；构建节点走宽容降级，链路完整可演示）
+# 2026-10-25 F0 结案：演示数据曾写死真实书稿设定（叶蓝/五五开系统）——两次
+# 端到端测试的蓝图污染都源于此（fake 是 forge 全家默认 provider，不传参即中招）。
+# 改为中性演示数据，并保留"fake 需显式警告"防线。
 _FAKE_SEED_REPLY = json.dumps({
     "genre": "修仙", "template_suggestion": "修仙男频",
-    "logline": "五五开系统，绑定他人共享修炼",
-    "protagonist_hint": {"name": "叶蓝", "gender": "male", "cheat": "五五开系统"},
-    "conflict": "废柴逆袭",
+    "logline": "演示用一句话卖点（fake provider 固定输出，与用户创意无关）",
+    "protagonist_hint": {"name": "演示主角", "gender": "male",
+                         "cheat": "演示金手指（fake provider 固定输出）"},
+    "conflict": "演示冲突",
     "tone_hint": "热血激昂",
     "scale_hint": {"volumes": 2, "chapters_per_volume": 3},
-    "time_origin": "叶蓝穿越之日",
+    "time_origin": "演示主角入门之日",
     "unknowns": [],
 }, ensure_ascii=False)
 
@@ -1435,6 +1439,9 @@ def forge_seed(ctx: click.Context, brief: str, directory: str | None, mode: str,
     ws: Workspace = ctx.obj["workspace"]
     ws, project_id = _resolve_forge_target(ws, directory)
     if provider == "fake":
+        # 2026-10-25 F0 教训：fake 默认无提示 → 真机测试两次中招（蓝图被演示数据污染）
+        click.echo("[!] 当前使用 fake 演示 provider——seed 提炼是固定演示数据，"
+                   "与你的创意无关。真实提炼请加 --provider deepseek", err=True)
         from novelist.providers.fake import FakeProvider
 
         prov = FakeProvider(reply=_FAKE_SEED_REPLY)  # 演示：固定 SeedSpec，链路可跑通
