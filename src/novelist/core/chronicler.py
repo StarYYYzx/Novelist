@@ -46,14 +46,15 @@ EVENT_KINDS = ("conflict", "discovery", "reveal", "turning_point", "dialogue", "
 EXTRACT_PROMPT = """你是记忆编纂员。阅读下面这一章正文，提取其中**确实发生了**的剧情事件，
 以及本章结束时人物的**状态变化**。
 
-第一部分——事件行，每行一个事件，格式严格为（竖线分隔，第三段可省略）：
-事件简述 | 类型 | 涉及人物姓名（逗号分隔）
+第一部分——事件行，每行一个事件，格式严格为四段（竖线分隔，第三段可省略）：
+事件简述 | 类型 | 涉及人物姓名（逗号分隔） ｜证据：<佐证本事件的最短原文短语>
+示例：林澈握紧母亲遗留的玉佩 | discovery | 林澈 ｜证据：残缺玉佩
 - 类型只能是：conflict、discovery、reveal、turning_point、dialogue、departure
 - 涉及人物只写正文里真实出现过的人名，不要编造
 - 事件简述**直接写内容，不要用括号括起，不要用「（」「）」**
-- 每条事件行**末尾必须**追加第四段「｜证据：<佐证本事件的最短原文短语>」：
-  逐字摘自正文（≤15 字，不要改写、不要概括）。证据对不上正文的事件会被拒收——
-  这是对抗抽取幻觉的硬校验，宁缺勿错记
+- **证据段不可省略**（2026-10-25 真机：格式模板未含证据段时模型普遍漏写被整批拒收）：
+  逐字摘自正文（≤15 字，不要改写、不要概括）。无证据或证据对不上正文的
+  事件会被整条拒收——这是对抗抽取幻觉的硬校验，宁缺勿错记
 
 第二部分——状态行，以「状态：」开头，每行一个人物：
 状态：人物名 | 修为：新境界 | 位置：新地点 | 获得：物品 | 失去：物品 | 受伤：伤情 | 痊愈：伤情
@@ -165,6 +166,9 @@ class Extraction:
     line_rows: list[dict] = field(default_factory=list)      # ADR-025：「线索：ln:x | 推 | …」解析结果
     # DL-009-P1：证据校验拒收的事件（理由随行，commit 时并入 report.rejected）
     rejected: list[str] = field(default_factory=list)
+    # 2026-10-25（F5 修复）：抽取通道自身的告警（输出为空/被拦截）——不再静默，
+    # 编排层并入 soft_failures，CLI「降级/失败」区可见。
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -276,29 +280,49 @@ class Chronicler:
 
         无 LLM 时返回空 `Extraction`（不做假）。时间/约定/线索行搭在同一次抽取调用里，
         **不额外增加 LLM 调用**；账本为空时 prompt 不要求线索行（行为与旧版一致）。
+
+        2026-10-25 真机修复（短篇 E2E F5 根因，比原登记更深一层）：原配置
+        `thinking=True + max_tokens_out=450`——思考先吃输出预算，真机实测 727 字
+        思考吃光 450 token → content 恒空 → 全链静默断供（memory/章级事实账本/
+        worldstate 时钟三线同断，跨章硬伤 2/3/4 的总根因）。修复三件：
+        ①预算 450 → 2500（thinking 留足余量）；
+        ②`content 空且 finish=length` → **关思考重试一次**（与 seed 提炼同款兜底，
+        抽取是格式化任务，关思考输出更稳）；
+        ③重试后仍空 → 不再静默——`Extraction.warnings` 带原因（编排层并入
+        soft_failures，CLI 可见）。
         """
         if self.llm is None or not chapter_text.strip():
             return Extraction()
-        res = self.llm.complete(
-            LLMRequest(
-                messages=[LLMMessage(role="user",
-                                     content=EXTRACT_PROMPT.format(
-                                         max_events=max_events,
-                                         lines_block=self._build_lines_block())
-                                     + _chapter_window(chapter_text, max_chars))],
-                max_tokens_out=450,
-                temperature=0.3,
-                thinking=True,  # 判断类：事件/状态/时间/线索结构化抽取，开思考
-            )
-        )
-        if res.blocked or not res.content:
-            return Extraction()
+        res = self._extract_call(max_events, max_chars, chapter_text, thinking=True)
+        if not (res.content or "").strip() and getattr(res, "finish_reason", "") == "length":
+            res = self._extract_call(max_events, max_chars, chapter_text, thinking=False)
+        if res.blocked:
+            return Extraction(warnings=[f"抽取被审核拦截：{res.block_reason or '未知'}"])
+        if not (res.content or "").strip():
+            return Extraction(warnings=[
+                f"抽取输出为空（finish={getattr(res, 'finish_reason', '?')}，"
+                "事件/状态/时间均未入库——本章将成记忆缺口）"])
         ex = self._parse(res.content, max_events)
         # DL-009-P1 证据校验（2026-10-10）：带证据的事件回指正文，对不上即拒收——
         # 抽取幻觉（v7 实证「外山打斗」被抽成「鬼面跌出秘境」）此前只要与既有记忆
         # 不冲突就放行入库；证据回指是最便宜的确定性防线（宁缺勿错记）。
         self._validate_evidence(ex, chapter_text)
         return ex
+
+    def _extract_call(self, max_events: int, max_chars: int,
+                      chapter_text: str, *, thinking: bool):
+        return self.llm.complete(
+            LLMRequest(
+                messages=[LLMMessage(role="user",
+                                     content=EXTRACT_PROMPT.format(
+                                         max_events=max_events,
+                                         lines_block=self._build_lines_block())
+                                     + _chapter_window(chapter_text, max_chars))],
+                max_tokens_out=2500,
+                temperature=0.3,
+                thinking=thinking,  # 判断类：结构化抽取；但思考吃满预算时关思考重试
+            )
+        )
 
     def _parse(self, content: str, max_events: int) -> Extraction:
         from . import worldstate
@@ -330,10 +354,11 @@ class Chronicler:
         for line in event_lines:
             line = line.strip().lstrip("-•*").strip()
             line = re.sub(r"^\d+[.、)．]\s*", "", line)
-            # DL-009-P1：先剥离行尾证据标注（全角「｜」不与 ASCII 分隔竖线冲突），
-            # 再走既有的 ASCII 竖线拆列——旧输出无标注时 evidence 为空串。
+            # DL-009-P1：先剥离行尾证据标注，再走 ASCII 竖线拆列——旧输出无标注时
+            # evidence 为空串。2026-10-25 真机：模型在 ｜证据： / |证据： / | 证据：
+            # 之间随机漂移（同一提示词两次运行两种分隔符），统一宽容匹配。
             evidence = ""
-            m_ev = re.search(r"｜证据：(.+)$", line)
+            m_ev = re.search(r"[｜|]\s*证据[：:]\s*(.+)$", line)
             if m_ev:
                 evidence = m_ev.group(1).strip()
                 line = line[:m_ev.start()].strip()
@@ -342,6 +367,9 @@ class Chronicler:
             parts = [p.strip() for p in line.split("|")]
             summary = re.sub(r"^事件[:：]\s*", "", parts[0]).strip()
             if len(summary) < 4:
+                continue
+            # 格式模板行守卫（2026-10-25 真机）：模型偶尔把提示词的模板行原样吐出
+            if summary in ("事件简述", "类型", "涉及人物姓名"):
                 continue
             kind = parts[1] if len(parts) > 1 and parts[1] in EVENT_KINDS else "turning_point"
             names = [n.strip() for n in (parts[2].split(",") if len(parts) > 2 else []) if n.strip()]
@@ -770,19 +798,22 @@ class Chronicler:
         if not names:
             return 0
         try:
+            _msgs = [LLMMessage(role="user",
+                                content=PERSPECTIVE_PROMPT.format(
+                                    names="、".join(names))
+                                 # 2026-09-19 审计 C-P1-3：尾窗口会漏章头
+                                 # （人物首次登场/场景交代），改头尾并取
+                                 + _head_tail(text, 2500))]
             res = self.llm.complete(
-                LLMRequest(
-                    messages=[LLMMessage(role="user",
-                                         content=PERSPECTIVE_PROMPT.format(
-                                             names="、".join(names))
-                                         # 2026-09-19 审计 C-P1-3：尾窗口会漏章头
-                                         # （人物首次登场/场景交代），改头尾并取
-                                         + _head_tail(text, 2500))],
-                    max_tokens_out=max_tokens,
-                    temperature=0.4,
-                    thinking=True,  # 判断类：视角记忆结构化归纳，开思考
-                )
-            )
+                LLMRequest(messages=_msgs, max_tokens_out=max_tokens,
+                           temperature=0.4, thinking=True)
+            )  # 判断类：视角记忆结构化归纳，开思考
+            # 2026-10-25（F5 同类）：600 预算被思考吃光→静默 0 条；默认已上调 2000，
+            # 仍留 finish=length 关思考重试一次（与 extract 同款）
+            if not (res.content or "").strip()                     and getattr(res, "finish_reason", "") == "length":
+                res = self.llm.complete(
+                    LLMRequest(messages=_msgs, max_tokens_out=max_tokens,
+                               temperature=0.4, thinking=False))
         except Exception:  # noqa: BLE001 - 视角抽取失败不阻断生成
             return 0
         if res.blocked or not (res.content or "").strip():

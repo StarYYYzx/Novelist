@@ -168,3 +168,58 @@ def test_chronicler_evidence_required_rejects_empty(tmp_path):
     ])
     ch_lenient._validate_evidence(ex2, CH)  # noqa: SLF001
     assert len(ex2.events) == 1 and len(ex2.rejected) == 1
+
+
+# ---------- F5 修复：思考吃满的重试与警告可见性（2026-10-25） ----------
+
+class _StarvedProvider:
+    """模拟 flash 思考吃满输出预算：先回 content 空 + finish=length。"""
+
+    def __init__(self, replies: list[str]):
+        self._replies = list(replies)
+        self.calls = 0
+        self.requests = []
+
+    def complete(self, req):
+        self.requests.append(req)
+        i = min(self.calls, len(self._replies) - 1)
+        content = self._replies[i]
+        self.calls += 1
+        starved = (i == 0 and content == "")
+        from novelist.core.llm import LLMResult, Usage
+
+        return LLMResult(ok=True, content=content,
+                         finish_reason="length" if starved else "stop",
+                         provider="stub", usage=Usage(tokens_in=0, tokens_out=0))
+
+
+def test_extract_retries_thinking_starvation_with_thinking_off(tmp_path):
+    """content 空 + finish=length → 关思考重试一次；重试成功则照常出事件。"""
+    from novelist.core.chronicler import Chronicler
+
+    ws = Workspace(root=str(tmp_path))
+    ws.create_project("p")
+    # 列分隔符为 ASCII |（_parse 口径），证据标注为全角 ｜证据： 且须逐字见于正文
+    reply = ("事件：林澈握紧母亲遗留的残缺玉佩|turning_point|林澈"
+             "｜证据：残缺玉佩")
+    prov = _StarvedProvider(["", reply])
+    ch = Chronicler(ws, "p", llm=prov, evidence_required=True)
+    ex = ch.extract(CH, max_events=2)
+    assert prov.calls == 2, "必须恰好重试一次"
+    assert prov.requests[0].thinking is True and prov.requests[1].thinking is False
+    assert len(ex.events) == 1 and "残缺玉佩" in ex.events[0].summary
+    assert not ex.warnings
+
+
+def test_extract_empty_after_retry_is_loud_not_silent(tmp_path):
+    """重试后仍空 → Extraction.warnings 带原因（不再静默吞掉）。"""
+    from novelist.core.chronicler import Chronicler
+
+    ws = Workspace(root=str(tmp_path))
+    ws.create_project("p")
+    prov = _StarvedProvider(["", ""])
+    ch = Chronicler(ws, "p", llm=prov)
+    ex = ch.extract(CH, max_events=2)
+    assert ex.events == [] and ex.time_lines == []
+    assert len(ex.warnings) == 1 and "输出为空" in ex.warnings[0]
+    assert "记忆缺口" in ex.warnings[0]

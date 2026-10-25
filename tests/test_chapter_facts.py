@@ -103,3 +103,18 @@ def test_facts_block_is_pinned_under_budget():
     tags = [t for t, _ in kept]
     assert "facts" in tags and "goal" in tags
     assert "memories" in evicted
+
+
+def test_record_rewriting_old_chapter_cascades_later_entries():
+    """2026-10-25 真机修复（短篇 E2E F5 连锁）：重写第 N 章时，同卷 N 及之后的
+    旧条目必须级联失效——否则旧条目占满"最近 2 章"名额，重写章的事实永远
+    写不进账本（真机：残留 (1,2)/(1,3) 空壳把 (1,1) 裁掉，账本恒空）。"""
+    from novelist.core.chapter_facts import record
+
+    stale = [{"vol": 1, "ch": 2, "facts": []}, {"vol": 1, "ch": 3, "facts": []}]
+    out = record(stale, 1, 1, ["- 定额一百二十点"])
+    assert [(e["vol"], e["ch"]) for e in out] == [(1, 1)]
+    assert out[0]["facts"] == ["- 定额一百二十点"]
+    # 顺序写章不受影响（既有的 2 章窗口语义保留）
+    seq = record([{"vol": 1, "ch": 1, "facts": ["a"]}], 1, 2, ["b"])
+    assert [(e["vol"], e["ch"]) for e in seq] == [(1, 1), (1, 2)]

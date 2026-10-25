@@ -43,9 +43,17 @@ def save(ws, project_id: str, entries: list[dict]) -> None:
 
 
 def record(entries: list[dict], vol: int, ch: int, facts: list[str]) -> list[dict]:
-    """登记/替换当前章事实并裁剪：同章重跑幂等（替换不累加），只留最近 MAX_ENTRIES 章。"""
+    """登记/替换当前章事实并裁剪。
+
+    幂等语义（2026-10-25 真机修复）：登记 (vol, ch) 时**先丢弃同卷 ch 及之后的
+    旧条目**——重写第 N 章意味着第 N 章之后的一切已作废（正文/回写都会随
+    reset_state 清掉），事实必须级联失效；否则旧条目按排序占着"最近 2 章"
+    名额，重写章的事实永远挤不进账本（真机：残留 (1,2)/(1,3) 空壳把新写的
+    (1,1) 裁掉，账本恒空）。只留最近 MAX_ENTRIES 章（更早的交给 volume_facts）。
+    """
     clean = [str(f).strip() for f in (facts or []) if str(f).strip()]
-    others = [e for e in entries if not (e.get("vol") == vol and e.get("ch") == ch)]
+    others = [e for e in entries
+              if not (int(e.get("vol") or 0) == vol and int(e.get("ch") or 0) >= ch)]
     others.append({"vol": vol, "ch": ch, "facts": clean[-MAX_FACTS:]})
     others.sort(key=lambda e: (int(e.get("vol") or 0), int(e.get("ch") or 0)))
     return others[-MAX_ENTRIES:]

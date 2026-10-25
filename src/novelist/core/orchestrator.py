@@ -2423,6 +2423,11 @@ def _produce_chapter_impl(
                                 if _extraction.rejected:
                                     # DL-009-P1：证据校验拒收与落库闸门拒收同通道可见
                                     chronic_reports[-1].rejected[:0] = _extraction.rejected
+                                if _extraction.warnings:
+                                    # 2026-10-25（F5 修复）：抽取通道告警不再静默——
+                                    # 事件是记忆的最小单位，抽取空转=本章记忆缺口
+                                    soft_failures.extend(
+                                        f"编纂抽取(e{idx})：{w}" for w in _extraction.warnings)
                                 _appended = True
                         except Exception as e:  # noqa: BLE001 - 单事件编纂失败不阻断整章
                             # 事件是记忆的最小单位：漏一个是永久缺口，必须留痕

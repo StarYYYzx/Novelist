@@ -245,17 +245,22 @@ class Reviewer:
             return []
         prompt = review_context(self.ws, self.project_id, gist_text=gist_text,
                                 memories=memories, cast_ids=cast_ids, scope=scope)
+        # 审校预算可配：开思考时思考占预算大头（实测复杂 prompt 思考 >5K 字）。
+        # 2026-10-25（短篇 E2E 同类修复）：默认 800 在 flash+思考下必被吃光→空输出
+        # 静默失效——默认上调 2048；且 content 空 + finish=length 时关思考重试一次
+        # （与 chronicler.extract / seed 提炼同款兜底）。NOVELIST_REVIEWER_TOKENS 覆盖。
+        _req_messages = [LLMMessage(
+            role="user",
+            content=prompt + review_window(text, chapter_scope=chapter_scope))]
+        _tok = int(os.environ.get("NOVELIST_REVIEWER_TOKENS", "2048"))
         res = self.llm.complete(
-            LLMRequest(messages=[LLMMessage(
-                role="user",
-                content=prompt + review_window(text, chapter_scope=chapter_scope))],
-                       # 审校预算可配：开思考时思考占预算大头（实测复杂 prompt 思考 >5K 字），
-                       # 默认 800 会被吃光导致空输出→静默失效。NOVELIST_REVIEWER_TOKENS
-                       # 覆盖（云端强模型给 4096，本地 9B 给 2048）。
-                       max_tokens_out=int(os.environ.get("NOVELIST_REVIEWER_TOKENS", "800")),
-                       temperature=0.2,
-                       thinking=True)  # 判断类任务开思考（讨论）：审校 recall 优先
-        )
+            LLMRequest(messages=_req_messages,
+                       max_tokens_out=_tok, temperature=0.2, thinking=True)
+        )  # 判断类任务开思考（讨论）：审校 recall 优先
+        if not (res.content or "").strip() and getattr(res, "finish_reason", "") == "length":
+            res = self.llm.complete(
+                LLMRequest(messages=_req_messages,
+                           max_tokens_out=_tok, temperature=0.2, thinking=False))
         if res.blocked or not res.content:
             return []
         return self._parse(res.content)
